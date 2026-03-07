@@ -102,10 +102,7 @@ export class MarkdownSync {
 
     try {
       // Fetch categories scoped to this agent
-      const categories = await this.adapter.listCategories();
-      const agentCategories = categories.filter(
-        (c) => !c.agent_id || c.agent_id === agentId,
-      );
+      const agentCategories = await this.adapter.listCategories({ agentId });
       if (agentCategories.length === 0) {
         return;
       }

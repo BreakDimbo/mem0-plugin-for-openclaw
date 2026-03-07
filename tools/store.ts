@@ -8,7 +8,7 @@ import type { MemuPluginConfig, PluginHookContext } from "../types.js";
 import { buildDynamicScope } from "../types.js";
 import { shouldCapture, audit } from "../security.js";
 
-export function createStoreTool(outbox: OutboxWorker, config: MemuPluginConfig) {
+export function createStoreTool(outbox: OutboxWorker, config: MemuPluginConfig, toolCtx?: PluginHookContext) {
   return {
     name: "memory_store",
     description: "Store a piece of information in long-term memory for future recall. Use this to save important facts, preferences, decisions, or context that should persist across sessions.",
@@ -20,12 +20,12 @@ export function createStoreTool(outbox: OutboxWorker, config: MemuPluginConfig) 
       },
       required: ["content"] as const,
     },
-    execute: async (_id: string, args: { content: string; context?: string }, _ctx?: PluginHookContext) => {
+    execute: async (_id: string, args: { content: string; context?: string }) => {
       if (!shouldCapture(args.content, config.capture.minChars, config.capture.maxChars)) {
         return { text: "Content rejected: too short, too long, or contains sensitive/suspicious content." };
       }
 
-      const scope = buildDynamicScope(config.scope, _ctx);
+      const scope = buildDynamicScope(config.scope, toolCtx);
       const text = args.context ? `${args.content} (context: ${args.context})` : args.content;
 
       outbox.enqueue(text, scope);

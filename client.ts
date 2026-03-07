@@ -32,6 +32,7 @@ type Logger = { info(msg: string): void; warn(msg: string): void };
 export class MemUClient {
   private baseUrl: string;
   private timeoutMs: number;
+  private cbResetMs: number;
   private healthCheckPath: string;
   private logger: Logger;
 
@@ -40,17 +41,19 @@ export class MemUClient {
   private cbFailCount = 0;
   private cbLastFailTime = 0;
   private readonly cbThreshold = 3; // per design doc §14
-  private readonly cbResetMs = 30_000;
+  private cbHalfOpenProbeInFlight = false;
 
   // Request metrics
   private _totalRequests = 0;
   private _totalErrors = 0;
   private _latencies: number[] = [];
   private readonly maxLatencySamples = 200;
+  private readonly maxAttempts = 2;
 
-  constructor(baseUrl: string, timeoutMs: number, healthCheckPath: string, logger: Logger) {
+  constructor(baseUrl: string, timeoutMs: number, cbResetMs: number, healthCheckPath: string, logger: Logger) {
     this.baseUrl = baseUrl.replace(/\/+$/, "");
     this.timeoutMs = timeoutMs;
+    this.cbResetMs = cbResetMs;
     this.healthCheckPath = healthCheckPath;
     this.logger = logger;
   }
@@ -89,22 +92,29 @@ export class MemUClient {
     if (this.cbState === "closed") return true;
 
     if (this.cbState === "open") {
-      if (Date.now() - this.cbLastFailTime > this.cbResetMs) {
+      if (Date.now() - this.cbLastFailTime >= this.cbResetMs) {
         this.cbState = "half-open";
+        this.cbHalfOpenProbeInFlight = false;
         this.logger.info("memu-client: circuit breaker → half-open");
         return true;
       }
       return false;
     }
 
-    // half-open: allow one request
+    // half-open: allow only one probe request at a time
+    if (this.cbHalfOpenProbeInFlight) return false;
+    this.cbHalfOpenProbeInFlight = true;
     return true;
   }
 
   private onSuccess(): void {
+    if (this.cbState === "closed" && this.cbFailCount > 0) {
+      this.cbFailCount = 0;
+    }
     if (this.cbState === "half-open") {
       this.cbState = "closed";
       this.cbFailCount = 0;
+      this.cbHalfOpenProbeInFlight = false;
       this.logger.info("memu-client: circuit breaker → closed");
     }
   }
@@ -115,6 +125,7 @@ export class MemUClient {
     this.cbLastFailTime = Date.now();
     if (this.cbState === "half-open") {
       this.cbState = "open";
+      this.cbHalfOpenProbeInFlight = false;
       this.logger.warn("memu-client: circuit breaker → open (half-open failed)");
     } else if (this.cbFailCount >= this.cbThreshold) {
       this.cbState = "open";
@@ -133,37 +144,63 @@ export class MemUClient {
 
   private async request<T>(path: string, body: unknown): Promise<T> {
     if (!this.checkCircuit()) {
-      throw new Error(`circuit breaker is open (${this.cbFailCount} failures)`);
+      throw new Error(`circuit breaker is ${this.cbState} (${this.cbFailCount} failures)`);
     }
 
     this._totalRequests++;
     const start = Date.now();
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
-
+    let lastErr: unknown;
+    let lastWasAbort = false;
     try {
-      const res = await fetch(`${this.baseUrl}${path}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      });
+      for (let attempt = 1; attempt <= this.maxAttempts; attempt++) {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+        try {
+          const res = await fetch(`${this.baseUrl}${path}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+            signal: controller.signal,
+          });
 
-      if (!res.ok) {
-        const text = await res.text().catch(() => "");
-        throw new Error(`HTTP ${res.status}: ${text.slice(0, 200)}`);
+          if (!res.ok) {
+            const text = await res.text().catch(() => "");
+            throw new Error(`HTTP ${res.status}: ${text.slice(0, 200)}`);
+          }
+
+          const data = (await res.json()) as T;
+          lastErr = undefined;
+          lastWasAbort = false;
+          this.onSuccess();
+          return data;
+        } catch (err) {
+          lastErr = err;
+          lastWasAbort = (err as { name?: string } | null)?.name === "AbortError";
+          const msg = String((err as { message?: string } | null)?.message ?? "");
+          const retryableHttp = /HTTP (408|429|500|502|503|504)\b/.test(msg);
+          const canRetry = attempt < this.maxAttempts && (lastWasAbort || retryableHttp);
+          if (canRetry) {
+            this.logger.warn(`memu-client: ${path} attempt ${attempt} failed, retrying once`);
+            await new Promise((resolve) => setTimeout(resolve, 200));
+            continue;
+          }
+          throw err;
+        } finally {
+          clearTimeout(timer);
+        }
       }
-
-      const data = (await res.json()) as T;
-      this.recordLatency(Date.now() - start);
-      this.onSuccess();
-      return data;
-    } catch (err) {
-      this.recordLatency(Date.now() - start);
-      this.onFailure();
-      throw err;
+      throw lastErr ?? new Error(`memu request failed (${path})`);
     } finally {
-      clearTimeout(timer);
+      this.recordLatency(Date.now() - start);
+      if (lastErr) {
+        this.onFailure();
+      }
+      if (lastWasAbort) {
+        throw new Error(`memu request timeout after ${this.timeoutMs}ms (${path})`);
+      }
+      if (this.cbState === "half-open") {
+        this.cbHalfOpenProbeInFlight = false;
+      }
     }
   }
 
@@ -220,10 +257,15 @@ export class MemUClient {
   }
 
   async clear(userId?: string, agentId?: string): Promise<MemuClearResponse> {
-    return this.request<MemuClearResponse>("/clear", { user_id: userId, agent_id: agentId });
+    const body: Record<string, string> = {};
+    if (userId) body.user_id = userId;
+    if (agentId) body.agent_id = agentId;
+    return this.request<MemuClearResponse>("/clear", body);
   }
 
   async categories(userId: string, agentId?: string): Promise<MemuCategoriesResponse> {
-    return this.request<MemuCategoriesResponse>("/categories", { user_id: userId, agent_id: agentId });
+    const body: Record<string, string> = { user_id: userId };
+    if (agentId) body.agent_id = agentId;
+    return this.request<MemuCategoriesResponse>("/categories", body);
   }
 }

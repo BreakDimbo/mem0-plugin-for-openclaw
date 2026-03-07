@@ -73,7 +73,8 @@ psql -h localhost -U postgres -c "SELECT * FROM pg_extension WHERE extname = 've
         "config": {
           "memu": {
             "baseUrl": "http://127.0.0.1:8000",
-            "timeoutMs": 1500,
+            "timeoutMs": 5000,
+            "cbResetMs": 10000,
             "healthCheckPath": "/debug"
           },
           "scope": {
@@ -176,7 +177,8 @@ Sync:
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
 | `baseUrl` | string | `http://127.0.0.1:8000` | memU Server 地址 |
-| `timeoutMs` | number | `1500` | 请求超时（500-30000） |
+| `timeoutMs` | number | `5000` | 请求超时（500-30000） |
+| `cbResetMs` | number | `10000` | Circuit Breaker 从 open 到 half-open 的重试窗口（1000-120000） |
 | `healthCheckPath` | string | `/debug` | 健康检查路径 |
 
 ### scope — 作用域隔离

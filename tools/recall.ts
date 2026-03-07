@@ -16,6 +16,7 @@ export function createRecallTool(
   cache: LRUCache<MemuMemoryRecord[]>,
   config: MemuPluginConfig,
   metrics: Metrics,
+  toolCtx?: PluginHookContext,
 ) {
   return {
     name: "memory_recall",
@@ -29,12 +30,12 @@ export function createRecallTool(
       },
       required: ["query"] as const,
     },
-    execute: async (_id: string, args: { query: string; limit?: number; category?: string }, _ctx?: PluginHookContext) => {
+    execute: async (_id: string, args: { query: string; limit?: number; category?: string }) => {
       metrics.recallTotal++;
       const start = Date.now();
 
       try {
-        const scope = buildDynamicScope(config.scope, _ctx);
+        const scope = buildDynamicScope(config.scope, toolCtx);
         const limit = args.limit ?? config.recall.topK;
         const cacheKey = LRUCache.buildCacheKey(
           args.query + (args.category ? `\0${args.category}` : ""),

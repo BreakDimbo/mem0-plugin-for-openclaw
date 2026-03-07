@@ -37,6 +37,7 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
     const client = new MemUClient(
       config.memu.baseUrl,
       config.memu.timeoutMs,
+      config.memu.cbResetMs,
       config.memu.healthCheckPath,
       api.logger,
     );
@@ -71,19 +72,19 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
     }
 
     // ========================================================================
-    // Tools
+    // Tools (factory pattern to capture runtime context)
     // ========================================================================
 
-    api.registerTool(createRecallTool(adapter, cache, config, metrics));
-    api.registerTool(createStoreTool(outbox, config));
-    api.registerTool(createForgetTool(adapter, config));
-    api.registerTool(createStatsTool(client, cache, outbox, metrics));
+    api.registerTool((ctx: any) => createRecallTool(adapter, cache, config, metrics, ctx));
+    api.registerTool((ctx: any) => createStoreTool(outbox, config, ctx));
+    api.registerTool((ctx: any) => createForgetTool(adapter, config, ctx));
+    api.registerTool((ctx: any) => createStatsTool(client, cache, outbox, metrics, ctx));
 
     // ========================================================================
     // Commands
     // ========================================================================
 
-    api.registerCommand(createMemuCommand(client, adapter, cache, outbox, metrics, sync, config));
+    api.registerCommand(createMemuCommand(client, adapter, cache, outbox, metrics, sync, config, api.runtime));
 
     // ========================================================================
     // Service lifecycle

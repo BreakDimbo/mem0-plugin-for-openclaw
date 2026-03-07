@@ -38,7 +38,8 @@
         "type": "object",
         "properties": {
           "baseUrl": { "type": "string", "default": "http://127.0.0.1:8000" },
-          "timeoutMs": { "type": "number", "default": 1500, "minimum": 500, "maximum": 30000 },
+          "timeoutMs": { "type": "number", "default": 5000, "minimum": 500, "maximum": 30000 },
+          "cbResetMs": { "type": "number", "default": 10000, "minimum": 1000, "maximum": 120000 },
           "healthCheckPath": { "type": "string", "default": "/debug" }
         }
       },

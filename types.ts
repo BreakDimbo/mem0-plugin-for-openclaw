@@ -103,6 +103,7 @@ export type MemuPluginConfig = {
   memu: {
     baseUrl: string;
     timeoutMs: number;
+    cbResetMs: number;
     healthCheckPath: string;
   };
   scope: ScopeConfig;
@@ -141,7 +142,8 @@ export type MemuPluginConfig = {
 export const DEFAULT_CONFIG: MemuPluginConfig = {
   memu: {
     baseUrl: "http://127.0.0.1:8000",
-    timeoutMs: 1500,
+    timeoutMs: 12000,
+    cbResetMs: 10_000,
     healthCheckPath: "/debug",
   },
   scope: {
@@ -215,18 +217,39 @@ export type PluginHookContext = {
   workspaceDir?: string;
 };
 
+function inferAgentIdFromSession(ctx?: PluginHookContext): string | undefined {
+  const raw = ctx?.sessionKey ?? ctx?.sessionId;
+  if (!raw || typeof raw !== "string") return undefined;
+  // OpenClaw common form: "agent:<agentId>:<lane...>"
+  if (raw.startsWith("agent:")) {
+    const parts = raw.split(":");
+    if (parts.length >= 2 && parts[1]) return parts[1];
+  }
+  return undefined;
+}
+
 /**
  * Build a MemoryScope that merges static config with runtime context.
  * Runtime ctx.agentId / ctx.channelId take precedence over config values,
  * enabling multi-agent isolation without per-agent config.
  */
 export function buildDynamicScope(cfg: ScopeConfig, ctx?: PluginHookContext): MemoryScope {
+  const inferredAgentId = inferAgentIdFromSession(ctx);
   const merged: ScopeConfig = {
     ...cfg,
-    agentId: ctx?.agentId ?? cfg.agentId,
+    agentId: ctx?.agentId ?? inferredAgentId ?? cfg.agentId,
     channelId: ctx?.channelId ?? cfg.channelId,
   };
-  return buildScope(merged);
+
+  const scope = buildScope(merged);
+
+  // Prefer the real OpenClaw sessionKey when available.
+  // This improves isolation/dedupe across conversations and aligns metadata/resource URLs.
+  if (ctx?.sessionKey && typeof ctx.sessionKey === "string" && ctx.sessionKey.trim()) {
+    scope.sessionKey = ctx.sessionKey.trim();
+  }
+
+  return scope;
 }
 
 function bool(v: unknown, def: boolean): boolean {
@@ -235,6 +258,13 @@ function bool(v: unknown, def: boolean): boolean {
 
 function num(v: unknown, def: number): number {
   return typeof v === "number" && v > 0 ? v : def;
+}
+
+function numInRange(v: unknown, def: number, min: number, max: number): number {
+  if (typeof v !== "number" || !Number.isFinite(v)) return def;
+  if (v < min) return min;
+  if (v > max) return max;
+  return v;
 }
 
 function str(v: unknown, def: string): string {
@@ -258,7 +288,8 @@ export function loadConfig(raw?: Record<string, unknown>): MemuPluginConfig {
   return {
     memu: {
       baseUrl: str(m.baseUrl, DEFAULT_CONFIG.memu.baseUrl),
-      timeoutMs: num(m.timeoutMs, DEFAULT_CONFIG.memu.timeoutMs),
+      timeoutMs: numInRange(m.timeoutMs, DEFAULT_CONFIG.memu.timeoutMs, 500, 30_000),
+      cbResetMs: numInRange(m.cbResetMs, DEFAULT_CONFIG.memu.cbResetMs, 1_000, 120_000),
       healthCheckPath: str(m.healthCheckPath, DEFAULT_CONFIG.memu.healthCheckPath),
     },
     scope: {
