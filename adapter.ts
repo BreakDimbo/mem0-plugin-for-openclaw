@@ -16,6 +16,7 @@ export class MemUAdapter {
   private defaultScope: MemoryScope;
   private recallMethod: "rag" | "llm";
   private logger: Logger;
+  private warnedUnsupportedScopeFields = false;
 
   constructor(client: MemUClient, scopeConfig: ScopeConfig, logger: Logger, recallMethod: "rag" | "llm" = "rag") {
     this.client = client;
@@ -52,8 +53,11 @@ export class MemUAdapter {
    * Build memU `where` filter from scope per §7.2 scope mapping.
    * - userId → where.user_id
    * - agentId → where.agent_id__in = [agentId]
-   * - channelId → where.channel_id (if isolateByChannel)
-   * - threadId → where.thread_id (if isolateByThread)
+   *
+   * NOTE:
+   * memU user scope filter currently supports user_id / agent_id only.
+   * channel_id/thread_id in where triggers server 500:
+   * "Unknown filter field 'channel_id' for current user scope".
    */
   private buildWhereFilter(scope: MemoryScope): Record<string, unknown> {
     const where: Record<string, unknown> = {};
@@ -63,11 +67,12 @@ export class MemUAdapter {
     if (scope.agentId) {
       where.agent_id__in = [scope.agentId];
     }
-    if (this.scopeConfig.isolateByChannel && scope.channelId) {
-      where.channel_id = scope.channelId;
-    }
-    if (this.scopeConfig.isolateByThread && scope.threadId) {
-      where.thread_id = scope.threadId;
+    if (
+      !this.warnedUnsupportedScopeFields &&
+      ((this.scopeConfig.isolateByChannel && scope.channelId) || (this.scopeConfig.isolateByThread && scope.threadId))
+    ) {
+      this.warnedUnsupportedScopeFields = true;
+      this.logger.warn("memu-adapter: channel/thread isolation requested but memU scope filter does not support channel_id/thread_id; falling back to user/agent isolation");
     }
     return where;
   }
@@ -81,9 +86,17 @@ export class MemUAdapter {
     if (!this.enforceScope(scope)) return [];
 
     try {
+      const normalizedQuery = typeof query === "string" ? query.trim() : "";
+      if (!normalizedQuery) return [];
+      const maxQueryChars = Math.max(200, Math.min(4000, opts?.maxContextChars ?? 1200));
+      const queryForRetrieve = normalizedQuery.length > maxQueryChars ? normalizedQuery.slice(0, maxQueryChars) : normalizedQuery;
+      if (queryForRetrieve.length < normalizedQuery.length) {
+        this.logger.warn(`memu-adapter: recall query truncated from ${normalizedQuery.length} to ${queryForRetrieve.length} chars`);
+      }
+
       const where = this.buildWhereFilter(scope);
       const res = await this.client.retrieve({
-        query,
+        query: queryForRetrieve,
         where,
         method: this.recallMethod,
         limit: opts?.maxItems,
