@@ -8,7 +8,7 @@ import type { MemuPluginConfig, PluginHookContext } from "../types.js";
 import { buildDynamicScope } from "../types.js";
 import { audit } from "../security.js";
 
-export function createForgetTool(adapter: MemUAdapter, config: MemuPluginConfig) {
+export function createForgetTool(adapter: MemUAdapter, config: MemuPluginConfig, toolCtx?: PluginHookContext) {
   return {
     name: "memory_forget",
     description:
@@ -22,12 +22,12 @@ export function createForgetTool(adapter: MemUAdapter, config: MemuPluginConfig)
       },
       required: ["confirm"] as const,
     },
-    execute: async (_id: string, args: { confirm: boolean; memoryId?: string; query?: string }, _ctx?: PluginHookContext) => {
+    execute: async (_id: string, args: { confirm: boolean; memoryId?: string; query?: string }) => {
       if (!args.confirm) {
         return { text: "Deletion cancelled. Set confirm=true to proceed." };
       }
 
-      const scope = buildDynamicScope(config.scope, _ctx);
+      const scope = buildDynamicScope(config.scope, toolCtx);
 
       // If memoryId is provided, attempt targeted deletion
       // Note: memU-server /clear API currently only supports scope-level clearing.

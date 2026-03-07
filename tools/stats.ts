@@ -7,13 +7,14 @@ import type { MemUClient } from "../client.js";
 import type { LRUCache } from "../cache.js";
 import type { OutboxWorker } from "../outbox.js";
 import type { Metrics } from "../metrics.js";
-import type { MemuMemoryRecord } from "../types.js";
+import type { MemuMemoryRecord, PluginHookContext } from "../types.js";
 
 export function createStatsTool(
   client: MemUClient,
   cache: LRUCache<MemuMemoryRecord[]>,
   outbox: OutboxWorker,
   metrics: Metrics,
+  _toolCtx?: PluginHookContext,
 ) {
   return {
     name: "memory_stats",
