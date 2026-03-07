@@ -1,0 +1,7 @@
+{
+  "name": "@openclaw/memory-memu",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "memU long-term memory integration for OpenClaw",
+  "openclaw.extensions": ["./index.ts"]
+}

@@ -1,0 +1,104 @@
+{
+  "id": "memory-memu",
+  "name": "memU Enhanced Memory",
+  "description": "Enhanced memory plugin with memU for long-term structured recall, scoped retrieval, and async capture",
+  "kind": "memory",
+  "version": "1.0.0",
+  "uiHints": {
+    "baseUrl": {
+      "label": "memU Server URL",
+      "placeholder": "http://127.0.0.1:8000",
+      "help": "Base URL of the memU-server instance"
+    },
+    "userId": {
+      "label": "User ID",
+      "placeholder": "default_user",
+      "help": "User identifier for memU storage"
+    },
+    "autoCapture": {
+      "label": "Auto-Capture",
+      "help": "Automatically capture durable facts from user messages"
+    },
+    "autoRecall": {
+      "label": "Auto-Recall",
+      "help": "Automatically inject relevant memories into agent context"
+    },
+    "scoreThreshold": {
+      "label": "Relevance Threshold",
+      "placeholder": "0.30",
+      "advanced": true,
+      "help": "Minimum relevance score for memory injection (0.0-1.0)"
+    }
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "memu": {
+        "type": "object",
+        "properties": {
+          "baseUrl": { "type": "string", "default": "http://127.0.0.1:8000" },
+          "timeoutMs": { "type": "number", "default": 1500, "minimum": 500, "maximum": 30000 },
+          "healthCheckPath": { "type": "string", "default": "/debug" }
+        }
+      },
+      "scope": {
+        "type": "object",
+        "properties": {
+          "userId": { "type": "string", "default": "default_user" },
+          "agentId": { "type": "string", "default": "main" },
+          "channelId": { "type": "string" },
+          "threadId": { "type": "string" },
+          "tenantId": { "type": "string" },
+          "requireUserId": { "type": "boolean", "default": true },
+          "requireAgentId": { "type": "boolean", "default": true },
+          "isolateByChannel": { "type": "boolean", "default": true },
+          "isolateByThread": { "type": "boolean", "default": true }
+        }
+      },
+      "recall": {
+        "type": "object",
+        "properties": {
+          "enabled": { "type": "boolean", "default": true },
+          "method": { "type": "string", "enum": ["rag", "llm"], "default": "rag" },
+          "topK": { "type": "number", "default": 3, "minimum": 1, "maximum": 20 },
+          "scoreThreshold": { "type": "number", "default": 0.30, "minimum": 0, "maximum": 1 },
+          "maxContextChars": { "type": "number", "default": 1200, "minimum": 200, "maximum": 5000 },
+          "cacheTtlMs": { "type": "number", "default": 60000, "minimum": 0, "maximum": 600000 },
+          "cacheMaxSize": { "type": "number", "default": 100 }
+        }
+      },
+      "capture": {
+        "type": "object",
+        "properties": {
+          "enabled": { "type": "boolean", "default": true },
+          "maxItemsPerRun": { "type": "number", "default": 3, "minimum": 1, "maximum": 10 },
+          "minChars": { "type": "number", "default": 10 },
+          "maxChars": { "type": "number", "default": 500 },
+          "dedupeThreshold": { "type": "number", "default": 0.95 }
+        }
+      },
+      "outbox": {
+        "type": "object",
+        "properties": {
+          "enabled": { "type": "boolean", "default": true },
+          "concurrency": { "type": "number", "default": 2 },
+          "batchSize": { "type": "number", "default": 10 },
+          "maxRetries": { "type": "number", "default": 5 },
+          "drainTimeoutMs": { "type": "number", "default": 5000 },
+          "persistPath": { "type": "string", "description": "Directory for outbox persistence files", "default": "~/.openclaw/data/memory-memu" },
+          "flushIntervalMs": { "type": "number", "default": 10000, "description": "Outbox flush interval in milliseconds" }
+        }
+      },
+      "sync": {
+        "type": "object",
+        "properties": {
+          "flushToMarkdown": { "type": "boolean", "default": true },
+          "flushIntervalSec": { "type": "number", "default": 300 },
+          "memoryFilePath": { "type": "string", "description": "Path to MEMORY.md for sync writeback" }
+        }
+      }
+    },
+    "required": []
+  }
+}
