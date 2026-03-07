@@ -89,6 +89,7 @@ export type MemuCategoriesResponse = {
 
 export type ScopeConfig = {
   userId: string;
+  userIdByAgent?: Record<string, string>;
   agentId: string;
   channelId?: string;
   threadId?: string;
@@ -148,6 +149,7 @@ export const DEFAULT_CONFIG: MemuPluginConfig = {
   },
   scope: {
     userId: "default_user",
+    userIdByAgent: undefined,
     agentId: "main",
     channelId: undefined,
     threadId: undefined,
@@ -235,9 +237,12 @@ function inferAgentIdFromSession(ctx?: PluginHookContext): string | undefined {
  */
 export function buildDynamicScope(cfg: ScopeConfig, ctx?: PluginHookContext): MemoryScope {
   const inferredAgentId = inferAgentIdFromSession(ctx);
+  const resolvedAgentId = ctx?.agentId ?? inferredAgentId ?? cfg.agentId;
+  const mappedUserId = cfg.userIdByAgent?.[resolvedAgentId];
   const merged: ScopeConfig = {
     ...cfg,
-    agentId: ctx?.agentId ?? inferredAgentId ?? cfg.agentId,
+    userId: mappedUserId ?? cfg.userId,
+    agentId: resolvedAgentId,
     channelId: ctx?.channelId ?? cfg.channelId,
   };
 
@@ -275,6 +280,15 @@ function optStr(v: unknown): string | undefined {
   return typeof v === "string" && v.length > 0 ? v : undefined;
 }
 
+function strMap(v: unknown): Record<string, string> | undefined {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return undefined;
+  const out: Record<string, string> = {};
+  for (const [k, raw] of Object.entries(v as Record<string, unknown>)) {
+    if (typeof raw === "string" && raw.trim()) out[k] = raw.trim();
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
 export function loadConfig(raw?: Record<string, unknown>): MemuPluginConfig {
   if (!raw) return { ...DEFAULT_CONFIG };
 
@@ -294,6 +308,7 @@ export function loadConfig(raw?: Record<string, unknown>): MemuPluginConfig {
     },
     scope: {
       userId: str(sc.userId, DEFAULT_CONFIG.scope.userId),
+      userIdByAgent: strMap(sc.userIdByAgent),
       agentId: str(sc.agentId, DEFAULT_CONFIG.scope.agentId),
       channelId: optStr(sc.channelId),
       threadId: optStr(sc.threadId),
