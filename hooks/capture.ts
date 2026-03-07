@@ -25,6 +25,31 @@ function isInjectedMemory(text: string): boolean {
   return text.includes("<relevant-memories>") || text.includes("</relevant-memories>");
 }
 
+function asRecord(v: unknown): Record<string, unknown> | null {
+  return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
+}
+
+function extractMessageText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((block) => {
+      const rec = asRecord(block);
+      if (!rec) return "";
+      if (rec.type !== "text") return "";
+      return typeof rec.text === "string" ? rec.text : "";
+    })
+    .filter(Boolean)
+    .join("\n");
+}
+
+function extractUserTextFromAgentEndMessage(msg: unknown): string {
+  const rec = asRecord(msg);
+  if (!rec) return "";
+  if (rec.role !== "user") return "";
+  return extractMessageText(rec.content).trim();
+}
+
 // Simple text similarity via character trigram overlap
 function trigramSimilarity(a: string, b: string): number {
   const trigramsOf = (s: string): Set<string> => {
@@ -56,7 +81,7 @@ export function createCaptureHook(
   metrics: Metrics,
   sync: MarkdownSync,
 ) {
-  return async (event: { messages?: Array<{ role: string; content?: string | Array<{ type: string; text?: string }> }> }, ctx: PluginHookContext) => {
+  return async (event: { messages?: unknown[] }, ctx: PluginHookContext) => {
     if (!config.capture.enabled) return;
     if (!event.messages || event.messages.length === 0) return;
 
@@ -74,18 +99,7 @@ export function createCaptureHook(
     let localEvaluated = 0;
 
     for (const msg of event.messages) {
-      if (msg.role !== "user") continue;
-
-      let text = "";
-      if (typeof msg.content === "string") {
-        text = msg.content;
-      } else if (Array.isArray(msg.content)) {
-        text = msg.content
-          .filter((b) => b.type === "text" && b.text)
-          .map((b) => b.text!)
-          .join("\n");
-      }
-
+      const text = extractUserTextFromAgentEndMessage(msg);
       if (!text) continue;
 
       localEvaluated++;

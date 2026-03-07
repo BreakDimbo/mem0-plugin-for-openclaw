@@ -26,6 +26,12 @@ import { createStatsTool } from "./tools/stats.js";
 
 import { createMemuCommand } from "./cli.js";
 
+const HOOK_PRIORITY = {
+  recall: 100,
+  capture: 100,
+  messageReceived: 100,
+} as const;
+
 const memoryMemuPlugin: OpenClawPluginDefinition = {
   id: "memory-memu",
   name: "memU Enhanced Memory",
@@ -67,14 +73,20 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
     // ========================================================================
 
     if (config.recall.enabled) {
-      api.on("before_prompt_build", createRecallHook(adapter, cache, inbound, config, api.logger, metrics, sync));
+      api.on("before_prompt_build", createRecallHook(adapter, cache, inbound, config, api.logger, metrics, sync), {
+        priority: HOOK_PRIORITY.recall,
+      });
     }
 
     if (config.capture.enabled) {
-      api.on("agent_end", createCaptureHook(outbox, cache, config, api.logger, metrics, sync));
+      api.on("agent_end", createCaptureHook(outbox, cache, config, api.logger, metrics, sync), {
+        priority: HOOK_PRIORITY.capture,
+      });
     }
 
-    api.on("message_received", createMessageReceivedHook(inbound, api.logger));
+    api.on("message_received", createMessageReceivedHook(inbound, api.logger), {
+      priority: HOOK_PRIORITY.messageReceived,
+    });
 
     // ========================================================================
     // Tools (factory pattern to capture runtime context)
@@ -97,7 +109,7 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
 
     api.registerService({
       id: "memory-memu",
-      start: async () => {
+      start: async (_ctx) => {
         const healthy = await client.healthCheck();
         if (healthy) {
           api.logger.info(`memory-memu: Connected to ${config.memu.baseUrl}`);
@@ -115,7 +127,7 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
 
         api.logger.info("memory-memu: service started");
       },
-      stop: async () => {
+      stop: async (_ctx) => {
         // Graceful shutdown: drain outbox with timeout
         if (config.outbox.enabled) {
           await outbox.drain(config.outbox.drainTimeoutMs);
