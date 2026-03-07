@@ -108,22 +108,49 @@ export class MemUAdapter {
       }
 
       const items = Array.isArray(res.result.items) ? res.result.items : [];
+      const categories = Array.isArray(res.result.categories) ? res.result.categories : [];
 
       let records: MemuMemoryRecord[] = items
         .map((item: unknown) => {
           if (!item || typeof item !== "object") return null;
           const obj = item as Record<string, unknown>;
+          const createdAtRaw = obj.created_at ?? obj.updated_at;
+          const createdAt =
+            typeof createdAtRaw === "number"
+              ? createdAtRaw
+              : typeof createdAtRaw === "string"
+                ? Date.parse(createdAtRaw)
+                : undefined;
           return {
             id: typeof obj.id === "string" ? obj.id : undefined,
-            text: String(obj.text ?? obj.content ?? obj.description ?? ""),
-            category: String(obj.category ?? obj.category_name ?? ""),
+            text: String(obj.text ?? obj.content ?? obj.summary ?? obj.description ?? ""),
+            category: String(obj.category ?? obj.category_name ?? obj.memory_type ?? "general"),
             score: typeof obj.score === "number" ? obj.score : undefined,
             source: "memu_item" as const,
             scope,
-            createdAt: typeof obj.created_at === "number" ? obj.created_at : undefined,
+            createdAt: typeof createdAt === "number" && Number.isFinite(createdAt) ? createdAt : undefined,
           } satisfies MemuMemoryRecord;
         })
         .filter((r): r is MemuMemoryRecord => r !== null && r.text.length > 0);
+
+      if (records.length === 0 && categories.length > 0) {
+        records = categories
+          .map((cat: unknown) => {
+            if (!cat || typeof cat !== "object") return null;
+            const obj = cat as Record<string, unknown>;
+            const text = String(obj.summary ?? obj.description ?? "");
+            if (!text) return null;
+            return {
+              id: typeof obj.id === "string" ? obj.id : undefined,
+              text,
+              category: String(obj.name ?? "category"),
+              score: typeof obj.score === "number" ? obj.score : undefined,
+              source: "memu_item" as const,
+              scope,
+            } satisfies MemuMemoryRecord;
+          })
+          .filter((r): r is MemuMemoryRecord => r !== null && r.text.length > 0);
+      }
 
       // Filter by category if specified
       if (opts?.category) {
@@ -189,7 +216,7 @@ export class MemUAdapter {
         metadata: enrichedMeta,
         resourceUrl,
         modality: "conversation",
-        user: { user_id: scope.userId },
+        user: { user_id: scope.userId, agent_id: scope.agentId },
       });
 
       return res?.status === "success";

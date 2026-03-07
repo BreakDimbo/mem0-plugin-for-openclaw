@@ -24,7 +24,7 @@ export type MemorizeParams = {
   metadata?: Record<string, unknown>;
   resourceUrl?: string;
   modality?: string;
-  user?: { user_id: string };
+  user?: { user_id: string; agent_id?: string };
 };
 
 type Logger = { info(msg: string): void; warn(msg: string): void };

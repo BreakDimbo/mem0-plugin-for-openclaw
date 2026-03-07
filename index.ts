@@ -10,12 +10,14 @@ import type { MemuMemoryRecord } from "./types.js";
 import { MemUClient } from "./client.js";
 import { MemUAdapter } from "./adapter.js";
 import { LRUCache } from "./cache.js";
+import { InboundMessageCache } from "./inbound-cache.js";
 import { OutboxWorker } from "./outbox.js";
 import { MarkdownSync } from "./sync.js";
 import { Metrics } from "./metrics.js";
 
 import { createRecallHook } from "./hooks/recall.js";
 import { createCaptureHook } from "./hooks/capture.js";
+import { createMessageReceivedHook } from "./hooks/message-received.js";
 
 import { createRecallTool } from "./tools/recall.js";
 import { createStoreTool } from "./tools/store.js";
@@ -43,6 +45,7 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
     );
     const adapter = new MemUAdapter(client, config.scope, api.logger, config.recall.method);
     const cache = new LRUCache<MemuMemoryRecord[]>(config.recall.cacheMaxSize, config.recall.cacheTtlMs);
+    const inbound = new InboundMessageCache(`${config.outbox.persistPath}/inbound-message-cache.json`);
     const metrics = new Metrics();
 
     const outbox = new OutboxWorker(adapter, api.logger, {
@@ -64,12 +67,14 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
     // ========================================================================
 
     if (config.recall.enabled) {
-      api.on("before_agent_start", createRecallHook(adapter, cache, config, api.logger, metrics, sync));
+      api.on("before_prompt_build", createRecallHook(adapter, cache, inbound, config, api.logger, metrics, sync));
     }
 
     if (config.capture.enabled) {
       api.on("agent_end", createCaptureHook(outbox, cache, config, api.logger, metrics, sync));
     }
+
+    api.on("message_received", createMessageReceivedHook(inbound, api.logger));
 
     // ========================================================================
     // Tools (factory pattern to capture runtime context)
