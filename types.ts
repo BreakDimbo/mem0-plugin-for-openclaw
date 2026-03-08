@@ -32,6 +32,7 @@ export type CoreMemoryRecord = {
   category?: string;
   key: string;
   value: string;
+  importance?: number;
   scope: MemoryScope;
   source?: string;
   score?: number;

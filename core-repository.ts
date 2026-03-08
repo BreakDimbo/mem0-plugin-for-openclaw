@@ -68,6 +68,7 @@ export class CoreMemoryRepository {
         category: typeof obj.category === "string" ? obj.category : undefined,
         key,
         value,
+        importance: typeof obj.importance === "number" ? obj.importance : undefined,
         source: typeof obj.source === "string" ? obj.source : undefined,
         score: typeof obj.score === "number" ? obj.score : undefined,
         metadata: asRecord(obj.metadata) ?? undefined,
@@ -109,9 +110,9 @@ export class CoreMemoryRepository {
         const scoreA = a.score ?? 0;
         const scoreB = b.score ?? 0;
         if (scoreA !== scoreB) return scoreB - scoreA;
-        // Then by importance desc
-        const impA = a.metadata?.importance ?? 5;
-        const impB = b.metadata?.importance ?? 5;
+        // Then by importance desc (top-level field, not metadata)
+        const impA = a.importance ?? (a.metadata?.importance as number | undefined) ?? 5;
+        const impB = b.importance ?? (b.metadata?.importance as number | undefined) ?? 5;
         if (impA !== impB) return impB - impA;
         // Finally by updatedAt desc (most recent first)
         return (b.updatedAt ?? 0) - (a.updatedAt ?? 0);
