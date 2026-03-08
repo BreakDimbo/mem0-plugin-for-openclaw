@@ -9,6 +9,8 @@ import type { LRUCache } from "./cache.js";
 import type { OutboxWorker } from "./outbox.js";
 import type { Metrics } from "./metrics.js";
 import type { MarkdownSync } from "./sync.js";
+import type { CoreMemoryRepository } from "./core-repository.js";
+import type { CoreProposalQueue } from "./core-proposals.js";
 import type { MemuPluginConfig, MemuMemoryRecord, PluginHookContext } from "./types.js";
 import { buildDynamicScope } from "./types.js";
 import { formatMemoriesContext, getAuditLog } from "./security.js";
@@ -63,9 +65,19 @@ function resolvePeerFromPluginCommandCtx(ctx: any): { kind: "direct" | "group" |
   };
 }
 
+function parseCoreRef(raw: string | undefined): { id?: string; key?: string } {
+  const token = (raw ?? "").trim();
+  if (!token) return {};
+  if (token.startsWith("id:")) return { id: token.slice(3).trim() || undefined };
+  if (token.startsWith("key:")) return { key: token.slice(4).trim() || undefined };
+  return token.includes(".") ? { key: token } : { id: token };
+}
+
 export function createMemuCommand(
   client: MemUClient,
   adapter: MemUAdapter,
+  coreRepo: CoreMemoryRepository,
+  proposalQueue: CoreProposalQueue,
   cache: LRUCache<MemuMemoryRecord[]>,
   outbox: OutboxWorker,
   metrics: Metrics,
@@ -75,7 +87,7 @@ export function createMemuCommand(
 ) {
   return {
     name: "memu",
-    description: "memU memory management. Usage: /memu [status|search <query>|flush|audit|dashboard]",
+    description: "memU memory management. Usage: /memu [status|search|flush|audit|dashboard|core ...]",
     acceptsArgs: true,
     handler: async (ctx: any) => {
       const args = (typeof ctx?.args === "string" ? ctx.args : "").trim();
@@ -137,6 +149,10 @@ export function createMemuCommand(
           `  Sent:         ${outbox.sent}`,
           `  Failed:       ${outbox.failed}`,
           `  Dead Letters: ${outbox.deadLetterCount}`,
+          "",
+          "Core:",
+          `  Enabled:           ${config.core.enabled}`,
+          `  Pending Proposals: ${proposalQueue.pendingCount}`,
           "",
           "Sync:",
           `  Enabled:  ${config.sync.flushToMarkdown}`,
@@ -208,6 +224,84 @@ export function createMemuCommand(
         return { text: ["Audit Log:", "──────────", ...lines].join("\n") };
       }
 
+      if (action === "core") {
+        const sub = tokens[1]?.toLowerCase() ?? "list";
+        const ref = parseCoreRef(tokens[2]);
+
+        if (sub === "list") {
+          const maybeLimit = Number.parseInt(tokens[2] ?? "", 10);
+          const limit = Number.isFinite(maybeLimit) ? maybeLimit : config.core.topK;
+          const query = Number.isFinite(maybeLimit) ? tokens.slice(3).join(" ") : tokens.slice(2).join(" ");
+          const records = await coreRepo.list(runtimeScope, {
+            limit,
+            query: query || undefined,
+          });
+          if (records.length === 0) return { text: "No core memories found." };
+          return { text: records.map((r) => `- ${r.id} [${r.key}] ${r.value}`).join("\n") };
+        }
+
+        if (sub === "upsert") {
+          const key = (tokens[2] ?? "").trim();
+          const value = tokens.slice(3).join(" ").trim();
+          if (!key || !value) return { text: "Usage: /memu core upsert <key> <value>" };
+          const ok = await coreRepo.upsert(runtimeScope, { key, value, source: "cli" });
+          return { text: ok ? `Core memory upserted: ${key}` : "Core memory upsert rejected or failed." };
+        }
+
+        if (sub === "delete") {
+          if (!ref.id && !ref.key) return { text: "Usage: /memu core delete <id|key:...>" };
+          const ok = await coreRepo.delete(runtimeScope, ref);
+          return { text: ok ? "Core memory deleted." : "Core memory delete failed." };
+        }
+
+        if (sub === "touch") {
+          if (!ref.id && !ref.key) return { text: "Usage: /memu core touch <id|key:...>" };
+          const ok = await coreRepo.touch(runtimeScope, ref);
+          return { text: ok ? "Core memory touched." : "Core memory touch failed." };
+        }
+
+        if (sub === "proposals") {
+          const limit = tokens[2] ? Number.parseInt(tokens[2], 10) : 20;
+          const items = proposalQueue.list("pending", Number.isFinite(limit) ? limit : 20);
+          if (items.length === 0) return { text: "No pending proposals." };
+          return { text: items.map((p) => `- ${p.id} [${p.key}] ${p.value} (${p.reason})`).join("\n") };
+        }
+
+        if (sub === "approve") {
+          const proposalId = (tokens[2] ?? "").trim();
+          if (!proposalId) return { text: "Usage: /memu core approve <proposalId>" };
+          const proposal = proposalQueue.approve(proposalId, "cli");
+          if (!proposal) return { text: "Proposal not found or already reviewed." };
+          const ok = await coreRepo.upsert(proposal.scope, {
+            key: proposal.key,
+            value: proposal.value,
+            source: "proposal-approved-cli",
+            metadata: { proposal_id: proposal.id },
+          });
+          return { text: ok ? `Proposal approved and stored: ${proposal.id}` : `Proposal approved but store failed: ${proposal.id}` };
+        }
+
+        if (sub === "reject") {
+          const proposalId = (tokens[2] ?? "").trim();
+          if (!proposalId) return { text: "Usage: /memu core reject <proposalId>" };
+          const proposal = proposalQueue.reject(proposalId, "cli");
+          return { text: proposal ? `Proposal rejected: ${proposal.id}` : "Proposal not found or already reviewed." };
+        }
+
+        return {
+          text: [
+            "Usage:",
+            "  /memu core list [limit] [query]",
+            "  /memu core upsert <key> <value>",
+            "  /memu core delete <id|key:...>",
+            "  /memu core touch <id|key:...>",
+            "  /memu core proposals [limit]",
+            "  /memu core approve <proposalId>",
+            "  /memu core reject <proposalId>",
+          ].join("\n"),
+        };
+      }
+
       return {
         text: [
           "Usage:",
@@ -216,6 +310,7 @@ export function createMemuCommand(
           "  /memu flush           — flush pending outbox items",
           "  /memu dashboard       — full metrics dashboard",
           "  /memu audit [limit]   — view audit log",
+          "  /memu core ...        — manage core memories and proposals",
         ].join("\n"),
       };
     },

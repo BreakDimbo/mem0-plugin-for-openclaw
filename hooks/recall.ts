@@ -10,7 +10,8 @@ import type { Metrics } from "../metrics.js";
 import type { MarkdownSync } from "../sync.js";
 import type { MemuPluginConfig, MemuMemoryRecord, PluginHookContext } from "../types.js";
 import { buildDynamicScope } from "../types.js";
-import { formatMemoriesContext } from "../security.js";
+import type { CoreMemoryRepository } from "../core-repository.js";
+import { applyInjectionBudget, formatCoreMemoriesContext, formatMemoriesContext } from "../security.js";
 
 type Logger = { info(msg: string): void; warn(msg: string): void };
 
@@ -147,6 +148,7 @@ function sanitizePromptQuery(raw: string): string {
 
 export function createRecallHook(
   adapter: MemUAdapter,
+  coreRepo: CoreMemoryRepository,
   cache: LRUCache<MemuMemoryRecord[]>,
   inbound: InboundMessageCache,
   config: MemuPluginConfig,
@@ -155,7 +157,7 @@ export function createRecallHook(
   sync: MarkdownSync,
 ) {
   return async (event: { prompt?: string; messages?: Array<{ role: string; content?: string | Array<{ type: string; text?: string }> }> }, ctx: PluginHookContext) => {
-    if (!config.recall.enabled) return;
+    if (!config.recall.enabled && !config.core.enabled) return;
 
     if (ctx.agentId && ctx.workspaceDir) {
       sync.registerAgent(ctx.agentId, ctx.workspaceDir);
@@ -186,30 +188,44 @@ export function createRecallHook(
 
     try {
       const scope = buildDynamicScope(config.scope, ctx);
-      const cacheKey = LRUCache.buildCacheKey(query, scope.sessionKey, config.recall.topK);
-      const cached = cache.get(cacheKey);
+      let memoryContext = "";
+      if (config.recall.enabled) {
+        const cacheKey = LRUCache.buildCacheKey(query, scope.sessionKey, config.recall.topK);
+        const cached = cache.get(cacheKey);
 
-      let memories: MemuMemoryRecord[];
-      if (cached) {
-        memories = cached;
-        metrics.recallHits++;
-        logger.info(`recall-hook: cache hit key=${cacheKey} count=${memories.length}`);
-      } else {
-        memories = await adapter.recall(query, scope, {
-          maxItems: config.recall.topK,
-          maxContextChars: config.recall.maxContextChars,
+        let memories: MemuMemoryRecord[];
+        if (cached) {
+          memories = cached;
+          metrics.recallHits++;
+          logger.info(`recall-hook: cache hit key=${cacheKey} count=${memories.length}`);
+        } else {
+          memories = await adapter.recall(query, scope, {
+            maxItems: config.recall.topK,
+            maxContextChars: config.recall.maxContextChars,
+          });
+          metrics.recallMisses++;
+          if (memories.length > 0) cache.set(cacheKey, memories);
+          logger.info(`recall-hook: fetched ${memories.length} memories for query="${query.slice(0, 60)}..."`);
+        }
+
+        const filtered = memories.filter((m) => m.score === undefined || m.score >= config.recall.scoreThreshold);
+        memoryContext = filtered.length > 0 ? formatMemoriesContext(filtered) : "";
+      }
+
+      let coreContext = "";
+      if (config.core.enabled) {
+        const coreMemories = await coreRepo.list(scope, {
+          query,
+          limit: config.core.topK,
+          touchOnRead: config.core.touchOnRecall,
         });
-        metrics.recallMisses++;
-        if (memories.length > 0) cache.set(cacheKey, memories);
-        logger.info(`recall-hook: fetched ${memories.length} memories for query="${query.slice(0, 60)}..."`);
+        coreContext = formatCoreMemoriesContext(coreMemories);
       }
 
       metrics.recordRecallLatency(Date.now() - start);
-
-      const filtered = memories.filter((m) => m.score === undefined || m.score >= config.recall.scoreThreshold);
-      if (filtered.length === 0) return;
-
-      return { prependContext: formatMemoriesContext(filtered) };
+      const injected = applyInjectionBudget([coreContext, memoryContext], config.recall.injectionBudgetChars);
+      if (!injected) return;
+      return { prependContext: injected };
     } catch (err) {
       metrics.recallErrors++;
       metrics.recordRecallLatency(Date.now() - start);

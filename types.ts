@@ -27,6 +27,32 @@ export type MemuMemoryRecord = {
   createdAt?: number;
 };
 
+export type CoreMemoryRecord = {
+  id: string;
+  key: string;
+  value: string;
+  scope: MemoryScope;
+  source?: string;
+  score?: number;
+  metadata?: Record<string, unknown>;
+  createdAt?: number;
+  updatedAt?: number;
+  touchedAt?: number;
+};
+
+export type CoreMemoryProposal = {
+  id: string;
+  text: string;
+  key: string;
+  value: string;
+  reason: string;
+  scope: MemoryScope;
+  createdAt: number;
+  status: "pending" | "approved" | "rejected";
+  reviewedAt?: number;
+  reviewer?: string;
+};
+
 export type OutboxItem = {
   id: string;
   createdAt: number;
@@ -114,8 +140,18 @@ export type MemuPluginConfig = {
     topK: number;
     scoreThreshold: number;
     maxContextChars: number;
+    injectionBudgetChars: number;
     cacheTtlMs: number;
     cacheMaxSize: number;
+  };
+  core: {
+    enabled: boolean;
+    topK: number;
+    maxItemChars: number;
+    autoExtractProposals: boolean;
+    humanReviewRequired: boolean;
+    touchOnRecall: boolean;
+    proposalQueueMax: number;
   };
   capture: {
     enabled: boolean;
@@ -165,8 +201,18 @@ export const DEFAULT_CONFIG: MemuPluginConfig = {
     topK: 3,
     scoreThreshold: 0.30,
     maxContextChars: 1200,
+    injectionBudgetChars: 1600,
     cacheTtlMs: 60_000,
     cacheMaxSize: 100,
+  },
+  core: {
+    enabled: true,
+    topK: 8,
+    maxItemChars: 240,
+    autoExtractProposals: true,
+    humanReviewRequired: true,
+    touchOnRecall: true,
+    proposalQueueMax: 200,
   },
   capture: {
     enabled: true,
@@ -295,6 +341,7 @@ export function loadConfig(raw?: Record<string, unknown>): MemuPluginConfig {
   const m = (raw.memu ?? {}) as Record<string, unknown>;
   const sc = (raw.scope ?? {}) as Record<string, unknown>;
   const r = (raw.recall ?? {}) as Record<string, unknown>;
+  const co = (raw.core ?? {}) as Record<string, unknown>;
   const c = (raw.capture ?? {}) as Record<string, unknown>;
   const o = (raw.outbox ?? {}) as Record<string, unknown>;
   const s = (raw.sync ?? {}) as Record<string, unknown>;
@@ -324,8 +371,18 @@ export function loadConfig(raw?: Record<string, unknown>): MemuPluginConfig {
       topK: num(r.topK, DEFAULT_CONFIG.recall.topK),
       scoreThreshold: typeof r.scoreThreshold === "number" ? r.scoreThreshold : DEFAULT_CONFIG.recall.scoreThreshold,
       maxContextChars: num(r.maxContextChars, DEFAULT_CONFIG.recall.maxContextChars),
+      injectionBudgetChars: numInRange(r.injectionBudgetChars, DEFAULT_CONFIG.recall.injectionBudgetChars, 300, 20_000),
       cacheTtlMs: num(r.cacheTtlMs, DEFAULT_CONFIG.recall.cacheTtlMs),
       cacheMaxSize: num(r.cacheMaxSize, DEFAULT_CONFIG.recall.cacheMaxSize),
+    },
+    core: {
+      enabled: bool(co.enabled, DEFAULT_CONFIG.core.enabled),
+      topK: numInRange(co.topK, DEFAULT_CONFIG.core.topK, 1, 50),
+      maxItemChars: numInRange(co.maxItemChars, DEFAULT_CONFIG.core.maxItemChars, 30, 2_000),
+      autoExtractProposals: bool(co.autoExtractProposals, DEFAULT_CONFIG.core.autoExtractProposals),
+      humanReviewRequired: bool(co.humanReviewRequired, DEFAULT_CONFIG.core.humanReviewRequired),
+      touchOnRecall: bool(co.touchOnRecall, DEFAULT_CONFIG.core.touchOnRecall),
+      proposalQueueMax: numInRange(co.proposalQueueMax, DEFAULT_CONFIG.core.proposalQueueMax, 10, 5_000),
     },
     capture: {
       enabled: bool(c.enabled, DEFAULT_CONFIG.capture.enabled),

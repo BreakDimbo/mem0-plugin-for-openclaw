@@ -65,8 +65,21 @@
           "topK": { "type": "number", "default": 3, "minimum": 1, "maximum": 20 },
           "scoreThreshold": { "type": "number", "default": 0.30, "minimum": 0, "maximum": 1 },
           "maxContextChars": { "type": "number", "default": 1200, "minimum": 200, "maximum": 5000 },
+          "injectionBudgetChars": { "type": "number", "default": 1600, "minimum": 300, "maximum": 20000 },
           "cacheTtlMs": { "type": "number", "default": 60000, "minimum": 0, "maximum": 600000 },
           "cacheMaxSize": { "type": "number", "default": 100 }
+        }
+      },
+      "core": {
+        "type": "object",
+        "properties": {
+          "enabled": { "type": "boolean", "default": true },
+          "topK": { "type": "number", "default": 8, "minimum": 1, "maximum": 50 },
+          "maxItemChars": { "type": "number", "default": 240, "minimum": 30, "maximum": 2000 },
+          "autoExtractProposals": { "type": "boolean", "default": true },
+          "humanReviewRequired": { "type": "boolean", "default": true },
+          "touchOnRecall": { "type": "boolean", "default": true },
+          "proposalQueueMax": { "type": "number", "default": 200, "minimum": 10, "maximum": 5000 }
         }
       },
       "capture": {

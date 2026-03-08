@@ -10,6 +10,9 @@ import type { MarkdownSync } from "../sync.js";
 import type { MemuPluginConfig, MemuMemoryRecord, PluginHookContext } from "../types.js";
 import { buildDynamicScope } from "../types.js";
 import { shouldCapture } from "../security.js";
+import type { CoreMemoryRepository } from "../core-repository.js";
+import { extractCoreProposal } from "../core-proposals.js";
+import type { CoreProposalQueue } from "../core-proposals.js";
 
 type Logger = { info(msg: string): void; warn(msg: string): void };
 
@@ -75,6 +78,8 @@ function trigramSimilarity(a: string, b: string): number {
 
 export function createCaptureHook(
   outbox: OutboxWorker,
+  coreRepo: CoreMemoryRepository,
+  proposalQueue: CoreProposalQueue,
   cache: LRUCache<MemuMemoryRecord[]>,
   config: MemuPluginConfig,
   logger: Logger,
@@ -97,6 +102,7 @@ export function createCaptureHook(
     let localFiltered = 0;
     let localDeduped = 0;
     let localEvaluated = 0;
+    let localProposals = 0;
 
     for (const msg of event.messages) {
       const text = extractUserTextFromAgentEndMessage(msg);
@@ -136,10 +142,28 @@ export function createCaptureHook(
     for (const text of toCapture) {
       outbox.enqueue(text, scope);
       metrics.captureCaptured++;
+
+      if (config.core.enabled && config.core.autoExtractProposals) {
+        const draft = extractCoreProposal(text, scope);
+        if (draft) {
+          if (config.core.humanReviewRequired) {
+            proposalQueue.enqueue(draft);
+            localProposals++;
+          } else {
+            const ok = await coreRepo.upsert(scope, {
+              key: draft.key,
+              value: draft.value,
+              source: "capture-auto",
+              metadata: { reason: draft.reason, proposal_text: draft.text },
+            });
+            if (ok) localProposals++;
+          }
+        }
+      }
     }
 
     if (toCapture.length > 0) {
-      logger.info(`capture-hook: enqueued ${toCapture.length} items (evaluated: ${localEvaluated}, filtered: ${localFiltered}, deduped: ${localDeduped})`);
+      logger.info(`capture-hook: enqueued ${toCapture.length} items (evaluated: ${localEvaluated}, filtered: ${localFiltered}, deduped: ${localDeduped}, core-proposals: ${localProposals})`);
     }
   };
 }

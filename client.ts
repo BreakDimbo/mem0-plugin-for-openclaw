@@ -27,6 +27,30 @@ export type MemorizeParams = {
   user?: { user_id: string; agent_id?: string };
 };
 
+export type CoreListParams = {
+  userId: string;
+  agentId: string;
+  limit?: number;
+};
+
+export type CoreUpsertParams = {
+  userId: string;
+  agentId: string;
+  key: string;
+  value: string;
+  source?: string;
+  metadata?: Record<string, unknown>;
+};
+
+export type CoreDeleteParams = {
+  userId: string;
+  agentId: string;
+  id?: string;
+  key?: string;
+};
+
+export type CoreTouchParams = CoreDeleteParams;
+
 type Logger = { info(msg: string): void; warn(msg: string): void };
 
 export class MemUClient {
@@ -267,5 +291,48 @@ export class MemUClient {
     const body: Record<string, string> = { user_id: userId };
     if (agentId) body.agent_id = agentId;
     return this.request<MemuCategoriesResponse>("/categories", body);
+  }
+
+  async coreList(params: CoreListParams): Promise<{ status: string; result: unknown }> {
+    const body: Record<string, unknown> = {
+      user_id: params.userId,
+      agent_id: params.agentId,
+    };
+    if (typeof params.limit === "number" && Number.isFinite(params.limit) && params.limit > 0) {
+      body.limit = params.limit;
+    }
+    return this.request<{ status: string; result: unknown }>("/core/list", body);
+  }
+
+  async coreUpsert(params: CoreUpsertParams): Promise<{ status: string; result: unknown }> {
+    const body: Record<string, unknown> = {
+      user_id: params.userId,
+      agent_id: params.agentId,
+      key: params.key,
+      value: params.value,
+    };
+    if (params.source) body.source = params.source;
+    if (params.metadata && Object.keys(params.metadata).length > 0) body.metadata = params.metadata;
+    return this.request<{ status: string; result: unknown }>("/core/upsert", body);
+  }
+
+  async coreDelete(params: CoreDeleteParams): Promise<{ status: string; result: unknown }> {
+    const body: Record<string, unknown> = {
+      user_id: params.userId,
+      agent_id: params.agentId,
+    };
+    if (params.id) body.id = params.id;
+    if (params.key) body.key = params.key;
+    return this.request<{ status: string; result: unknown }>("/core/delete", body);
+  }
+
+  async coreTouch(params: CoreTouchParams): Promise<{ status: string; result: unknown }> {
+    const body: Record<string, unknown> = {
+      user_id: params.userId,
+      agent_id: params.agentId,
+    };
+    if (params.id) body.id = params.id;
+    if (params.key) body.key = params.key;
+    return this.request<{ status: string; result: unknown }>("/core/touch", body);
   }
 }

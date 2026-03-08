@@ -14,6 +14,8 @@ import { InboundMessageCache } from "./inbound-cache.js";
 import { OutboxWorker } from "./outbox.js";
 import { MarkdownSync } from "./sync.js";
 import { Metrics } from "./metrics.js";
+import { CoreMemoryRepository } from "./core-repository.js";
+import { CoreProposalQueue } from "./core-proposals.js";
 
 import { createRecallHook } from "./hooks/recall.js";
 import { createCaptureHook } from "./hooks/capture.js";
@@ -23,6 +25,11 @@ import { createRecallTool } from "./tools/recall.js";
 import { createStoreTool } from "./tools/store.js";
 import { createForgetTool } from "./tools/forget.js";
 import { createStatsTool } from "./tools/stats.js";
+import { createCoreListTool } from "./tools/core-list.js";
+import { createCoreUpsertTool } from "./tools/core-upsert.js";
+import { createCoreDeleteTool } from "./tools/core-delete.js";
+import { createCoreTouchTool } from "./tools/core-touch.js";
+import { createCoreProposalTool } from "./tools/core-proposals.js";
 
 import { createMemuCommand } from "./cli.js";
 
@@ -50,9 +57,11 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
       api.logger,
     );
     const adapter = new MemUAdapter(client, config.scope, api.logger, config.recall.method);
+    const coreRepo = new CoreMemoryRepository(client, api.logger, config.core.maxItemChars);
     const cache = new LRUCache<MemuMemoryRecord[]>(config.recall.cacheMaxSize, config.recall.cacheTtlMs);
     const inbound = new InboundMessageCache(`${config.outbox.persistPath}/inbound-message-cache.json`);
     const metrics = new Metrics();
+    const proposalQueue = new CoreProposalQueue(config.outbox.persistPath, config.core.proposalQueueMax, api.logger);
 
     const outbox = new OutboxWorker(adapter, api.logger, {
       concurrency: config.outbox.concurrency,
@@ -72,14 +81,14 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
     // Hooks
     // ========================================================================
 
-    if (config.recall.enabled) {
-      api.on("before_prompt_build", createRecallHook(adapter, cache, inbound, config, api.logger, metrics, sync), {
+    if (config.recall.enabled || config.core.enabled) {
+      api.on("before_prompt_build", createRecallHook(adapter, coreRepo, cache, inbound, config, api.logger, metrics, sync), {
         priority: HOOK_PRIORITY.recall,
       });
     }
 
     if (config.capture.enabled) {
-      api.on("agent_end", createCaptureHook(outbox, cache, config, api.logger, metrics, sync), {
+      api.on("agent_end", createCaptureHook(outbox, coreRepo, proposalQueue, cache, config, api.logger, metrics, sync), {
         priority: HOOK_PRIORITY.capture,
       });
     }
@@ -96,12 +105,17 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
     api.registerTool((ctx: any) => createStoreTool(outbox, config, ctx));
     api.registerTool((ctx: any) => createForgetTool(adapter, config, ctx));
     api.registerTool((ctx: any) => createStatsTool(client, cache, outbox, metrics, ctx));
+    api.registerTool((ctx: any) => createCoreListTool(coreRepo, config, ctx));
+    api.registerTool((ctx: any) => createCoreUpsertTool(coreRepo, config, ctx));
+    api.registerTool((ctx: any) => createCoreDeleteTool(coreRepo, config, ctx));
+    api.registerTool((ctx: any) => createCoreTouchTool(coreRepo, config, ctx));
+    api.registerTool((_ctx: any) => createCoreProposalTool(proposalQueue, coreRepo));
 
     // ========================================================================
     // Commands
     // ========================================================================
 
-    api.registerCommand(createMemuCommand(client, adapter, cache, outbox, metrics, sync, config, api.runtime));
+    api.registerCommand(createMemuCommand(client, adapter, coreRepo, proposalQueue, cache, outbox, metrics, sync, config, api.runtime));
 
     // ========================================================================
     // Service lifecycle
@@ -121,6 +135,7 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
         if (config.outbox.enabled) {
           await outbox.start();
         }
+        await proposalQueue.start();
 
         // Start markdown sync
         sync.start();
@@ -133,6 +148,7 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
           await outbox.drain(config.outbox.drainTimeoutMs);
           outbox.stop();
         }
+        await proposalQueue.stop();
 
         sync.stop();
         cache.clear();
