@@ -5,19 +5,22 @@ import { buildDynamicScope } from "../types.js";
 export function createCoreTouchTool(repo: CoreMemoryRepository, config: MemuPluginConfig, toolCtx?: PluginHookContext) {
   return {
     name: "memory_core_touch",
-    description: "Refresh recency of a core memory by id or key.",
+    description: "Refresh recency for core memory ids[].",
     parameters: {
       type: "object" as const,
       properties: {
         id: { type: "string" as const, description: "Core memory id" },
-        key: { type: "string" as const, description: "Core memory key" },
+        ids: { type: "array" as const, items: { type: "string" as const }, description: "Core memory ids to touch" },
+        kind: { type: "string" as const, description: "Touch kind: access | injected" },
       },
     },
-    execute: async (_id: string, args: { id?: string; key?: string }) => {
-      if (!args.id && !args.key) return { text: "Provide id or key." };
+    execute: async (_id: string, args: { id?: string; ids?: string[]; kind?: "access" | "injected" }) => {
+      const ids = Array.isArray(args.ids) && args.ids.length > 0 ? args.ids : args.id ? [args.id] : [];
+      if (ids.length === 0) return { text: "Provide id or ids[]." };
       const scope = buildDynamicScope(config.scope, toolCtx);
-      const ok = await repo.touch(scope, { id: args.id, key: args.key });
-      return { text: ok ? "Core memory touched." : "Touch failed." };
+      const kind = args.kind === "injected" ? "injected" : "access";
+      const ok = await repo.touch(scope, { ids, kind });
+      return { text: ok ? `Core memory touched: ${ids.length}` : "Touch failed." };
     },
   };
 }

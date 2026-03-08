@@ -29,7 +29,9 @@ export function createCoreProposalTool(
       if (action === "approve") {
         const proposal = queue.approve(args.proposalId, "tool");
         if (!proposal) return { text: "Proposal not found or already reviewed." };
+        const category = proposal.key.split(".")[0] || "general";
         const ok = await repo.upsert(proposal.scope, {
+          category,
           key: proposal.key,
           value: proposal.value,
           source: "proposal-approved",

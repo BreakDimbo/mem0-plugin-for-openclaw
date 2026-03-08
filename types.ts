@@ -29,6 +29,7 @@ export type MemuMemoryRecord = {
 
 export type CoreMemoryRecord = {
   id: string;
+  category?: string;
   key: string;
   value: string;
   scope: MemoryScope;

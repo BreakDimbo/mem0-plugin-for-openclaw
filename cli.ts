@@ -237,7 +237,7 @@ export function createMemuCommand(
             query: query || undefined,
           });
           if (records.length === 0) return { text: "No core memories found." };
-          return { text: records.map((r) => `- ${r.id} [${r.key}] ${r.value}`).join("\n") };
+          return { text: records.map((r) => `- ${r.id} [${r.category ?? "general"}/${r.key}] ${r.value}`).join("\n") };
         }
 
         if (sub === "upsert") {
@@ -272,7 +272,9 @@ export function createMemuCommand(
           if (!proposalId) return { text: "Usage: /memu core approve <proposalId>" };
           const proposal = proposalQueue.approve(proposalId, "cli");
           if (!proposal) return { text: "Proposal not found or already reviewed." };
+          const category = proposal.key.split(".")[0] || "general";
           const ok = await coreRepo.upsert(proposal.scope, {
+            category,
             key: proposal.key,
             value: proposal.value,
             source: "proposal-approved-cli",

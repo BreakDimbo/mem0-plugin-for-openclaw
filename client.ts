@@ -36,20 +36,55 @@ export type CoreListParams = {
 export type CoreUpsertParams = {
   userId: string;
   agentId: string;
-  key: string;
-  value: string;
-  source?: string;
-  metadata?: Record<string, unknown>;
+  items: Array<{
+    category: string;
+    key: string;
+    value: string;
+    importance?: number;
+    provenance?: string;
+    validUntil?: string;
+  }>;
 };
 
 export type CoreDeleteParams = {
   userId: string;
   agentId: string;
-  id?: string;
-  key?: string;
+  category: string;
+  key: string;
 };
 
-export type CoreTouchParams = CoreDeleteParams;
+export type CoreTouchParams = {
+  userId: string;
+  agentId: string;
+  ids: string[];
+  kind: "access" | "injected";
+};
+
+export type CoreListResponse = {
+  status: string;
+  items: unknown[];
+  total: number;
+  limit: number;
+};
+
+export type CoreUpsertResponse = {
+  status: string;
+  result: {
+    upserted: number;
+    replaced: number;
+    evicted: number;
+  };
+};
+
+export type CoreDeleteResponse = {
+  status: string;
+  deleted: boolean;
+};
+
+export type CoreTouchResponse = {
+  status: string;
+  touched: number;
+};
 
 type Logger = { info(msg: string): void; warn(msg: string): void };
 
@@ -293,7 +328,7 @@ export class MemUClient {
     return this.request<MemuCategoriesResponse>("/categories", body);
   }
 
-  async coreList(params: CoreListParams): Promise<{ status: string; result: unknown }> {
+  async coreList(params: CoreListParams): Promise<CoreListResponse> {
     const body: Record<string, unknown> = {
       user_id: params.userId,
       agent_id: params.agentId,
@@ -301,38 +336,35 @@ export class MemUClient {
     if (typeof params.limit === "number" && Number.isFinite(params.limit) && params.limit > 0) {
       body.limit = params.limit;
     }
-    return this.request<{ status: string; result: unknown }>("/core/list", body);
+    return this.request<CoreListResponse>("/core/list", body);
   }
 
-  async coreUpsert(params: CoreUpsertParams): Promise<{ status: string; result: unknown }> {
+  async coreUpsert(params: CoreUpsertParams): Promise<CoreUpsertResponse> {
     const body: Record<string, unknown> = {
       user_id: params.userId,
       agent_id: params.agentId,
+      items: params.items,
+    };
+    return this.request<CoreUpsertResponse>("/core/upsert", body);
+  }
+
+  async coreDelete(params: CoreDeleteParams): Promise<CoreDeleteResponse> {
+    const body: Record<string, unknown> = {
+      user_id: params.userId,
+      agent_id: params.agentId,
+      category: params.category,
       key: params.key,
-      value: params.value,
     };
-    if (params.source) body.source = params.source;
-    if (params.metadata && Object.keys(params.metadata).length > 0) body.metadata = params.metadata;
-    return this.request<{ status: string; result: unknown }>("/core/upsert", body);
+    return this.request<CoreDeleteResponse>("/core/delete", body);
   }
 
-  async coreDelete(params: CoreDeleteParams): Promise<{ status: string; result: unknown }> {
+  async coreTouch(params: CoreTouchParams): Promise<CoreTouchResponse> {
     const body: Record<string, unknown> = {
       user_id: params.userId,
       agent_id: params.agentId,
+      ids: params.ids,
+      kind: params.kind,
     };
-    if (params.id) body.id = params.id;
-    if (params.key) body.key = params.key;
-    return this.request<{ status: string; result: unknown }>("/core/delete", body);
-  }
-
-  async coreTouch(params: CoreTouchParams): Promise<{ status: string; result: unknown }> {
-    const body: Record<string, unknown> = {
-      user_id: params.userId,
-      agent_id: params.agentId,
-    };
-    if (params.id) body.id = params.id;
-    if (params.key) body.key = params.key;
-    return this.request<{ status: string; result: unknown }>("/core/touch", body);
+    return this.request<CoreTouchResponse>("/core/touch", body);
   }
 }

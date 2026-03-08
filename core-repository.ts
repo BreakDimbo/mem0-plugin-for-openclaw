@@ -32,6 +32,11 @@ function scoreTextMatch(query: string, key: string, value: string): number {
   return hits / qWords.length;
 }
 
+function inferCategoryFromKey(key: string): string {
+  const head = key.split(".")[0]?.trim().toLowerCase();
+  return head || "general";
+}
+
 export class CoreMemoryRepository {
   private readonly client: MemUClient;
   private readonly logger: Logger;
@@ -43,23 +48,15 @@ export class CoreMemoryRepository {
     this.maxItemChars = maxItemChars;
   }
 
-  private normalizeRecords(result: unknown, scope: MemoryScope): CoreMemoryRecord[] {
-    const root = asRecord(result);
-    const candidates =
-      (Array.isArray(root?.memories) && root?.memories) ||
-      (Array.isArray(root?.items) && root?.items) ||
-      (Array.isArray(root?.records) && root?.records) ||
-      (Array.isArray(result) ? result : []);
-
-    if (!Array.isArray(candidates)) return [];
-
+  private normalizeRecords(items: unknown, scope: MemoryScope): CoreMemoryRecord[] {
+    const candidates = Array.isArray(items) ? items : [];
     const out: CoreMemoryRecord[] = [];
     for (const raw of candidates) {
       const obj = asRecord(raw);
       if (!obj) continue;
 
       const id = String(obj.id ?? obj.memory_id ?? obj.key ?? "");
-      const key = String(obj.key ?? obj.name ?? obj.memory_key ?? "").trim().toLowerCase();
+      const key = String(obj.key ?? obj.name ?? obj.memory_key ?? "").trim();
       const valueRaw = String(obj.value ?? obj.text ?? obj.content ?? "").trim();
       if (!id || !key || !valueRaw) continue;
 
@@ -68,6 +65,7 @@ export class CoreMemoryRepository {
 
       out.push({
         id,
+        category: typeof obj.category === "string" ? obj.category : undefined,
         key,
         value,
         source: typeof obj.source === "string" ? obj.source : undefined,
@@ -84,7 +82,7 @@ export class CoreMemoryRepository {
 
   async list(
     scope: MemoryScope,
-    opts?: { query?: string; limit?: number; touchOnRead?: boolean },
+    opts?: { query?: string; limit?: number },
   ): Promise<CoreMemoryRecord[]> {
     try {
       const res = await this.client.coreList({
@@ -94,7 +92,7 @@ export class CoreMemoryRepository {
       });
       if (res.status !== "success") return [];
 
-      let records = this.normalizeRecords(res.result, scope);
+      let records = this.normalizeRecords(res.items, scope);
       if (opts?.query) {
         const q = opts.query;
         records = records
@@ -104,12 +102,7 @@ export class CoreMemoryRepository {
       }
       const limit = opts?.limit ?? records.length;
       records = records.slice(0, limit);
-
-      if (opts?.touchOnRead) {
-        for (const r of records) {
-          this.touch(scope, { id: r.id }).catch(() => {});
-        }
-      }
+      this.logger.info(`core-repo: list agent=${scope.agentId} count=${records.length}`);
       return records;
     } catch (err) {
       this.logger.warn(`core-repo: list failed: ${String(err)}`);
@@ -119,7 +112,15 @@ export class CoreMemoryRepository {
 
   async upsert(
     scope: MemoryScope,
-    payload: { key: string; value: string; source?: string; metadata?: Record<string, unknown> },
+    payload: {
+      category?: string;
+      key: string;
+      value: string;
+      importance?: number;
+      source?: string;
+      validUntil?: string;
+      metadata?: Record<string, unknown>;
+    },
   ): Promise<boolean> {
     const key = payload.key.trim().toLowerCase();
     const value = sanitizeCoreValue(payload.value, this.maxItemChars);
@@ -130,10 +131,16 @@ export class CoreMemoryRepository {
       const res = await this.client.coreUpsert({
         userId: scope.userId,
         agentId: scope.agentId,
-        key,
-        value,
-        source: payload.source ?? "memory-memu",
-        metadata: payload.metadata,
+        items: [
+          {
+            category: payload.category?.trim() || inferCategoryFromKey(key),
+            key,
+            value,
+            importance: payload.importance,
+            provenance: payload.source ?? "memory-memu",
+            validUntil: payload.validUntil,
+          },
+        ],
       });
       return res.status === "success";
     } catch (err) {
@@ -142,30 +149,104 @@ export class CoreMemoryRepository {
     }
   }
 
-  async delete(scope: MemoryScope, ref: { id?: string; key?: string }): Promise<boolean> {
+  async upsertMany(
+    scope: MemoryScope,
+    items: Array<{
+      category: string;
+      key: string;
+      value: string;
+      importance?: number;
+      provenance?: string;
+      validUntil?: string;
+    }>,
+  ): Promise<boolean> {
+    const normalizedItems = items
+      .map((item) => {
+        const key = item.key.trim().toLowerCase();
+        const value = sanitizeCoreValue(item.value, this.maxItemChars);
+        return {
+          category: item.category.trim() || inferCategoryFromKey(key),
+          key,
+          value,
+          importance: item.importance,
+          provenance: item.provenance,
+          validUntil: item.validUntil,
+        };
+      })
+      .filter((item) => shouldStoreCoreMemory(item.key, item.value, this.maxItemChars));
+
+    if (normalizedItems.length === 0) return false;
+
+    try {
+      const res = await this.client.coreUpsert({
+        userId: scope.userId,
+        agentId: scope.agentId,
+        items: normalizedItems,
+      });
+      return res.status === "success";
+    } catch (err) {
+      this.logger.warn(`core-repo: upsertMany failed: ${String(err)}`);
+      return false;
+    }
+  }
+
+  async delete(scope: MemoryScope, ref: { category?: string; key?: string; id?: string }): Promise<boolean> {
+    let category = ref.category?.trim();
+    let key = ref.key?.trim().toLowerCase();
+    if (!category && key) {
+      category = inferCategoryFromKey(key);
+    }
+    if ((!category || !key) && ref.id) {
+      const records = await this.list(scope, { limit: 200 });
+      const found = records.find((r) => r.id === ref.id);
+      if (found) {
+        category = found.category;
+        key = found.key.trim().toLowerCase();
+      }
+    }
+    if (!category || !key) return false;
+
     try {
       const res = await this.client.coreDelete({
         userId: scope.userId,
         agentId: scope.agentId,
-        id: ref.id,
-        key: ref.key?.trim().toLowerCase(),
+        category,
+        key,
       });
-      return res.status === "success";
+      return res.status === "success" && res.deleted;
     } catch (err) {
       this.logger.warn(`core-repo: delete failed: ${String(err)}`);
       return false;
     }
   }
 
-  async touch(scope: MemoryScope, ref: { id?: string; key?: string }): Promise<boolean> {
+  async touch(
+    scope: MemoryScope,
+    ref: { ids?: string[]; id?: string; kind?: "access" | "injected"; category?: string; key?: string },
+  ): Promise<boolean> {
+    let ids = (ref.ids && ref.ids.length > 0 ? ref.ids : ref.id ? [ref.id] : [])
+      .map((id) => id.trim())
+      .filter(Boolean);
+
+    if (ids.length === 0 && ref.key) {
+      const records = await this.list(scope, { limit: 200 });
+      const targetKey = ref.key.trim().toLowerCase();
+      const targetCategory = ref.category?.trim();
+      ids = records
+        .filter((r) => r.key.trim().toLowerCase() === targetKey && (!targetCategory || r.category === targetCategory))
+        .map((r) => r.id);
+    }
+
+    if (ids.length === 0) return false;
+
     try {
       const res = await this.client.coreTouch({
         userId: scope.userId,
         agentId: scope.agentId,
-        id: ref.id,
-        key: ref.key?.trim().toLowerCase(),
+        ids,
+        kind: ref.kind ?? "access",
       });
-      return res.status === "success";
+      return res.status === "success" && res.touched > 0;
     } catch (err) {
       this.logger.warn(`core-repo: touch failed: ${String(err)}`);
       return false;

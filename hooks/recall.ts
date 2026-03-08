@@ -11,7 +11,7 @@ import type { MarkdownSync } from "../sync.js";
 import type { MemuPluginConfig, MemuMemoryRecord, PluginHookContext } from "../types.js";
 import { buildDynamicScope } from "../types.js";
 import type { CoreMemoryRepository } from "../core-repository.js";
-import { applyInjectionBudget, formatCoreMemoriesContext, formatMemoriesContext } from "../security.js";
+import { applyInjectionBudget, escapeForInjection, formatCoreMemoriesContext, formatMemoriesContext } from "../security.js";
 
 type Logger = { info(msg: string): void; warn(msg: string): void };
 
@@ -213,18 +213,31 @@ export function createRecallHook(
       }
 
       let coreContext = "";
+      let coreMemoriesForTouch: Array<{ id: string; category?: string; key: string; value: string }> = [];
       if (config.core.enabled) {
         const coreMemories = await coreRepo.list(scope, {
           query,
           limit: config.core.topK,
-          touchOnRead: config.core.touchOnRecall,
         });
+        logger.info(`recall-hook: core fetched count=${coreMemories.length} scope=${scope.sessionKey}`);
+        coreMemoriesForTouch = coreMemories.map((m) => ({ id: m.id, category: m.category, key: m.key, value: m.value }));
         coreContext = formatCoreMemoriesContext(coreMemories);
       }
 
       metrics.recordRecallLatency(Date.now() - start);
       const injected = applyInjectionBudget([coreContext, memoryContext], config.recall.injectionBudgetChars);
       if (!injected) return;
+      if (config.core.enabled && config.core.touchOnRecall && coreMemoriesForTouch.length > 0) {
+        const injectedIds = coreMemoriesForTouch
+          .filter((m) => {
+            const tag = m.category ? `${escapeForInjection(m.category)}/${escapeForInjection(m.key)}` : escapeForInjection(m.key);
+            return injected.includes(`[${tag}] ${escapeForInjection(m.value)}`);
+          })
+          .map((m) => m.id);
+        if (injectedIds.length > 0) {
+          coreRepo.touch(scope, { ids: injectedIds, kind: "injected" }).catch(() => {});
+        }
+      }
       return { prependContext: injected };
     } catch (err) {
       metrics.recallErrors++;

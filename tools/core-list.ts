@@ -22,7 +22,10 @@ export function createCoreListTool(repo: CoreMemoryRepository, config: MemuPlugi
       if (records.length === 0) return { text: "No core memories found." };
       return {
         text: records
-          .map((r) => `- ${r.id} [${r.key}] ${r.value}${r.score !== undefined ? ` (score=${r.score.toFixed(2)})` : ""}`)
+          .map(
+            (r) =>
+              `- ${r.id} [${r.category ?? "general"}/${r.key}] ${r.value}${r.score !== undefined ? ` (score=${r.score.toFixed(2)})` : ""}`,
+          )
           .join("\n"),
       };
     },
