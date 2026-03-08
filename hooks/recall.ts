@@ -215,8 +215,8 @@ export function createRecallHook(
       let coreContext = "";
       let coreMemoriesForTouch: Array<{ id: string; category?: string; key: string; value: string }> = [];
       if (config.core.enabled) {
+        // Fix2: Don't pass query to Core - always return top important memories
         const coreMemories = await coreRepo.list(scope, {
-          query,
           limit: config.core.topK,
         });
         logger.info(`recall-hook: core fetched count=${coreMemories.length} scope=${scope.sessionKey}`);

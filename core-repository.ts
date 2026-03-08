@@ -93,16 +93,35 @@ export class CoreMemoryRepository {
       if (res.status !== "success") return [];
 
       let records = this.normalizeRecords(res.items, scope);
+      const totalBeforeLimit = records.length;
+
+      // Calculate score if query provided (for sorting), but don't filter by score
+      // Core Memory should always return top items by importance/recency
       if (opts?.query) {
         const q = opts.query;
         records = records
-          .map((r) => ({ ...r, score: r.score ?? scoreTextMatch(q, r.key, r.value) }))
-          .filter((r) => (r.score ?? 0) > 0)
-          .sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+          .map((r) => ({ ...r, score: r.score ?? scoreTextMatch(q, r.key, r.value) }));
       }
+
+      // Sort by: score (if query) > importance > updatedAt
+      records.sort((a, b) => {
+        // First by score desc (if query was provided)
+        const scoreA = a.score ?? 0;
+        const scoreB = b.score ?? 0;
+        if (scoreA !== scoreB) return scoreB - scoreA;
+        // Then by importance desc
+        const impA = a.metadata?.importance ?? 5;
+        const impB = b.metadata?.importance ?? 5;
+        if (impA !== impB) return impB - impA;
+        // Finally by updatedAt desc (most recent first)
+        return (b.updatedAt ?? 0) - (a.updatedAt ?? 0);
+      });
+
       const limit = opts?.limit ?? records.length;
       records = records.slice(0, limit);
-      this.logger.info(`core-repo: list agent=${scope.agentId} count=${records.length}`);
+      this.logger.info(
+        `core-repo: list agent=${scope.agentId} total=${totalBeforeLimit} returned=${records.length} limit=${limit}`
+      );
       return records;
     } catch (err) {
       this.logger.warn(`core-repo: list failed: ${String(err)}`);
