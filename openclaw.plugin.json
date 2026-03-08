@@ -28,6 +28,17 @@
       "placeholder": "0.30",
       "advanced": true,
       "help": "Minimum relevance score for memory injection (0.0-1.0)"
+    },
+    "recall.hybrid.enabled": {
+      "label": "Hybrid Recall",
+      "advanced": true,
+      "help": "Use /retrieve/hybrid for recall when available"
+    },
+    "recall.hybrid.alpha": {
+      "label": "Hybrid Alpha",
+      "placeholder": "0.7",
+      "advanced": true,
+      "help": "Vector weight in hybrid retrieval (0.0-1.0)"
     }
   },
   "configSchema": {
@@ -62,6 +73,14 @@
         "properties": {
           "enabled": { "type": "boolean", "default": true },
           "method": { "type": "string", "enum": ["rag", "llm"], "default": "rag" },
+          "hybrid": {
+            "type": "object",
+            "properties": {
+              "enabled": { "type": "boolean", "default": false },
+              "alpha": { "type": "number", "default": 0.7, "minimum": 0, "maximum": 1 },
+              "fallbackToRag": { "type": "boolean", "default": true }
+            }
+          },
           "topK": { "type": "number", "default": 3, "minimum": 1, "maximum": 20 },
           "scoreThreshold": { "type": "number", "default": 0.30, "minimum": 0, "maximum": 1 },
           "maxContextChars": { "type": "number", "default": 1200, "minimum": 200, "maximum": 5000 },

@@ -19,6 +19,27 @@ export type RetrieveParams = {
   limit?: number;
 };
 
+export type RetrieveHybridParams = {
+  query: string;
+  user_id: string;
+  agent_id: string;
+  limit?: number;
+  alpha?: number;
+};
+
+export type RetrieveHybridResponse = {
+  status: string;
+  results?: Array<{
+    id?: string;
+    text?: string;
+    score?: number;
+    vscore?: number;
+    tscore?: number;
+    [key: string]: unknown;
+  }>;
+  total?: number;
+};
+
 export type MemorizeParams = {
   content: Array<{ role: string; content: { text: string }; created_at?: string }>;
   metadata?: Record<string, unknown>;
@@ -294,6 +315,21 @@ export class MemUClient {
       body.limit = params.limit;
     }
     return this.request<MemuRetrieveResponse>("/retrieve", body);
+  }
+
+  async retrieveHybrid(params: RetrieveHybridParams): Promise<RetrieveHybridResponse> {
+    const body: Record<string, unknown> = {
+      query: params.query,
+      user_id: params.user_id,
+      agent_id: params.agent_id,
+    };
+    if (params.limit !== undefined) {
+      body.limit = params.limit;
+    }
+    if (params.alpha !== undefined) {
+      body.alpha = params.alpha;
+    }
+    return this.request<RetrieveHybridResponse>("/retrieve/hybrid", body);
   }
 
   async memorize(params: MemorizeParams): Promise<MemuMemorizeResponse> {

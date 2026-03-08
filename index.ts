@@ -56,7 +56,7 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
       config.memu.healthCheckPath,
       api.logger,
     );
-    const adapter = new MemUAdapter(client, config.scope, api.logger, config.recall.method);
+    const adapter = new MemUAdapter(client, config.scope, api.logger, config.recall.method, config.recall.hybrid);
     const coreRepo = new CoreMemoryRepository(client, api.logger, config.core.maxItemChars);
     const cache = new LRUCache<MemuMemoryRecord[]>(config.recall.cacheMaxSize, config.recall.cacheTtlMs);
     const inbound = new InboundMessageCache(`${config.outbox.persistPath}/inbound-message-cache.json`);

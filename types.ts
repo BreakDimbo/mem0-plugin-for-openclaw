@@ -139,6 +139,11 @@ export type MemuPluginConfig = {
   recall: {
     enabled: boolean;
     method: "rag" | "llm";
+    hybrid: {
+      enabled: boolean;
+      alpha: number;
+      fallbackToRag: boolean;
+    };
     topK: number;
     scoreThreshold: number;
     maxContextChars: number;
@@ -200,6 +205,11 @@ export const DEFAULT_CONFIG: MemuPluginConfig = {
   recall: {
     enabled: true,
     method: "rag",
+    hybrid: {
+      enabled: false,
+      alpha: 0.7,
+      fallbackToRag: true,
+    },
     topK: 3,
     scoreThreshold: 0.30,
     maxContextChars: 1200,
@@ -370,6 +380,14 @@ export function loadConfig(raw?: Record<string, unknown>): MemuPluginConfig {
     recall: {
       enabled: bool(r.enabled, DEFAULT_CONFIG.recall.enabled),
       method: r.method === "llm" ? "llm" : DEFAULT_CONFIG.recall.method,
+      hybrid: {
+        enabled: bool((r.hybrid as Record<string, unknown> | undefined)?.enabled, DEFAULT_CONFIG.recall.hybrid.enabled),
+        alpha: numInRange((r.hybrid as Record<string, unknown> | undefined)?.alpha, DEFAULT_CONFIG.recall.hybrid.alpha, 0, 1),
+        fallbackToRag: bool(
+          (r.hybrid as Record<string, unknown> | undefined)?.fallbackToRag,
+          DEFAULT_CONFIG.recall.hybrid.fallbackToRag,
+        ),
+      },
       topK: num(r.topK, DEFAULT_CONFIG.recall.topK),
       scoreThreshold: typeof r.scoreThreshold === "number" ? r.scoreThreshold : DEFAULT_CONFIG.recall.scoreThreshold,
       maxContextChars: num(r.maxContextChars, DEFAULT_CONFIG.recall.maxContextChars),

@@ -9,20 +9,29 @@ import type { MemoryScope, MemuMemoryRecord, ScopeConfig } from "./types.js";
 import { buildScope } from "./types.js";
 
 type Logger = { info(msg: string): void; warn(msg: string): void };
+type HybridRecallConfig = { enabled: boolean; alpha: number; fallbackToRag: boolean };
 
 export class MemUAdapter {
   private client: MemUClient;
   private scopeConfig: ScopeConfig;
   private defaultScope: MemoryScope;
   private recallMethod: "rag" | "llm";
+  private hybridRecall: HybridRecallConfig;
   private logger: Logger;
   private warnedUnsupportedScopeFields = false;
 
-  constructor(client: MemUClient, scopeConfig: ScopeConfig, logger: Logger, recallMethod: "rag" | "llm" = "rag") {
+  constructor(
+    client: MemUClient,
+    scopeConfig: ScopeConfig,
+    logger: Logger,
+    recallMethod: "rag" | "llm" = "rag",
+    hybridRecall: HybridRecallConfig = { enabled: false, alpha: 0.7, fallbackToRag: true },
+  ) {
     this.client = client;
     this.scopeConfig = scopeConfig;
     this.defaultScope = buildScope(scopeConfig);
     this.recallMethod = recallMethod;
+    this.hybridRecall = hybridRecall;
     this.logger = logger;
   }
 
@@ -94,62 +103,111 @@ export class MemUAdapter {
         this.logger.warn(`memu-adapter: recall query truncated from ${normalizedQuery.length} to ${queryForRetrieve.length} chars`);
       }
 
-      const where = this.buildWhereFilter(scope);
-      const res = await this.client.retrieve({
-        query: queryForRetrieve,
-        where,
-        method: this.recallMethod,
-        limit: opts?.maxItems,
-      });
+      let records: MemuMemoryRecord[] = [];
+      let shouldFallbackToRag = !this.hybridRecall.enabled;
 
-      if (res?.status !== "success" || !res.result) {
-        this.logger.warn("memu-adapter: retrieve returned non-success or empty result");
-        return [];
+      if (this.hybridRecall.enabled) {
+        try {
+          const hybrid = await this.client.retrieveHybrid({
+            query: queryForRetrieve,
+            user_id: scope.userId,
+            agent_id: scope.agentId,
+            limit: opts?.maxItems,
+            alpha: this.hybridRecall.alpha,
+          });
+          if (hybrid?.status !== "success" || !Array.isArray(hybrid.results)) {
+            throw new Error("hybrid retrieve returned non-success");
+          }
+          records = hybrid.results
+            .map((item): MemuMemoryRecord | null => {
+              const text = typeof item?.text === "string" ? item.text : "";
+              if (!text) return null;
+              const rec: MemuMemoryRecord = {
+                id: typeof item?.id === "string" ? item.id : undefined,
+                text,
+                category: "hybrid",
+                score: typeof item?.score === "number" ? item.score : undefined,
+                source: "memu_item" as const,
+                scope,
+                metadata: {
+                  vscore: item?.vscore,
+                  tscore: item?.tscore,
+                },
+              };
+              return rec;
+            })
+            .filter((r): r is MemuMemoryRecord => r !== null);
+          this.logger.info(`memu-adapter: hybrid recall ok count=${records.length}`);
+        } catch {
+          if (this.hybridRecall.fallbackToRag) {
+            shouldFallbackToRag = true;
+            this.logger.warn("memu-adapter: hybrid recall failed, falling back to /retrieve");
+          } else {
+            return [];
+          }
+        }
       }
 
-      const items = Array.isArray(res.result.items) ? res.result.items : [];
-      const categories = Array.isArray(res.result.categories) ? res.result.categories : [];
+      if (shouldFallbackToRag) {
+        const where = this.buildWhereFilter(scope);
+        const res = await this.client.retrieve({
+          query: queryForRetrieve,
+          where,
+          method: this.recallMethod,
+          limit: opts?.maxItems,
+        });
 
-      let records: MemuMemoryRecord[] = items
-        .map((item: unknown) => {
-          if (!item || typeof item !== "object") return null;
-          const obj = item as Record<string, unknown>;
-          const createdAtRaw = obj.created_at ?? obj.updated_at;
-          const createdAt =
-            typeof createdAtRaw === "number"
-              ? createdAtRaw
-              : typeof createdAtRaw === "string"
-                ? Date.parse(createdAtRaw)
-                : undefined;
-          return {
-            id: typeof obj.id === "string" ? obj.id : undefined,
-            text: String(obj.text ?? obj.content ?? obj.summary ?? obj.description ?? ""),
-            category: String(obj.category ?? obj.category_name ?? obj.memory_type ?? "general"),
-            score: typeof obj.score === "number" ? obj.score : undefined,
-            source: "memu_item" as const,
-            scope,
-            createdAt: typeof createdAt === "number" && Number.isFinite(createdAt) ? createdAt : undefined,
-          } satisfies MemuMemoryRecord;
-        })
-        .filter((r): r is MemuMemoryRecord => r !== null && r.text.length > 0);
+        if (res?.status !== "success" || !res.result) {
+          this.logger.warn("memu-adapter: retrieve returned non-success or empty result");
+          return [];
+        }
 
-      if (records.length === 0 && categories.length > 0) {
-        records = categories
-          .map((cat: unknown) => {
-            if (!cat || typeof cat !== "object") return null;
-            const obj = cat as Record<string, unknown>;
-            const text = String(obj.summary ?? obj.description ?? "");
-            if (!text) return null;
-            return {
+        const items = Array.isArray(res.result.items) ? res.result.items : [];
+        const categories = Array.isArray(res.result.categories) ? res.result.categories : [];
+
+        records = items
+          .map((item: unknown): MemuMemoryRecord | null => {
+            if (!item || typeof item !== "object") return null;
+            const obj = item as Record<string, unknown>;
+            const createdAtRaw = obj.created_at ?? obj.updated_at;
+            const createdAt =
+              typeof createdAtRaw === "number"
+                ? createdAtRaw
+                : typeof createdAtRaw === "string"
+                  ? Date.parse(createdAtRaw)
+                  : undefined;
+            const rec: MemuMemoryRecord = {
               id: typeof obj.id === "string" ? obj.id : undefined,
-              text,
-              category: String(obj.name ?? "category"),
+              text: String(obj.text ?? obj.content ?? obj.summary ?? obj.description ?? ""),
+              category: String(obj.category ?? obj.category_name ?? obj.memory_type ?? "general"),
               score: typeof obj.score === "number" ? obj.score : undefined,
               source: "memu_item" as const,
               scope,
-            } satisfies MemuMemoryRecord;
+              createdAt: typeof createdAt === "number" && Number.isFinite(createdAt) ? createdAt : undefined,
+            };
+            return rec;
           })
           .filter((r): r is MemuMemoryRecord => r !== null && r.text.length > 0);
+
+        if (records.length === 0 && categories.length > 0) {
+          records = categories
+            .map((cat: unknown): MemuMemoryRecord | null => {
+              if (!cat || typeof cat !== "object") return null;
+              const obj = cat as Record<string, unknown>;
+              const text = String(obj.summary ?? obj.description ?? "");
+              if (!text) return null;
+              const rec: MemuMemoryRecord = {
+                id: typeof obj.id === "string" ? obj.id : undefined,
+                text,
+                category: String(obj.name ?? "category"),
+                score: typeof obj.score === "number" ? obj.score : undefined,
+                source: "memu_item" as const,
+                scope,
+              };
+              return rec;
+            })
+            .filter((r): r is MemuMemoryRecord => r !== null && r.text.length > 0);
+        }
       }
 
       // Filter by category if specified
