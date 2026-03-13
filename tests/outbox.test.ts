@@ -205,6 +205,8 @@ await test("load merges legacy shard queue files", async () => {
 
   assertEqual(outbox.sent, 1, "legacy shard item should be merged and flushed");
   assertEqual(outbox.pending, 0, "legacy shard item should not remain pending");
+  const legacySaved = JSON.parse(await readFile(join(dir, "outbox-queue-growth_hacker.json"), "utf-8"));
+  assertEqual(Array.isArray(legacySaved) ? legacySaved.length : -1, 0, "legacy shard file should be cleared after merge");
 });
 
 // -- Summary --

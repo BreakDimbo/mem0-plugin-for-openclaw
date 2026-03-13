@@ -93,6 +93,14 @@ export class OutboxWorker {
     }
   }
 
+  private async clearQueueFile(filePath: string): Promise<void> {
+    try {
+      await writeFile(filePath, "[]", "utf-8");
+    } catch (err) {
+      this.logger.warn(`outbox: failed to clear legacy shard ${basename(filePath)}: ${String(err)}`);
+    }
+  }
+
   async loadFromDisk(): Promise<void> {
     if (!this.queueFilePath) return;
 
@@ -112,6 +120,7 @@ export class OutboxWorker {
         if (shardItems.length > 0) {
           this.mergeQueueItems(shardItems);
           this.logger.warn(`outbox: merged ${shardItems.length} pending items from legacy shard ${basename(filePath)}`);
+          await this.clearQueueFile(filePath);
         }
       }
     } catch {
