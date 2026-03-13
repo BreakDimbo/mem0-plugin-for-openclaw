@@ -122,6 +122,18 @@ export function createMemuCommand(
 
       if (action === "status") {
         const healthy = await client.healthCheck();
+        const recentOutbox = outbox.recent
+          .slice(-5)
+          .map((event) => {
+            const pieces = [
+              `${new Date(event.at).toISOString()} ${event.type}`,
+              `id=${event.id}`,
+              event.agentId ? `agent=${event.agentId}` : "",
+              typeof event.retryCount === "number" ? `retry=${event.retryCount}` : "",
+              event.error ? `error=${event.error}` : "",
+            ].filter(Boolean);
+            return `  - ${pieces.join(" ")}`;
+          });
         const lines = [
           "memU Memory Status",
           "══════════════════",
@@ -146,6 +158,11 @@ export function createMemuCommand(
           `  Sent:         ${outbox.sent}`,
           `  Failed:       ${outbox.failed}`,
           `  Dead Letters: ${outbox.deadLetterCount}`,
+          `  Oldest Age:   ${outbox.oldestPendingAgeMs === null ? "none" : `${Math.round(outbox.oldestPendingAgeMs / 1000)}s`}`,
+          `  Last Enqueue: ${outbox.lastEnqueuedAt ? new Date(outbox.lastEnqueuedAt).toISOString() : "never"}`,
+          `  Last Sent:    ${outbox.lastSentAt ? new Date(outbox.lastSentAt).toISOString() : "never"}`,
+          `  Last Failed:  ${outbox.lastFailedAt ? new Date(outbox.lastFailedAt).toISOString() : "never"}`,
+          ...(recentOutbox.length > 0 ? ["  Recent:", ...recentOutbox] : []),
           "",
           "Core:",
           `  Enabled:           ${config.core.enabled}`,
@@ -197,6 +214,9 @@ export function createMemuCommand(
             failed: outbox.failed,
             pending: outbox.pending,
             deadLetterCount: outbox.deadLetterCount,
+            oldestPendingAgeMs: outbox.oldestPendingAgeMs,
+            lastSentAt: outbox.lastSentAt,
+            lastFailedAt: outbox.lastFailedAt,
           },
           cache: {
             size: cache.size,

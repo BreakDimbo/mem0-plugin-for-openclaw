@@ -22,6 +22,9 @@ export type MetricSnapshot = {
     failed: number;
     pending: number;
     deadLetters: number;
+    oldestPendingAgeMs: number | null;
+    lastSentAt: number | null;
+    lastFailedAt: number | null;
   };
   cache: {
     size: number;
@@ -74,7 +77,15 @@ export class Metrics {
   }
 
   snapshot(deps: {
-    outbox: { sent: number; failed: number; pending: number; deadLetterCount: number };
+    outbox: {
+      sent: number;
+      failed: number;
+      pending: number;
+      deadLetterCount: number;
+      oldestPendingAgeMs: number | null;
+      lastSentAt: number | null;
+      lastFailedAt: number | null;
+    };
     cache: { size: number; hits: number; misses: number; hitRate: number };
     client: {
       totalRequests: number;
@@ -102,6 +113,9 @@ export class Metrics {
         failed: deps.outbox.failed,
         pending: deps.outbox.pending,
         deadLetters: deps.outbox.deadLetterCount,
+        oldestPendingAgeMs: deps.outbox.oldestPendingAgeMs,
+        lastSentAt: deps.outbox.lastSentAt,
+        lastFailedAt: deps.outbox.lastFailedAt,
       },
       cache: {
         size: deps.cache.size,
@@ -150,6 +164,9 @@ export class Metrics {
       `  Failed:       ${snap.outbox.failed}`,
       `  Pending:      ${snap.outbox.pending}`,
       `  Dead Letters: ${snap.outbox.deadLetters}`,
+      `  Oldest Pending Age: ${snap.outbox.oldestPendingAgeMs === null ? "none" : `${Math.round(snap.outbox.oldestPendingAgeMs / 1000)}s`}`,
+      `  Last Sent:    ${snap.outbox.lastSentAt ? new Date(snap.outbox.lastSentAt).toISOString() : "never"}`,
+      `  Last Failed:  ${snap.outbox.lastFailedAt ? new Date(snap.outbox.lastFailedAt).toISOString() : "never"}`,
       "",
       "Cache:",
       `  Size:     ${snap.cache.size}`,

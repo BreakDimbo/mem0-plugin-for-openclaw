@@ -12,6 +12,15 @@ import type { OutboxItem, DeadLetterItem, MemoryScope } from "./types.js";
 
 type Logger = { info(msg: string): void; warn(msg: string): void };
 
+type OutboxRecentEvent = {
+  type: "enqueued" | "sent" | "retry" | "dead-letter";
+  id: string;
+  at: number;
+  agentId?: string;
+  retryCount?: number;
+  error?: string;
+};
+
 const BACKOFF_DELAYS = [1_000, 5_000, 30_000, 120_000];
 
 export class OutboxWorker {
@@ -32,6 +41,10 @@ export class OutboxWorker {
   // Stats
   private _sent = 0;
   private _failed = 0;
+  private _lastSentAt: number | null = null;
+  private _lastFailedAt: number | null = null;
+  private _lastEnqueuedAt: number | null = null;
+  private recentEvents: OutboxRecentEvent[] = [];
 
   constructor(
     adapter: MemUAdapter,
@@ -98,6 +111,13 @@ export class OutboxWorker {
       await writeFile(filePath, "[]", "utf-8");
     } catch (err) {
       this.logger.warn(`outbox: failed to clear legacy shard ${basename(filePath)}: ${String(err)}`);
+    }
+  }
+
+  private pushRecentEvent(event: OutboxRecentEvent): void {
+    this.recentEvents.push(event);
+    if (this.recentEvents.length > 10) {
+      this.recentEvents.splice(0, this.recentEvents.length - 10);
     }
   }
 
@@ -186,6 +206,8 @@ export class OutboxWorker {
       retryCount: 0,
       nextRetryAt: 0,
     });
+    this._lastEnqueuedAt = Date.now();
+    this.pushRecentEvent({ type: "enqueued", id, at: this._lastEnqueuedAt, agentId: scope.agentId });
 
     this.logger.info(`outbox: enqueued id=${id} (queue size: ${this.queue.length})`);
 
@@ -234,7 +256,9 @@ export class OutboxWorker {
             const idx = this.queue.findIndex((q) => q.id === item.id);
             if (idx !== -1) this.queue.splice(idx, 1);
             this._sent++;
+            this._lastSentAt = Date.now();
             changed = true;
+            this.pushRecentEvent({ type: "sent", id: item.id, at: this._lastSentAt, agentId: item.scope.agentId });
             this.logger.info(`outbox: sent id=${item.id}`);
           } else {
             item.retryCount++;
@@ -243,6 +267,7 @@ export class OutboxWorker {
               const idx = this.queue.findIndex((q) => q.id === item.id);
               if (idx !== -1) this.queue.splice(idx, 1);
               this._failed++;
+              this._lastFailedAt = Date.now();
               changed = true;
 
               const dlItem: DeadLetterItem = {
@@ -252,12 +277,27 @@ export class OutboxWorker {
               };
               this.deadLetters.push(dlItem);
               this.saveDeadLetters().catch(() => {});
+              this.pushRecentEvent({
+                type: "dead-letter",
+                id: item.id,
+                at: this._lastFailedAt,
+                agentId: item.scope.agentId,
+                retryCount: item.retryCount,
+                error: dlItem.lastError,
+              });
 
               this.logger.warn(`outbox: dead-letter id=${item.id} after ${item.retryCount} retries: ${dlItem.lastError}`);
             } else {
               const delay = BACKOFF_DELAYS[Math.min(item.retryCount - 1, BACKOFF_DELAYS.length - 1)];
               item.nextRetryAt = Date.now() + delay;
               changed = true;
+              this.pushRecentEvent({
+                type: "retry",
+                id: item.id,
+                at: Date.now(),
+                agentId: item.scope.agentId,
+                retryCount: item.retryCount,
+              });
               this.logger.warn(`outbox: retry id=${item.id} attempt=${item.retryCount} next_in=${delay}ms`);
             }
           }
@@ -332,5 +372,27 @@ export class OutboxWorker {
 
   get deadLetterCount(): number {
     return this.deadLetters.length;
+  }
+
+  get lastSentAt(): number | null {
+    return this._lastSentAt;
+  }
+
+  get lastFailedAt(): number | null {
+    return this._lastFailedAt;
+  }
+
+  get lastEnqueuedAt(): number | null {
+    return this._lastEnqueuedAt;
+  }
+
+  get oldestPendingAgeMs(): number | null {
+    if (this.queue.length === 0) return null;
+    const oldestCreatedAt = this.queue.reduce((min, item) => Math.min(min, item.createdAt), this.queue[0]?.createdAt ?? Date.now());
+    return Math.max(0, Date.now() - oldestCreatedAt);
+  }
+
+  get recent(): OutboxRecentEvent[] {
+    return [...this.recentEvents];
   }
 }

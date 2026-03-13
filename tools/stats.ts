@@ -31,6 +31,9 @@ export function createStatsTool(
           failed: outbox.failed,
           pending: outbox.pending,
           deadLetterCount: outbox.deadLetterCount,
+          oldestPendingAgeMs: outbox.oldestPendingAgeMs,
+          lastSentAt: outbox.lastSentAt,
+          lastFailedAt: outbox.lastFailedAt,
         },
         cache: {
           size: cache.size,
