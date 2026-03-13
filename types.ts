@@ -9,8 +9,6 @@ export type MemoryScope = {
   tenantId?: string;
   userId: string;
   agentId: string;
-  channelId?: string;
-  threadId?: string;
   sessionKey: string;
 };
 
@@ -44,6 +42,7 @@ export type CoreMemoryRecord = {
 
 export type CoreMemoryProposal = {
   id: string;
+  category: string;
   text: string;
   key: string;
   value: string;
@@ -119,13 +118,9 @@ export type ScopeConfig = {
   userId: string;
   userIdByAgent?: Record<string, string>;
   agentId: string;
-  channelId?: string;
-  threadId?: string;
   tenantId?: string;
   requireUserId: boolean;
   requireAgentId: boolean;
-  isolateByChannel: boolean;
-  isolateByThread: boolean;
 };
 
 export type MemuPluginConfig = {
@@ -194,13 +189,9 @@ export const DEFAULT_CONFIG: MemuPluginConfig = {
     userId: "default_user",
     userIdByAgent: undefined,
     agentId: "main",
-    channelId: undefined,
-    threadId: undefined,
     tenantId: undefined,
     requireUserId: true,
     requireAgentId: true,
-    isolateByChannel: true,
-    isolateByThread: true,
   },
   recall: {
     enabled: true,
@@ -250,10 +241,7 @@ export const DEFAULT_CONFIG: MemuPluginConfig = {
 };
 
 export function buildSessionKey(scope: ScopeConfig): string {
-  const parts = [`agent:${scope.agentId}`];
-  if (scope.channelId) parts.push(scope.channelId);
-  if (scope.threadId) parts.push(scope.threadId);
-  return parts.join(":");
+  return `agent:${scope.agentId}:main`;
 }
 
 export function buildScope(cfg: ScopeConfig): MemoryScope {
@@ -261,8 +249,6 @@ export function buildScope(cfg: ScopeConfig): MemoryScope {
     tenantId: cfg.tenantId,
     userId: cfg.userId,
     agentId: cfg.agentId,
-    channelId: cfg.channelId,
-    threadId: cfg.threadId,
     sessionKey: buildSessionKey(cfg),
   };
 }
@@ -290,7 +276,7 @@ function inferAgentIdFromSession(ctx?: PluginHookContext): string | undefined {
 
 /**
  * Build a MemoryScope that merges static config with runtime context.
- * Runtime ctx.agentId / ctx.channelId take precedence over config values,
+ * Runtime ctx.agentId / ctx.sessionKey take precedence over config values,
  * enabling multi-agent isolation without per-agent config.
  */
 export function buildDynamicScope(cfg: ScopeConfig, ctx?: PluginHookContext): MemoryScope {
@@ -301,7 +287,6 @@ export function buildDynamicScope(cfg: ScopeConfig, ctx?: PluginHookContext): Me
     ...cfg,
     userId: mappedUserId ?? cfg.userId,
     agentId: resolvedAgentId,
-    channelId: ctx?.channelId ?? cfg.channelId,
   };
 
   const scope = buildScope(merged);
@@ -369,13 +354,9 @@ export function loadConfig(raw?: Record<string, unknown>): MemuPluginConfig {
       userId: str(sc.userId, DEFAULT_CONFIG.scope.userId),
       userIdByAgent: strMap(sc.userIdByAgent),
       agentId: str(sc.agentId, DEFAULT_CONFIG.scope.agentId),
-      channelId: optStr(sc.channelId),
-      threadId: optStr(sc.threadId),
       tenantId: optStr(sc.tenantId),
       requireUserId: bool(sc.requireUserId, DEFAULT_CONFIG.scope.requireUserId),
       requireAgentId: bool(sc.requireAgentId, DEFAULT_CONFIG.scope.requireAgentId),
-      isolateByChannel: bool(sc.isolateByChannel, DEFAULT_CONFIG.scope.isolateByChannel),
-      isolateByThread: bool(sc.isolateByThread, DEFAULT_CONFIG.scope.isolateByThread),
     },
     recall: {
       enabled: bool(r.enabled, DEFAULT_CONFIG.recall.enabled),

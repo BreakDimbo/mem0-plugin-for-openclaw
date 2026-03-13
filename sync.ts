@@ -7,19 +7,28 @@
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
 import type { MemUAdapter } from "./adapter.js";
-import type { MemuPluginConfig } from "./types.js";
+import type { CoreMemoryRepository } from "./core-repository.js";
+import type { CoreMemoryRecord, MemuPluginConfig, MemoryScope } from "./types.js";
 import { audit } from "./security.js";
 
 type Logger = { info(msg: string): void; warn(msg: string): void };
 
+const GENERATED_BLOCK_START = "<!-- memory-memu:start -->";
+const GENERATED_BLOCK_END = "<!-- memory-memu:end -->";
+const LEGACY_GENERATED_HEADER = "<!-- memory-memu:generated -->";
+const GENERATED_SECTION_HEADINGS = new Set(["## Core Memory", "## Recent Long-Term Memory"]);
+
 export class MarkdownSync {
   private adapter: MemUAdapter;
+  private coreRepo: CoreMemoryRepository;
   private config: MemuPluginConfig;
   private logger: Logger;
   private timer: ReturnType<typeof setInterval> | null = null;
   private _lastSyncAt = 0;
   private _syncCount = 0;
   private _totalWritten = 0;
+  private pendingAgents = new Set<string>();
+  private debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
   /**
    * Runtime registry: agentId → workspaceDir.
@@ -27,8 +36,9 @@ export class MarkdownSync {
    */
   private agentWorkspaces = new Map<string, string>();
 
-  constructor(adapter: MemUAdapter, config: MemuPluginConfig, logger: Logger) {
+  constructor(adapter: MemUAdapter, coreRepo: CoreMemoryRepository, config: MemuPluginConfig, logger: Logger) {
     this.adapter = adapter;
+    this.coreRepo = coreRepo;
     this.config = config;
     this.logger = logger;
   }
@@ -38,10 +48,14 @@ export class MarkdownSync {
    * This enables sync to resolve memoryFilePath per-agent.
    */
   registerAgent(agentId: string, workspaceDir: string): void {
-    if (!this.agentWorkspaces.has(agentId)) {
-      this.agentWorkspaces.set(agentId, workspaceDir);
-      this.logger.info(`markdown-sync: registered agent "${agentId}" → ${workspaceDir}`);
+    const previous = this.agentWorkspaces.get(agentId);
+    this.agentWorkspaces.set(agentId, workspaceDir);
+    if (!previous) {
+      this.logger.info(`markdown-sync: registered agent "${agentId}" -> ${workspaceDir}`);
+    } else if (previous !== workspaceDir) {
+      this.logger.info(`markdown-sync: updated agent "${agentId}" workspace -> ${workspaceDir}`);
     }
+    this.scheduleSync(agentId);
   }
 
   /**
@@ -66,6 +80,122 @@ export class MarkdownSync {
       return null;
     }
     return join(workspaceDir, configured);
+  }
+
+  private renderCoreSection(memories: CoreMemoryRecord[]): string {
+    if (memories.length === 0) {
+      return "## Core Memory\n\n- No synced core memories yet.\n";
+    }
+    const lines = memories.map((memory) => {
+      const tag = `${memory.category ?? "general"}/${memory.key}`;
+      return `- [${tag}] ${memory.value}`;
+    });
+    return ["## Core Memory", "", ...lines, ""].join("\n");
+  }
+
+  private renderRecallSection(items: Array<{ text: string; category?: string; score?: number }>): string {
+    if (items.length === 0) return "";
+    const lines = items.map((item) => {
+      const parts = [`- ${item.text}`];
+      const meta: string[] = [];
+      if (item.category) meta.push(item.category);
+      if (item.score !== undefined) meta.push(`score=${item.score.toFixed(2)}`);
+      if (meta.length > 0) parts.push(` (${meta.join(", ")})`);
+      return parts.join("");
+    });
+    return ["## Recent Long-Term Memory", "", ...lines, ""].join("\n");
+  }
+
+  private buildMarkdown(scope: MemoryScope, coreMemories: CoreMemoryRecord[], recallItems: Array<{ text: string; category?: string; score?: number }>): string {
+    const header = [
+      GENERATED_BLOCK_START,
+      "<!-- memory-memu:generated -->",
+      `<!-- scope:user=${scope.userId} agent=${scope.agentId} session=${scope.sessionKey} -->`,
+      "",
+      this.renderCoreSection(coreMemories).trimEnd(),
+    ];
+    const recallSection = this.renderRecallSection(recallItems);
+    if (recallSection) {
+      header.push("", recallSection.trimEnd());
+    }
+    header.push("", GENERATED_BLOCK_END);
+    header.push("");
+    return `${header.join("\n")}\n`;
+  }
+
+  private mergeWithExisting(existing: string, generatedBlock: string): string {
+    const normalizedExisting = this.stripOrphanedMarkers(
+      this.stripMarkedGeneratedBlocks(this.stripLegacyGeneratedBlocks(existing)),
+    ).trim();
+
+    if (!normalizedExisting) {
+      return generatedBlock;
+    }
+
+    return `${generatedBlock.trimEnd()}\n\n${normalizedExisting.trimStart()}`;
+  }
+
+  private stripOrphanedMarkers(content: string): string {
+    return content
+      .split("\n")
+      .filter((line) => {
+        const trimmed = line.trim();
+        if (trimmed === GENERATED_BLOCK_START || trimmed === GENERATED_BLOCK_END) {
+          return false;
+        }
+        return true;
+      })
+      .join("\n");
+  }
+
+  private stripMarkedGeneratedBlocks(content: string): string {
+    let next = content;
+    while (true) {
+      const start = next.indexOf(GENERATED_BLOCK_START);
+      if (start < 0) break;
+      const end = next.indexOf(GENERATED_BLOCK_END, start);
+      if (end < 0) {
+        next = `${next.slice(0, start)}\n${next.slice(start + GENERATED_BLOCK_START.length)}`;
+        continue;
+      }
+      next = `${next.slice(0, start)}\n${next.slice(end + GENERATED_BLOCK_END.length)}`;
+    }
+    return next;
+  }
+
+  private stripLegacyGeneratedBlocks(content: string): string {
+    const lines = content.split("\n");
+    const out: string[] = [];
+    let i = 0;
+
+    while (i < lines.length) {
+      const line = lines[i] ?? "";
+      if (line.trim() !== LEGACY_GENERATED_HEADER) {
+        out.push(line);
+        i++;
+        continue;
+      }
+
+      i++;
+      while (i < lines.length) {
+        const current = lines[i] ?? "";
+        const trimmed = current.trim();
+        if (trimmed.startsWith("<!-- scope:")) {
+          i++;
+          continue;
+        }
+        if (!trimmed) {
+          i++;
+          continue;
+        }
+        if (trimmed.startsWith("## ") && !GENERATED_SECTION_HEADINGS.has(trimmed)) {
+          break;
+        }
+        i++;
+      }
+    }
+
+    return out.join("\n").replace(/^\s+/, "");
   }
 
   private async syncOnce(): Promise<void> {
@@ -94,72 +224,79 @@ export class MarkdownSync {
     }
   }
 
+  scheduleSync(agentId?: string): void {
+    if (!this.config.sync.flushToMarkdown) return;
+    if (agentId) {
+      this.pendingAgents.add(agentId);
+    } else {
+      for (const knownAgentId of this.agentWorkspaces.keys()) {
+        this.pendingAgents.add(knownAgentId);
+      }
+    }
+
+    if (this.debounceTimer) {
+      clearTimeout(this.debounceTimer);
+    }
+    this.debounceTimer = setTimeout(() => {
+      const pending = Array.from(this.pendingAgents);
+      this.pendingAgents.clear();
+      this.debounceTimer = null;
+      void this.flushPendingAgents(pending);
+    }, 1_000);
+  }
+
+  async forceSync(agentId?: string): Promise<{ syncedAgents: string[] }> {
+    const agents = agentId ? [agentId] : Array.from(this.agentWorkspaces.keys());
+    await this.flushPendingAgents(agents);
+    return { syncedAgents: agents };
+  }
+
+  private async flushPendingAgents(agentIds: string[]): Promise<void> {
+    for (const agentId of agentIds) {
+      await this.syncForAgent(agentId);
+    }
+  }
+
   private async syncForAgent(agentId: string): Promise<void> {
     const filePath = this.resolveFilePath(agentId);
     if (!filePath) {
+      this.logger.warn(`markdown-sync: skipped agent "${agentId}" because workspace is unknown`);
       return;
     }
 
     try {
-      // Fetch categories scoped to this agent
-      const agentCategories = await this.adapter.listCategories({ agentId });
-      if (agentCategories.length === 0) {
-        return;
-      }
+      const scope = this.adapter.resolveRuntimeScope({ agentId });
+      const coreMemories = await this.coreRepo.list(scope, {
+        limit: this.config.core.topK,
+      });
 
-      // Recall high-level memories scoped to this agent
-      const query = agentCategories.map((c) => c.name).join(", ");
-      const scopeOverride = { agentId };
-      const memories = await this.adapter.recall(query, scopeOverride, { maxItems: 20 });
+      const recallItems =
+        this.config.recall.enabled && coreMemories.length > 0
+          ? await this.adapter.recall("long-term memory summary", scope, {
+              maxItems: Math.min(8, this.config.recall.topK),
+              maxContextChars: this.config.recall.maxContextChars,
+            })
+          : [];
 
-      if (memories.length === 0) {
-        return;
-      }
-
-      // Read existing file
+      const markdown = this.buildMarkdown(scope, coreMemories, recallItems);
       let existing = "";
       try {
         existing = await readFile(filePath, "utf-8");
       } catch {
-        // File doesn't exist yet — ensure directory exists
         await mkdir(dirname(filePath), { recursive: true });
       }
-
-      // Deduplicate: skip memories whose core text already appears in the file
-      const newMemories = memories.filter((m) => {
-        const snippet = m.text.slice(0, 80);
-        return !existing.includes(snippet);
-      });
-
-      if (newMemories.length === 0) {
-        return;
-      }
-
-      // Build section to append
-      const timestamp = new Date().toISOString().slice(0, 10);
-      const section = [
-        "",
-        `## memU Synced Memories (${timestamp})`,
-        "",
-        ...newMemories.map((m) => {
-          const cat = m.category ? ` _(${m.category})_` : "";
-          const score = m.score !== undefined ? ` [score: ${m.score.toFixed(2)}]` : "";
-          return `- ${m.text}${cat}${score}`;
-        }),
-        "",
-      ].join("\n");
-
-      const updated = existing.trimEnd() + "\n" + section;
-      await writeFile(filePath, updated, "utf-8");
+      await mkdir(dirname(filePath), { recursive: true });
+      await writeFile(filePath, this.mergeWithExisting(existing, markdown), "utf-8");
 
       this._lastSyncAt = Date.now();
       this._syncCount++;
-      this._totalWritten += newMemories.length;
+      this._totalWritten += coreMemories.length + recallItems.length;
 
-      const scope = this.adapter.getDefaultScope();
-      audit("store", scope.userId, agentId, `markdown-sync: wrote ${newMemories.length} memories to ${filePath}`);
+      audit("store", scope.userId, agentId, `markdown-sync: wrote ${coreMemories.length} core + ${recallItems.length} recall items to ${filePath}`);
 
-      this.logger.info(`markdown-sync: [${agentId}] appended ${newMemories.length} memories to ${filePath}`);
+      this.logger.info(
+        `markdown-sync: [${agentId}] wrote core=${coreMemories.length} recall=${recallItems.length} -> ${filePath}`,
+      );
     } catch (err) {
       this.logger.warn(`markdown-sync: [${agentId}] error: ${String(err)}`);
     }
@@ -181,6 +318,10 @@ export class MarkdownSync {
   }
 
   stop(): void {
+    if (this.debounceTimer) {
+      clearTimeout(this.debounceTimer);
+      this.debounceTimer = null;
+    }
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = null;

@@ -79,10 +79,11 @@ psql -h localhost -U postgres -c "SELECT * FROM pg_extension WHERE extname = 've
           },
           "scope": {
             "userId": "your_user_id",
+            "userIdByAgent": {
+              "main": "your_user_id"
+            },
             "requireUserId": true,
-            "requireAgentId": true,
-            "isolateByChannel": true,
-            "isolateByThread": true
+            "requireAgentId": true
           },
           "recall": {
             "enabled": true,
@@ -122,7 +123,7 @@ psql -h localhost -U postgres -c "SELECT * FROM pg_extension WHERE extname = 've
 }
 ```
 
-> **注意：** `scope.agentId` 无需配置。插件运行时自动从 OpenClaw 上下文获取当前 agent 的 `agentId`、`channelId`、`workspaceDir`，实现多 agent 记忆隔离和 MEMORY.md 独立写入。配置中可省略 `agentId`，默认 fallback 为 `"main"`。
+> **注意：** `scope.agentId` 无需配置。插件运行时会优先从 OpenClaw 上下文获取当前 agent 的 `agentId`、`sessionKey`、`workspaceDir`，实现按 `userId + agentId` 隔离，并将 `MEMORY.md` 写回到对应 workspace。配置中的 `agentId` 仅作为 fallback。
 
 ---
 
@@ -186,16 +187,13 @@ Sync:
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
 | `userId` | string | `default_user` | 用户标识 |
+| `userIdByAgent` | object | — | 可选的 `agentId -> userId` 映射，多 agent 场景建议配置 |
 | `agentId` | string | `main` | Agent 标识（fallback 默认值，运行时自动从 `ctx.agentId` 获取） |
-| `channelId` | string | — | 渠道标识（运行时可从 `ctx.channelId` 自动获取） |
-| `threadId` | string | — | 会话线程标识（可选） |
 | `tenantId` | string | — | 租户标识（可选） |
 | `requireUserId` | boolean | `true` | 是否强制要求 userId |
 | `requireAgentId` | boolean | `true` | 是否强制要求 agentId |
-| `isolateByChannel` | boolean | `true` | 按渠道隔离检索 |
-| `isolateByThread` | boolean | `true` | 按线程隔离检索 |
 
-> **多 Agent 说明：** `agentId` 和 `channelId` 无需为每个 agent 单独配置。插件在运行时自动从 OpenClaw hook/tool 上下文中获取当前 agent 的 `agentId`、`channelId`、`workspaceDir`，配置中的值仅作为 fallback。记忆检索和存储会自动按实际 agentId 隔离。
+> **多 Agent 说明：** 插件的真实隔离边界是 `userId + agentId`。如果不同 agent 对应不同用户，请通过 `scope.userIdByAgent` 明确配置映射；否则会回退到全局 `scope.userId`。
 
 ### recall — 自动召回
 

@@ -1,6 +1,7 @@
 // ============================================================================
 // Hook: before_prompt_build — inject recalled memories into context
-// Minimal strategy: shared inbound cache first, then messages/prompt fallback.
+// Query strategy prefers current prompt/messages and only uses sender cache as a
+// narrow fallback. We intentionally avoid "latest in channel" behavior.
 // ============================================================================
 
 import type { MemUAdapter } from "../adapter.js";
@@ -170,9 +171,6 @@ export function createRecallHook(
     if (ctx.channelId && senderId) {
       query = (await inbound.getBySender(ctx.channelId, senderId)) ?? "";
     }
-    if (!query && ctx.channelId) {
-      query = (await inbound.getLatestByChannel(ctx.channelId)) ?? "";
-    }
 
     if (!query && event.messages) {
       const lastUser = event.messages.filter((m) => m.role === "user").slice(-1)[0];
@@ -215,11 +213,10 @@ export function createRecallHook(
       let coreContext = "";
       let coreMemoriesForTouch: Array<{ id: string; category?: string; key: string; value: string }> = [];
       if (config.core.enabled) {
-        // Fix2: Don't pass query to Core - always return top important memories
         const coreMemories = await coreRepo.list(scope, {
           limit: config.core.topK,
         });
-        logger.info(`recall-hook: core fetched count=${coreMemories.length} scope=${scope.sessionKey}`);
+        logger.info(`recall-hook: scope user=${scope.userId} agent=${scope.agentId} core=${coreMemories.length}`);
         coreMemoriesForTouch = coreMemories.map((m) => ({ id: m.id, category: m.category, key: m.key, value: m.value }));
         coreContext = formatCoreMemoriesContext(coreMemories);
       }

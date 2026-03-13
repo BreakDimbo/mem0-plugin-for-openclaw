@@ -35,8 +35,6 @@ const scopeConfig: ScopeConfig = {
   agentId: "default_agent",
   requireUserId: true,
   requireAgentId: true,
-  isolateByChannel: true,
-  isolateByThread: true,
 };
 
 console.log("\nMemUAdapter Recall Tests\n");

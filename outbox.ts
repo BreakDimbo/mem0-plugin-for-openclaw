@@ -253,6 +253,8 @@ export class OutboxWorker {
       clearInterval(this.timer);
       this.timer = null;
     }
+    // Reset loaded flag to prevent drain() from saving empty queue on next start
+    this.loaded = false;
     this.logger.info(`outbox: worker stopped (sent: ${this._sent}, failed: ${this._failed}, pending: ${this.queue.length})`);
   }
 

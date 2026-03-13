@@ -9,12 +9,10 @@ type InboundEntry = {
 
 type InboundStore = {
   bySender: Record<string, InboundEntry>;
-  byChannelLatest: Record<string, InboundEntry>;
 };
 
 const EMPTY_STORE: InboundStore = {
   bySender: {},
-  byChannelLatest: {},
 };
 
 export class InboundMessageCache {
@@ -60,9 +58,6 @@ export class InboundMessageCache {
     for (const [k, v] of Object.entries(store.bySender)) {
       if (!v || typeof v.ts !== "number" || v.ts < cutoff) delete store.bySender[k];
     }
-    for (const [k, v] of Object.entries(store.byChannelLatest)) {
-      if (!v || typeof v.ts !== "number" || v.ts < cutoff) delete store.byChannelLatest[k];
-    }
   }
 
   private clampRecord(map: Record<string, InboundEntry>): Record<string, InboundEntry> {
@@ -75,13 +70,11 @@ export class InboundMessageCache {
 
   private clamp(store: InboundStore): void {
     store.bySender = this.clampRecord(store.bySender);
-    store.byChannelLatest = this.clampRecord(store.byChannelLatest);
   }
 
   private cloneStore(store: InboundStore): InboundStore {
     return {
       bySender: { ...store.bySender },
-      byChannelLatest: { ...store.byChannelLatest },
     };
   }
 
@@ -90,10 +83,6 @@ export class InboundMessageCache {
       const parsed = JSON.parse(raw) as Partial<InboundStore>;
       const store: InboundStore = {
         bySender: typeof parsed.bySender === "object" && parsed.bySender ? (parsed.bySender as Record<string, InboundEntry>) : {},
-        byChannelLatest:
-          typeof parsed.byChannelLatest === "object" && parsed.byChannelLatest
-            ? (parsed.byChannelLatest as Record<string, InboundEntry>)
-            : {},
       };
       this.sweep(store);
       this.clamp(store);
@@ -150,7 +139,6 @@ export class InboundMessageCache {
           store.bySender[this.makeSenderKey(channelId, sid)] = entry;
         }
       }
-      store.byChannelLatest[channelId] = entry;
     });
   }
 
@@ -161,10 +149,5 @@ export class InboundMessageCache {
       if (hit?.content) return hit.content;
     }
     return undefined;
-  }
-
-  async getLatestByChannel(channelId: string): Promise<string | undefined> {
-    const store = await this.loadStore();
-    return store.byChannelLatest[channelId]?.content;
   }
 }

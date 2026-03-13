@@ -71,7 +71,7 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
       flushIntervalMs: config.outbox.flushIntervalMs,
     });
 
-    const sync = new MarkdownSync(adapter, config, api.logger);
+    const sync = new MarkdownSync(adapter, coreRepo, config, api.logger);
 
     api.logger.info(
       `memory-memu: registered (baseUrl: ${config.memu.baseUrl}, userId: ${config.scope.userId}, agentId: ${config.scope.agentId}, recall: ${config.recall.enabled}, capture: ${config.capture.enabled})`,
@@ -109,7 +109,7 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
     api.registerTool((ctx: any) => createCoreUpsertTool(coreRepo, config, ctx));
     api.registerTool((ctx: any) => createCoreDeleteTool(coreRepo, config, ctx));
     api.registerTool((ctx: any) => createCoreTouchTool(coreRepo, config, ctx));
-    api.registerTool((_ctx: any) => createCoreProposalTool(proposalQueue, coreRepo));
+    api.registerTool((ctx: any) => createCoreProposalTool(proposalQueue, coreRepo, config, ctx));
 
     // ========================================================================
     // Commands

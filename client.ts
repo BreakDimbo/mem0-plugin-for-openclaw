@@ -62,7 +62,7 @@ export type CoreUpsertParams = {
     key: string;
     value: string;
     importance?: number;
-    provenance?: string;
+    provenance?: Record<string, unknown>;
     validUntil?: string;
   }>;
 };

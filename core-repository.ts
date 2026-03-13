@@ -34,7 +34,56 @@ function scoreTextMatch(query: string, key: string, value: string): number {
 
 function inferCategoryFromKey(key: string): string {
   const head = key.split(".")[0]?.trim().toLowerCase();
-  return head || "general";
+  switch (head) {
+    case "identity":
+    case "profile":
+    case "person":
+    case "bio":
+      return "identity";
+    case "preference":
+    case "preferences":
+      return "preferences";
+    case "goal":
+    case "goals":
+      return "goals";
+    case "constraint":
+    case "constraints":
+    case "team":
+      return "constraints";
+    case "relationship":
+    case "relationships":
+      return "relationships";
+    default:
+      return "general";
+  }
+}
+
+export function normalizeCoreCategory(category: string | undefined, key: string): string {
+  const normalized = (category ?? "").trim().toLowerCase();
+  if (!normalized) return inferCategoryFromKey(key);
+  switch (normalized) {
+    case "identity":
+    case "profile":
+    case "person":
+    case "bio":
+      return "identity";
+    case "preference":
+    case "preferences":
+      return "preferences";
+    case "goal":
+    case "goals":
+      return "goals";
+    case "constraint":
+    case "constraints":
+    case "team":
+    case "stack":
+      return "constraints";
+    case "relationship":
+    case "relationships":
+      return "relationships";
+    default:
+      return "general";
+  }
 }
 
 export class CoreMemoryRepository {
@@ -153,11 +202,14 @@ export class CoreMemoryRepository {
         agentId: scope.agentId,
         items: [
           {
-            category: payload.category?.trim() || inferCategoryFromKey(key),
+            category: normalizeCoreCategory(payload.category, key),
             key,
             value,
             importance: payload.importance,
-            provenance: payload.source ?? "memory-memu",
+            provenance: {
+              source: payload.source ?? "memory-memu",
+              ...(payload.metadata ?? {}),
+            },
             validUntil: payload.validUntil,
           },
         ],
@@ -185,11 +237,11 @@ export class CoreMemoryRepository {
         const key = item.key.trim().toLowerCase();
         const value = sanitizeCoreValue(item.value, this.maxItemChars);
         return {
-          category: item.category.trim() || inferCategoryFromKey(key),
+          category: normalizeCoreCategory(item.category, key),
           key,
           value,
           importance: item.importance,
-          provenance: item.provenance,
+          provenance: item.provenance ? { source: item.provenance } : undefined,
           validUntil: item.validUntil,
         };
       })

@@ -116,7 +116,6 @@ export function createMemuCommand(
 
       const scopeCtx: PluginHookContext = {
         agentId: route?.agentId,
-        channelId: channel,
         sessionKey: route?.sessionKey,
       };
       const runtimeScope = buildDynamicScope(config.scope, scopeCtx);
@@ -136,8 +135,6 @@ export function createMemuCommand(
           `  User ID:  ${runtimeScope.userId}`,
           `  Agent ID: ${runtimeScope.agentId}`,
           `  Session:  ${runtimeScope.sessionKey}`,
-          `  Channel:  ${runtimeScope.channelId ?? "(none)"}`,
-          `  Thread:   ${runtimeScope.threadId ?? "(none)"}`,
           ...(route ? [`  Route:    matchedBy=${route.matchedBy ?? "(unknown)"} peer=${peer ? `${peer.kind}:${peer.id}` : "(none)"}`] : []),
           "",
           "Cache:",
@@ -161,6 +158,12 @@ export function createMemuCommand(
           `  Last:     ${sync.lastSyncAt ? new Date(sync.lastSyncAt).toISOString() : "never"}`,
         ];
         return { text: lines.join("\n") };
+      }
+
+      if (action === "sync") {
+        const targetAgentId = (tokens[1] ?? "").trim() || runtimeScope.agentId;
+        const result = await sync.forceSync(targetAgentId);
+        return { text: `Markdown sync completed for: ${result.syncedAgents.join(", ") || "(none)"}` };
       }
 
       if (action === "search") {
@@ -262,9 +265,9 @@ export function createMemuCommand(
 
         if (sub === "proposals") {
           const limit = tokens[2] ? Number.parseInt(tokens[2], 10) : 20;
-          const items = proposalQueue.list("pending", Number.isFinite(limit) ? limit : 20);
+          const items = proposalQueue.listForScope(runtimeScope, "pending", Number.isFinite(limit) ? limit : 20);
           if (items.length === 0) return { text: "No pending proposals." };
-          return { text: items.map((p) => `- ${p.id} [${p.key}] ${p.value} (${p.reason})`).join("\n") };
+          return { text: items.map((p) => `- ${p.id} [${p.category}/${p.key}] ${p.value} (${p.reason})`).join("\n") };
         }
 
         if (sub === "approve") {
@@ -272,9 +275,8 @@ export function createMemuCommand(
           if (!proposalId) return { text: "Usage: /memu core approve <proposalId>" };
           const proposal = proposalQueue.approve(proposalId, "cli");
           if (!proposal) return { text: "Proposal not found or already reviewed." };
-          const category = proposal.key.split(".")[0] || "general";
           const ok = await coreRepo.upsert(proposal.scope, {
-            category,
+            category: proposal.category,
             key: proposal.key,
             value: proposal.value,
             source: "proposal-approved-cli",
@@ -308,6 +310,7 @@ export function createMemuCommand(
         text: [
           "Usage:",
           "  /memu status          — show connection, scope & queue status",
+          "  /memu sync [agentId]  — force Markdown sync",
           "  /memu search <query>  — search memories",
           "  /memu flush           — flush pending outbox items",
           "  /memu dashboard       — full metrics dashboard",

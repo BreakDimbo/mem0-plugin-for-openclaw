@@ -13,7 +13,12 @@
     "userId": {
       "label": "User ID",
       "placeholder": "default_user",
-      "help": "User identifier for memU storage"
+      "help": "Default user identifier for memU storage"
+    },
+    "scope.userIdByAgent": {
+      "label": "Per-Agent User IDs",
+      "advanced": true,
+      "help": "Optional agentId -> userId mapping for multi-agent isolation"
     },
     "autoCapture": {
       "label": "Auto-Capture",
@@ -58,14 +63,14 @@
         "type": "object",
         "properties": {
           "userId": { "type": "string", "default": "default_user" },
+          "userIdByAgent": {
+            "type": "object",
+            "additionalProperties": { "type": "string" }
+          },
           "agentId": { "type": "string", "default": "main" },
-          "channelId": { "type": "string" },
-          "threadId": { "type": "string" },
           "tenantId": { "type": "string" },
           "requireUserId": { "type": "boolean", "default": true },
-          "requireAgentId": { "type": "boolean", "default": true },
-          "isolateByChannel": { "type": "boolean", "default": true },
-          "isolateByThread": { "type": "boolean", "default": true }
+          "requireAgentId": { "type": "boolean", "default": true }
         }
       },
       "recall": {

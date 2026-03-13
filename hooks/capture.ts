@@ -163,6 +163,10 @@ export function createCaptureHook(
     }
 
     if (toCapture.length > 0) {
+      sync.scheduleSync(scope.agentId);
+    }
+
+    if (toCapture.length > 0) {
       logger.info(`capture-hook: enqueued ${toCapture.length} items (evaluated: ${localEvaluated}, filtered: ${localFiltered}, deduped: ${localDeduped}, core-proposals: ${localProposals})`);
     }
   };

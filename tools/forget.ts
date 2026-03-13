@@ -12,7 +12,7 @@ export function createForgetTool(adapter: MemUAdapter, config: MemuPluginConfig,
   return {
     name: "memory_forget",
     description:
-      "Delete memories from long-term storage. Provide a memoryId for single-item deletion, or use confirm=true without memoryId to clear all memories for the current scope. Requires explicit confirmation.",
+      "Delete memories from long-term storage. Provide a memoryId for single-item deletion, or use confirm=true without memoryId to clear all memories for the current user+agent scope. Requires explicit confirmation.",
     parameters: {
       type: "object" as const,
       properties: {
@@ -44,7 +44,7 @@ export function createForgetTool(adapter: MemUAdapter, config: MemuPluginConfig,
         return {
           text: [
             `Note: Per-item deletion (memoryId=${args.memoryId}) is not yet supported by the memU server.`,
-            "Use without memoryId to clear all memories for the current scope.",
+            "Use without memoryId to clear all memories for the current user+agent scope.",
           ].join("\n"),
         };
       }

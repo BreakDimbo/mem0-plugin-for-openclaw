@@ -6,10 +6,17 @@
 
 import type { MemUClient } from "./client.js";
 import type { MemoryScope, MemuMemoryRecord, ScopeConfig } from "./types.js";
-import { buildScope } from "./types.js";
+import { buildDynamicScope, buildScope } from "./types.js";
 
 type Logger = { info(msg: string): void; warn(msg: string): void };
 type HybridRecallConfig = { enabled: boolean; alpha: number; fallbackToRag: boolean };
+
+export type ScopeResolverContext = {
+  agentId?: string;
+  sessionKey?: string;
+  sessionId?: string;
+  workspaceDir?: string;
+};
 
 export class MemUAdapter {
   private client: MemUClient;
@@ -18,8 +25,6 @@ export class MemUAdapter {
   private recallMethod: "rag" | "llm";
   private hybridRecall: HybridRecallConfig;
   private logger: Logger;
-  private warnedUnsupportedScopeFields = false;
-
   constructor(
     client: MemUClient,
     scopeConfig: ScopeConfig,
@@ -40,10 +45,12 @@ export class MemUAdapter {
       tenantId: override?.tenantId ?? this.defaultScope.tenantId,
       userId: override?.userId ?? this.defaultScope.userId,
       agentId: override?.agentId ?? this.defaultScope.agentId,
-      channelId: override?.channelId ?? this.defaultScope.channelId,
-      threadId: override?.threadId ?? this.defaultScope.threadId,
       sessionKey: override?.sessionKey ?? this.defaultScope.sessionKey,
     };
+  }
+
+  resolveRuntimeScope(ctx?: ScopeResolverContext): MemoryScope {
+    return buildDynamicScope(this.scopeConfig, ctx);
   }
 
   private enforceScope(scope: MemoryScope): boolean {
@@ -58,16 +65,6 @@ export class MemUAdapter {
     return true;
   }
 
-  /**
-   * Build memU `where` filter from scope per §7.2 scope mapping.
-   * - userId → where.user_id
-   * - agentId → where.agent_id__in = [agentId]
-   *
-   * NOTE:
-   * memU user scope filter currently supports user_id / agent_id only.
-   * channel_id/thread_id in where triggers server 500:
-   * "Unknown filter field 'channel_id' for current user scope".
-   */
   private buildWhereFilter(scope: MemoryScope): Record<string, unknown> {
     const where: Record<string, unknown> = {};
     if (scope.userId) {
@@ -75,13 +72,6 @@ export class MemUAdapter {
     }
     if (scope.agentId) {
       where.agent_id__in = [scope.agentId];
-    }
-    if (
-      !this.warnedUnsupportedScopeFields &&
-      ((this.scopeConfig.isolateByChannel && scope.channelId) || (this.scopeConfig.isolateByThread && scope.threadId))
-    ) {
-      this.warnedUnsupportedScopeFields = true;
-      this.logger.warn("memu-adapter: channel/thread isolation requested but memU scope filter does not support channel_id/thread_id; falling back to user/agent isolation");
     }
     return where;
   }
@@ -255,8 +245,6 @@ export class MemUAdapter {
         agent_id: scope.agentId,
         session_key: scope.sessionKey,
       };
-      if (scope.channelId) enrichedMeta.channel_id = scope.channelId;
-      if (scope.threadId) enrichedMeta.thread_id = scope.threadId;
       if (scope.tenantId) enrichedMeta.tenant_id = scope.tenantId;
 
       // Build resource_url per §8.4
