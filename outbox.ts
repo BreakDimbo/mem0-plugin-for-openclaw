@@ -4,8 +4,8 @@
 // ============================================================================
 
 import { createHash } from "node:crypto";
-import { readFile, writeFile, mkdir } from "node:fs/promises";
-import { dirname } from "node:path";
+import { readFile, writeFile, mkdir, readdir } from "node:fs/promises";
+import { dirname, basename } from "node:path";
 import { homedir } from "node:os";
 import type { MemUAdapter } from "./adapter.js";
 import type { OutboxItem, DeadLetterItem, MemoryScope } from "./types.js";
@@ -17,6 +17,7 @@ const BACKOFF_DELAYS = [1_000, 5_000, 30_000, 120_000];
 export class OutboxWorker {
   private queue: OutboxItem[] = [];
   private deadLetters: DeadLetterItem[] = [];
+  private loaded = false;
   private adapter: MemUAdapter;
   private logger: Logger;
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -68,18 +69,53 @@ export class OutboxWorker {
     return this.persistPath ? `${this.persistPath}/outbox-deadletter.json` : "";
   }
 
+  private async readQueueFile(filePath: string): Promise<OutboxItem[]> {
+    try {
+      const data = await readFile(filePath, "utf-8");
+      const parsed = JSON.parse(data);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+
+  private mergeQueueItems(items: OutboxItem[]): void {
+    const seen = new Set(this.queue.map((item) => item.id));
+    for (const item of items) {
+      if (!item || typeof item !== "object" || typeof item.id !== "string") {
+        continue;
+      }
+      if (seen.has(item.id)) {
+        continue;
+      }
+      this.queue.push(item);
+      seen.add(item.id);
+    }
+  }
+
   async loadFromDisk(): Promise<void> {
     if (!this.queueFilePath) return;
 
+    this.queue = [];
+
+    const primaryItems = await this.readQueueFile(this.queueFilePath);
+    this.mergeQueueItems(primaryItems);
+
     try {
-      const data = await readFile(this.queueFilePath, "utf-8");
-      const parsed = JSON.parse(data);
-      if (Array.isArray(parsed)) {
-        this.queue = parsed;
-        this.logger.info(`outbox: loaded ${this.queue.length} items from disk`);
+      const fileNames = await readdir(dirname(this.queueFilePath));
+      const legacyShardFiles = fileNames
+        .filter((name) => name.startsWith("outbox-queue-") && name.endsWith(".json"))
+        .map((name) => `${dirname(this.queueFilePath)}/${name}`);
+
+      for (const filePath of legacyShardFiles) {
+        const shardItems = await this.readQueueFile(filePath);
+        if (shardItems.length > 0) {
+          this.mergeQueueItems(shardItems);
+          this.logger.warn(`outbox: merged ${shardItems.length} pending items from legacy shard ${basename(filePath)}`);
+        }
       }
     } catch {
-      // File doesn't exist yet or corrupted — start fresh
+      // Ignore shard scan failures; primary queue file is still authoritative
     }
 
     try {
@@ -91,10 +127,17 @@ export class OutboxWorker {
     } catch {
       // Start fresh
     }
+
+    this.loaded = true;
+    this.logger.info(`outbox: loaded ${this.queue.length} items from disk`);
   }
 
   private async saveToDisk(): Promise<void> {
     if (!this.queueFilePath) return;
+    if (!this.loaded) {
+      this.logger.warn("outbox: save skipped before initial load completed");
+      return;
+    }
 
     try {
       await mkdir(dirname(this.queueFilePath), { recursive: true });
@@ -220,6 +263,7 @@ export class OutboxWorker {
     await this.loadFromDisk();
 
     if (this.timer) return;
+    await this.flush();
     this.timer = setInterval(() => {
       this.flush().catch((err) => {
         this.logger.warn(`outbox: flush error: ${String(err)}`);
@@ -253,7 +297,6 @@ export class OutboxWorker {
       clearInterval(this.timer);
       this.timer = null;
     }
-    // Reset loaded flag to prevent drain() from saving empty queue on next start
     this.loaded = false;
     this.logger.info(`outbox: worker stopped (sent: ${this._sent}, failed: ${this._failed}, pending: ${this.queue.length})`);
   }

@@ -6,6 +6,9 @@
 import type { MemUAdapter } from "../adapter.js";
 import { OutboxWorker } from "../outbox.js";
 import type { MemoryScope } from "../types.js";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 type TestResult = { name: string; passed: boolean; error?: string };
 const results: TestResult[] = [];
@@ -134,6 +137,74 @@ await test("drain processes all items", async () => {
   await outbox.drain(5000);
   assertEqual(outbox.pending, 0, "all drained");
   assertEqual(outbox.sent, 2, "both sent");
+});
+
+await test("start loads pending items from disk and flushes them", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "memu-outbox-"));
+  const queueFile = join(dir, "outbox-queue.json");
+  await writeFile(
+    queueFile,
+    JSON.stringify([
+      {
+        id: "persisted-1",
+        createdAt: Date.now(),
+        scope: testScope,
+        payload: { text: "persisted text" },
+        retryCount: 0,
+        nextRetryAt: 0,
+      },
+    ]),
+    "utf-8",
+  );
+
+  const outbox = new OutboxWorker(createMockAdapter(true), testLogger, {
+    concurrency: 2,
+    batchSize: 10,
+    maxRetries: 3,
+    persistPath: dir,
+    flushIntervalMs: 60_000,
+  });
+
+  await outbox.start();
+  outbox.stop();
+
+  assertEqual(outbox.sent, 1, "persisted item should be flushed on start");
+  assertEqual(outbox.pending, 0, "queue should be empty after startup flush");
+  const saved = JSON.parse(await readFile(queueFile, "utf-8"));
+  assertEqual(Array.isArray(saved) ? saved.length : -1, 0, "queue file should be rewritten as empty");
+});
+
+await test("load merges legacy shard queue files", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "memu-outbox-"));
+  await writeFile(join(dir, "outbox-queue.json"), "[]", "utf-8");
+  await writeFile(
+    join(dir, "outbox-queue-growth_hacker.json"),
+    JSON.stringify([
+      {
+        id: "legacy-growth",
+        createdAt: Date.now(),
+        scope: { ...testScope, agentId: "growth_hacker", sessionKey: "agent:growth_hacker:main" },
+        payload: { text: "legacy shard item" },
+        retryCount: 0,
+        nextRetryAt: 0,
+      },
+    ]),
+    "utf-8",
+  );
+
+  const outbox = new OutboxWorker(createMockAdapter(true), testLogger, {
+    concurrency: 2,
+    batchSize: 10,
+    maxRetries: 3,
+    persistPath: dir,
+    flushIntervalMs: 60_000,
+  });
+
+  await outbox.start();
+  outbox.stop();
+
+  assertEqual(outbox.sent, 1, "legacy shard item should be merged and flushed");
+  assertEqual(outbox.pending, 0, "legacy shard item should not remain pending");
 });
 
 // -- Summary --
