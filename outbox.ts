@@ -191,6 +191,12 @@ export class OutboxWorker {
 
     // Async persist, don't block
     this.saveToDisk().catch(() => {});
+
+    // Kick off an immediate background flush so fresh stores do not appear
+    // "stuck" while waiting for the next interval tick.
+    this.flush().catch((err) => {
+      this.logger.warn(`outbox: immediate flush error: ${String(err)}`);
+    });
   }
 
   // -- Flush --

@@ -27,11 +27,22 @@ export function createStoreTool(outbox: OutboxWorker, config: MemuPluginConfig, 
 
       const scope = buildDynamicScope(config.scope, toolCtx);
       const text = args.context ? `${args.content} (context: ${args.context})` : args.content;
+      const sentBefore = outbox.sent;
+      const failedBefore = outbox.failed;
 
       outbox.enqueue(text, scope);
+      await outbox.flush();
       audit("store", scope.userId, scope.agentId, `explicit store: "${text.slice(0, 80)}..."`);
 
-      return { text: `Memory queued for storage. (outbox pending: ${outbox.pending})` };
+      if (outbox.sent > sentBefore) {
+        return { text: "Memory stored successfully." };
+      }
+
+      if (outbox.failed > failedBefore) {
+        return { text: "Memory storage failed and was moved to dead-letter." };
+      }
+
+      return { text: `Memory queued for background retry. (outbox pending: ${outbox.pending})` };
     },
   };
 }
