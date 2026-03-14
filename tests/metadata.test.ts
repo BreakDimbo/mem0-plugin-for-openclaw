@@ -44,7 +44,7 @@ await test("buildFreeTextMetadata includes scope and durable kind", () => {
     sessionKey: "agent:researcher:main",
   }, { captureKind: "explicit" });
 
-  assertEqual(metadata.source, "memory-memu", "source");
+  assertEqual(metadata.source, "memory-mem0", "source");
   assertEqual(metadata.capture_kind, "explicit", "capture kind");
   assertEqual(metadata.memory_kind, "preference", "memory kind");
   assertEqual(metadata.quality, "durable", "quality");

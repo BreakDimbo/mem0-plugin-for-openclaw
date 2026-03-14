@@ -1,6 +1,6 @@
 {
-  "id": "memory-memu",
-  "name": "Enhanced Memory",
+  "id": "memory-mem0",
+  "name": "memory-mem0",
   "description": "Enhanced memory plugin with local core memory, mem0 long-term recall, scoped retrieval, and async capture",
   "kind": "memory",
   "version": "1.0.0",

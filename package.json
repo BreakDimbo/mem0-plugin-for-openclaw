@@ -1,5 +1,5 @@
 {
-  "name": "@openclaw/memory-memu",
+  "name": "@openclaw/memory-mem0",
   "version": "1.0.0",
   "type": "module",
   "description": "memU long-term memory integration for OpenClaw",

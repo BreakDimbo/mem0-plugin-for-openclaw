@@ -15,8 +15,11 @@ import { metadataKindLabel } from "./metadata.js";
 type Logger = { info(msg: string): void; warn(msg: string): void };
 type ScopeResolver = { resolveRuntimeScope(ctx?: PluginHookContext): MemoryScope };
 
-const GENERATED_BLOCK_START = "<!-- memory-memu:start -->";
-const GENERATED_BLOCK_END = "<!-- memory-memu:end -->";
+const GENERATED_BLOCK_START = "<!-- memory-mem0:start -->";
+const GENERATED_BLOCK_END = "<!-- memory-mem0:end -->";
+const GENERATED_HEADER = "<!-- memory-mem0:generated -->";
+const LEGACY_GENERATED_BLOCK_START = "<!-- memory-memu:start -->";
+const LEGACY_GENERATED_BLOCK_END = "<!-- memory-memu:end -->";
 const LEGACY_GENERATED_HEADER = "<!-- memory-memu:generated -->";
 const GENERATED_SECTION_HEADINGS = new Set([
   "## Core Identity",
@@ -197,7 +200,7 @@ export class MarkdownSync {
     const selectedRecallItems = this.selectRecallItems(recallItems, coreMemories);
     const header = [
       GENERATED_BLOCK_START,
-      "<!-- memory-memu:generated -->",
+      GENERATED_HEADER,
       `<!-- scope:user=${scope.userId} agent=${scope.agentId} session=${scope.sessionKey} -->`,
       "",
       this.renderCoreSections(coreMemories).trimEnd(),
@@ -244,7 +247,12 @@ export class MarkdownSync {
       .split("\n")
       .filter((line) => {
         const trimmed = line.trim();
-        if (trimmed === GENERATED_BLOCK_START || trimmed === GENERATED_BLOCK_END) {
+        if (
+          trimmed === GENERATED_BLOCK_START ||
+          trimmed === GENERATED_BLOCK_END ||
+          trimmed === LEGACY_GENERATED_BLOCK_START ||
+          trimmed === LEGACY_GENERATED_BLOCK_END
+        ) {
           return false;
         }
         return true;
@@ -253,16 +261,24 @@ export class MarkdownSync {
   }
 
   private stripMarkedGeneratedBlocks(content: string): string {
+    return this.stripMarkedBlock(
+      this.stripMarkedBlock(content, GENERATED_BLOCK_START, GENERATED_BLOCK_END),
+      LEGACY_GENERATED_BLOCK_START,
+      LEGACY_GENERATED_BLOCK_END,
+    );
+  }
+
+  private stripMarkedBlock(content: string, startMarker: string, endMarker: string): string {
     let next = content;
     while (true) {
-      const start = next.indexOf(GENERATED_BLOCK_START);
+      const start = next.indexOf(startMarker);
       if (start < 0) break;
-      const end = next.indexOf(GENERATED_BLOCK_END, start);
+      const end = next.indexOf(endMarker, start);
       if (end < 0) {
-        next = `${next.slice(0, start)}\n${next.slice(start + GENERATED_BLOCK_START.length)}`;
+        next = `${next.slice(0, start)}\n${next.slice(start + startMarker.length)}`;
         continue;
       }
-      next = `${next.slice(0, start)}\n${next.slice(end + GENERATED_BLOCK_END.length)}`;
+      next = `${next.slice(0, start)}\n${next.slice(end + endMarker.length)}`;
     }
     return next;
   }

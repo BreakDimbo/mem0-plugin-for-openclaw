@@ -1,5 +1,5 @@
 // ============================================================================
-// Types & Default Configuration for memory-memu plugin
+// Types & Default Configuration for memory-mem0 plugin
 // Aligned with 设计文档 v3.0 — full MemoryScope + Phase 2/3 config
 // ============================================================================
 
@@ -24,7 +24,7 @@ export type FreeTextMemoryKind =
   | "general";
 
 export type FreeTextMemoryMetadata = {
-  source: "memory-memu";
+  source: "memory-mem0";
   content_kind: "free-text";
   capture_kind?: "explicit" | "auto";
   memory_kind?: FreeTextMemoryKind;

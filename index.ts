@@ -1,5 +1,5 @@
 // ============================================================================
-// memory-memu: Plugin Entry Point
+// memory-mem0: Plugin Entry Point
 // Phase 2/3: full scope config, metrics, persistence, audit, graceful shutdown
 // ============================================================================
 
@@ -40,8 +40,8 @@ const HOOK_PRIORITY = {
 } as const;
 
 const memoryMemuPlugin: OpenClawPluginDefinition = {
-  id: "memory-memu",
-  name: "memU Enhanced Memory",
+  id: "memory-mem0",
+  name: "memory-mem0",
   description: "Enhanced memory with memU for long-term structured recall, scoped retrieval, and async capture",
 
   register(api: OpenClawPluginApi) {
@@ -72,7 +72,7 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
     const sync = new MarkdownSync(primaryFreeTextBackend, scopeResolver, coreRepo, config, api.logger);
 
     api.logger.info(
-      `memory-memu: registered (core=local, freeText=${config.backend.freeText.provider}, userId: ${config.scope.userId}, agentId: ${config.scope.agentId}, recall: ${config.recall.enabled}, capture: ${config.capture.enabled})`,
+      `memory-mem0: registered (core=local, freeText=${config.backend.freeText.provider}, userId: ${config.scope.userId}, agentId: ${config.scope.agentId}, recall: ${config.recall.enabled}, capture: ${config.capture.enabled})`,
     );
 
     // ========================================================================
@@ -132,9 +132,9 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
     // ========================================================================
 
     api.registerService({
-      id: "memory-memu",
+      id: "memory-mem0",
       start: async (_ctx) => {
-        api.logger.info("memory-memu: using local core store and mem0 free-text backend");
+        api.logger.info("memory-mem0: using local core store and mem0 free-text backend");
 
         // Start outbox worker (loads persisted queue from disk)
         if (config.outbox.enabled) {
@@ -145,7 +145,7 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
         // Start markdown sync
         sync.start();
 
-        api.logger.info("memory-memu: service started");
+        api.logger.info("memory-mem0: service started");
       },
       stop: async (_ctx) => {
         // Graceful shutdown: drain outbox with timeout
@@ -158,7 +158,7 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
         sync.stop();
         cache.clear();
 
-        api.logger.info("memory-memu: service stopped");
+        api.logger.info("memory-mem0: service stopped");
       },
     });
   },

@@ -67,7 +67,7 @@ async function main() {
 
 async function loadPluginConfig() {
   const raw = JSON.parse(await readFile("~/.openclaw/openclaw.json", "utf-8"));
-  return loadConfig(raw?.plugins?.entries?.["memory-memu"]?.config ?? {});
+  return loadConfig(raw?.plugins?.entries?.["memory-mem0"]?.config ?? {});
 }
 
 async function buildRecallHook(config: ReturnType<typeof loadConfig>) {

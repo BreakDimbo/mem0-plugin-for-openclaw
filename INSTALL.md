@@ -1,4 +1,4 @@
-# memory-memu 插件安装与配置指南
+# memory-mem0 插件安装与配置指南
 
 ## 1. 前置依赖
 
@@ -6,31 +6,29 @@
 |------|---------|------|
 | OpenClaw | 最新稳定版 | 需支持 `kind: "memory"` 插件 |
 | Node.js | >= 18 | TypeScript 插件运行时 |
-| memU Server | 最新版 | 长期记忆 REST API 服务 |
-| PostgreSQL | >= 14 + pgvector | memU 存储后端 |
+| mem0 | 最新版 | 长期记忆后端 |
 
 **所需 API Key：**
 
 | Key | 用途 | 是否必须 |
 |-----|------|---------|
-| Moonshot API Key | memU 记忆提取 LLM（或其他兼容 LLM） | 是 |
-| Embedding API Key | memU 向量编码 | 是 |
+| LLM / Embedding 凭据 | mem0 使用的兼容模型与向量编码服务 | 视配置而定 |
 
 ---
 
 ## 2. 安装插件
 
-将 `memory-memu` 目录复制到 OpenClaw 扩展目录：
+将 `memory-memu` 目录复制到 OpenClaw 扩展目录，并以 `memory-mem0` 插件启用：
 
 ```bash
-cp -r memory-memu ~/.openclaw/extensions/memory-memu
+cp -r memory-mem0 ~/.openclaw/extensions/memory-mem0
 ```
 
 验证插件目录结构：
 
 ```bash
-ls ~/.openclaw/extensions/memory-memu/
-# 应包含: index.ts, types.ts, client.ts, adapter.ts, cache.ts,
+ls ~/.openclaw/extensions/memory-mem0/
+# 应包含: index.ts, types.ts, cache.ts,
 #         outbox.ts, security.ts, metrics.ts, sync.ts, cli.ts,
 #         openclaw.plugin.json, package.json, tsconfig.json,
 #         hooks/, tools/, tests/
@@ -38,25 +36,9 @@ ls ~/.openclaw/extensions/memory-memu/
 
 ---
 
-## 3. 启动 memU Server
+## 3. 配置 mem0
 
-```bash
-cd /path/to/memU-server
-python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
-```
-
-验证 memU Server 运行状态：
-
-```bash
-curl http://127.0.0.1:8000/debug
-# 应返回 200 OK
-```
-
-验证 PostgreSQL + pgvector：
-
-```bash
-psql -h localhost -U postgres -c "SELECT * FROM pg_extension WHERE extname = 'vector';"
-```
+根据你使用的 `mem0` 模式配置 LLM、Embedding 和向量存储。当前插件默认支持 `mem0` 的 open-source 运行方式。
 
 ---
 
@@ -68,7 +50,7 @@ psql -h localhost -U postgres -c "SELECT * FROM pg_extension WHERE extname = 've
 {
   "plugins": {
     "entries": {
-      "memory-memu": {
+      "memory-mem0": {
         "enabled": true,
         "config": {
           "memu": {
@@ -117,7 +99,7 @@ psql -h localhost -U postgres -c "SELECT * FROM pg_extension WHERE extname = 've
       }
     },
     "slots": {
-      "memory": "memory-memu"
+      "memory": "memory-mem0"
     }
   }
 }
@@ -133,7 +115,7 @@ psql -h localhost -U postgres -c "SELECT * FROM pg_extension WHERE extname = 've
 # 查看插件是否加载
 openclaw plugins list
 
-# 查看 memU 连接状态
+# 查看 memory-mem0 状态
 openclaw memu status
 ```
 
@@ -310,11 +292,13 @@ Sync:
 {
   "plugins": {
     "entries": {
-      "memory-memu": {
+      "memory-mem0": {
         "enabled": true,
         "config": {
-          "memu": {
-            "baseUrl": "http://127.0.0.1:8000"
+          "backend": {
+            "freeText": {
+              "provider": "mem0"
+            }
           },
           "scope": {
             "userId": "your_user_id"
@@ -323,7 +307,7 @@ Sync:
       }
     },
     "slots": {
-      "memory": "memory-memu"
+      "memory": "memory-mem0"
     }
   }
 }
@@ -348,7 +332,7 @@ Sync:
 
 ```bash
 # 确保 memU Server 正在运行
-cd ~/.openclaw/extensions/memory-memu
+cd ~/.openclaw/extensions/memory-mem0
 npx tsx tests/contract.test.ts
 
 # 运行单元测试

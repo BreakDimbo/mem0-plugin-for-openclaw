@@ -202,7 +202,7 @@ export class Mem0FreeTextBackend implements FreeTextBackend {
       scope_user_id: scope.userId,
       scope_agent_id: scope.agentId,
       scope_session_key: scope.sessionKey,
-      source: "memory-memu",
+      source: "memory-mem0",
       content_kind: "free-text",
       ...(captureKind ? { capture_kind: captureKind } : {}),
       ...(extra ?? {}),

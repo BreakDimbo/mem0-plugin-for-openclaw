@@ -246,7 +246,7 @@ export class CoreMemoryRepository {
       if (existing) {
         existing.value = value;
         existing.importance = payload.importance;
-        existing.source = payload.source ?? existing.source ?? "memory-memu";
+        existing.source = payload.source ?? existing.source ?? "memory-mem0";
         existing.metadata = payload.metadata ? { ...payload.metadata } : existing.metadata;
         existing.updatedAt = now;
       } else {
@@ -256,7 +256,7 @@ export class CoreMemoryRepository {
           key,
           value,
           importance: payload.importance,
-          source: payload.source ?? "memory-memu",
+          source: payload.source ?? "memory-mem0",
           metadata: payload.metadata ? { ...payload.metadata } : undefined,
           scope: { ...scope },
           createdAt: now,
@@ -291,7 +291,7 @@ export class CoreMemoryRepository {
           key,
           value,
           importance: item.importance,
-          source: item.provenance ?? "memory-memu",
+          source: item.provenance ?? "memory-mem0",
         };
       })
       .filter((item) => shouldStoreCoreMemory(item.key, item.value, this.maxItemChars));

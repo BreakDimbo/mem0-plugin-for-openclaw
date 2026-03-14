@@ -12,7 +12,7 @@ export function buildFreeTextMetadata(
 ): FreeTextMemoryMetadata {
   const memoryKind = inferFreeTextMemoryKind(text, opts?.context);
   return {
-    source: "memory-memu",
+    source: "memory-mem0",
     content_kind: "free-text",
     capture_kind: opts?.captureKind,
     memory_kind: memoryKind,

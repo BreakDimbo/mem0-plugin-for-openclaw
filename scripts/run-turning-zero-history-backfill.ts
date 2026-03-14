@@ -17,7 +17,7 @@ type RecallCaseReport = {
 
 async function main() {
   const raw = JSON.parse(fs.readFileSync("~/.openclaw/openclaw.json", "utf-8"));
-  const cfg = loadConfig(raw.plugins.entries["memory-memu"].config);
+  const cfg = loadConfig(raw.plugins.entries["memory-mem0"].config);
   const logger = console;
   const backend = new Mem0FreeTextBackend(cfg, logger);
   const runId = new Date().toISOString().replace(/[:.]/g, "-");
