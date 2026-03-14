@@ -8,6 +8,7 @@ import {
   isPromptInjection,
   isSensitiveContent,
   shouldCapture,
+  formatCoreMemoriesContext,
   formatMemoriesContext,
   audit,
   getAuditLog,
@@ -132,12 +133,22 @@ test("formats memories with xml tags", () => {
   assert(result.includes("<relevant-memories>"), "should have opening tag");
   assert(result.includes("</relevant-memories>"), "should have closing tag");
   assert(result.includes("Historical context only"), "should include warning");
+  assert(result.includes("If the needed fact appears here"), "should include factual usage guidance");
   assert(result.includes("preference"), "should include category");
   assert(result.includes("0.85"), "should include score");
 });
 
 test("returns empty for no memories", () => {
   assertEqual(formatMemoriesContext([]), "", "should be empty");
+});
+
+test("formats core memories with direct-answer guidance", () => {
+  const result = formatCoreMemoriesContext([
+    { id: "1", key: "identity.timezone", category: "identity", value: "用户的时区是 UTC+8。", scope: { userId: "u", agentId: "a", sessionKey: "s" } },
+  ]);
+  assert(result.includes("<core-memory>"), "should have opening tag");
+  assert(result.includes("do not claim the data is missing"), "should include direct-answer guidance");
+  assert(result.includes("identity/identity.timezone"), "should include tag");
 });
 
 // -- audit --

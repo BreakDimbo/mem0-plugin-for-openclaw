@@ -200,6 +200,17 @@ function dedupeCoreMemories<T extends { id: string; score?: number }>(items: T[]
   return Array.from(byId.values()).sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
 }
 
+function shouldSuppressRelevantMemories(
+  coreMemories: Array<{ score?: number }>,
+  queryPartCount: number,
+): boolean {
+  if (coreMemories.length === 0) return false;
+  const topScore = coreMemories[0]?.score ?? 0;
+  if (topScore < 0.6) return false;
+  if (queryPartCount <= 1) return true;
+  return coreMemories.length >= queryPartCount;
+}
+
 export function sanitizePromptQuery(raw: string): string {
   const s = stripInjectedBlocks(raw.trim());
   if (!s) return "";
@@ -290,6 +301,7 @@ export function createRecallHook(
     try {
       const scope = buildDynamicScope(config.scope, ctx);
       let memoryContext = "";
+      let filteredMemories: MemuMemoryRecord[] = [];
       if (config.recall.enabled) {
         const cacheKey = LRUCache.buildCacheKey(`${primaryBackend.provider}\0${searchQueries.join("\u241f")}`, scope.sessionKey, config.recall.topK);
         const cached = cache.get(cacheKey);
@@ -340,7 +352,7 @@ export function createRecallHook(
           logger.info(`recall-hook: fetched ${memories.length} memories via ${primaryBackend.provider}${fallbackUsed ? " (fallback)" : ""} for ${searchQueries.length} query parts="${query.slice(0, 60)}..."`);
         }
 
-        let filtered = memories.filter((m) => m.score === undefined || m.score >= config.recall.scoreThreshold);
+        filteredMemories = memories.filter((m) => m.score === undefined || m.score >= config.recall.scoreThreshold);
         const workspaceDir = config.recall.workspaceFallback ? resolveWorkspaceDir(scope.agentId, ctx.workspaceDir) : "";
         if (workspaceDir && config.recall.workspaceFallback) {
           const workspaceFacts = await searchWorkspaceFacts(query, scope, workspaceDir, {
@@ -349,17 +361,13 @@ export function createRecallHook(
           });
           if (workspaceFacts.length > 0) {
             logger.info(`recall-hook: fetched ${workspaceFacts.length} workspace facts for query="${query.slice(0, 60)}..."`);
-            filtered = rerankMemoryResults(query, [...filtered, ...workspaceFacts]).slice(0, config.recall.topK);
+            filteredMemories = rerankMemoryResults(query, [...filteredMemories, ...workspaceFacts]).slice(0, config.recall.topK);
           }
         }
-        const memorySections: string[] = [];
-        if (filtered.length > 0) {
-          memorySections.push(formatMemoriesContext(filtered));
-        }
-        memoryContext = memorySections.join("\n\n");
       }
 
       let coreContext = "";
+      let coreMemories: Array<{ id: string; category?: string; key: string; value: string; score?: number }> = [];
       let coreMemoriesForTouch: Array<{ id: string; category?: string; key: string; value: string }> = [];
       if (config.core.enabled) {
         const coreCandidates = await Promise.all(
@@ -370,12 +378,16 @@ export function createRecallHook(
             }),
           ),
         );
-        const coreMemories = selectRelevantCoreMemories(
+        coreMemories = selectRelevantCoreMemories(
           dedupeCoreMemories(coreCandidates.flat()).slice(0, Math.max(config.core.topK * 2, config.core.topK)),
         );
         logger.info(`recall-hook: scope user=${scope.userId} agent=${scope.agentId} core=${coreMemories.length}`);
         coreMemoriesForTouch = coreMemories.map((m) => ({ id: m.id, category: m.category, key: m.key, value: m.value }));
         coreContext = formatCoreMemoriesContext(coreMemories);
+      }
+
+      if (filteredMemories.length > 0 && !shouldSuppressRelevantMemories(coreMemories, searchQueries.length)) {
+        memoryContext = formatMemoriesContext(filteredMemories);
       }
 
       metrics.recordRecallLatency(Date.now() - start);

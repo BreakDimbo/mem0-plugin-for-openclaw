@@ -229,6 +229,60 @@ await test("createRecallHook queries core memory per split subquery", async () =
   assertEqual(seenQueries[2], "记忆系统一共有几层？", "core query 3");
 });
 
+await test("createRecallHook suppresses lower-priority relevant memories when core strongly covers a single-fact query", async () => {
+  const hook = createRecallHook(
+    { provider: "mem0", search: async () => [{ id: "m1", text: "用户的人格类型是 INTJ", category: "mem0", score: 0.9, source: "memu_item", scope: { userId: "u", agentId: "a", sessionKey: "s" } }] } as any,
+    null,
+    { resolveRuntimeScope: () => ({ userId: "u", agentId: "a", sessionKey: "agent:a:main" }) } as any,
+    {
+      list: async () => [
+        { id: "1", category: "identity", key: "identity.timezone", value: "用户的时区是 UTC+8。", score: 0.8 },
+      ],
+    } as any,
+    { get: () => null, set: () => {} } as any,
+    { getBySender: async () => "" } as any,
+    {
+      scope: { userId: "u", agentId: "a", requireUserId: false, requireAgentId: false },
+      recall: {
+        enabled: true,
+        method: "rag",
+        hybrid: { enabled: false, alpha: 0.5, fallbackToRag: false },
+        topK: 2,
+        scoreThreshold: 0.3,
+        maxContextChars: 1200,
+        injectionBudgetChars: 1200,
+        cacheTtlMs: 1000,
+        cacheMaxSize: 10,
+        workspaceFallback: false,
+        workspaceFallbackMaxItems: 0,
+        workspaceFallbackMaxFiles: 0,
+      },
+      core: { enabled: true, topK: 5, maxItemChars: 240, autoExtractProposals: false, humanReviewRequired: false, touchOnRecall: false, proposalQueueMax: 10 },
+      backend: { freeText: { provider: "mem0", dualWrite: false, readFallback: "none", compareRecall: false } },
+      memu: { baseUrl: "", timeoutMs: 1000, cbResetMs: 1000, healthCheckPath: "/debug" },
+      mem0: { mode: "open-source", enableGraph: false, searchThreshold: 0.3, topK: 5 },
+      capture: { enabled: false, maxItemsPerRun: 0, minChars: 0, maxChars: 0, dedupeThreshold: 0.8 },
+      outbox: { enabled: false, concurrency: 1, batchSize: 1, maxRetries: 1, drainTimeoutMs: 1000, persistPath: "", flushIntervalMs: 1000 },
+      sync: { flushToMarkdown: false, flushIntervalSec: 300, memoryFilePath: "MEMORY.md" },
+    } as any,
+    { info: () => {}, warn: () => {} },
+    { recallTotal: 0, recallHits: 0, recallMisses: 0, recallErrors: 0, recordRecallLatency: () => {}, recordRecallCompare: () => {}, recordRecallFallback: () => {} } as any,
+    { registerAgent: () => {} } as any,
+  );
+
+  const out = await hook(
+    {
+      prompt: "请只用一句中文回答：用户的时区是什么？",
+      messages: [{ role: "user", content: "用户的时区是什么？" }],
+    },
+    { agentId: "a", workspaceDir: "/tmp" } as any,
+  );
+
+  const prepend = String((out as any)?.prependContext ?? "");
+  if (!prepend.includes("<core-memory>")) throw new Error("core memory should remain");
+  if (prepend.includes("<relevant-memories>")) throw new Error("relevant memories should be suppressed when core strongly covers the answer");
+});
+
 const passed = results.filter((r) => r.passed).length;
 const failed = results.filter((r) => !r.passed).length;
 console.log(`\n${"═".repeat(40)}`);
