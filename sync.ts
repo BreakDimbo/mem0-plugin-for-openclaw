@@ -16,7 +16,26 @@ type Logger = { info(msg: string): void; warn(msg: string): void };
 const GENERATED_BLOCK_START = "<!-- memory-memu:start -->";
 const GENERATED_BLOCK_END = "<!-- memory-memu:end -->";
 const LEGACY_GENERATED_HEADER = "<!-- memory-memu:generated -->";
-const GENERATED_SECTION_HEADINGS = new Set(["## Core Memory", "## Recent Long-Term Memory"]);
+const GENERATED_SECTION_HEADINGS = new Set([
+  "## Core Identity",
+  "## Core Preferences",
+  "## Core Goals & Constraints",
+  "## Core Relationships",
+  "## Core General",
+  "## Recent Context",
+]);
+
+const NOISY_RECALL_PATTERNS = [
+  /\boutbox\b/i,
+  /\bmemu\b/i,
+  /\bdebug\b/i,
+  /\btest(ing)?\b/i,
+  /联调/,
+  /测试/,
+  /调试/,
+  /独立队列/,
+  /修复工作/,
+];
 
 export class MarkdownSync {
   private adapter: MemUAdapter;
@@ -82,15 +101,70 @@ export class MarkdownSync {
     return join(workspaceDir, configured);
   }
 
-  private renderCoreSection(memories: CoreMemoryRecord[]): string {
-    if (memories.length === 0) {
-      return "## Core Memory\n\n- No synced core memories yet.\n";
-    }
-    const lines = memories.map((memory) => {
+  private renderCoreList(memories: CoreMemoryRecord[]): string[] {
+    return memories.map((memory) => {
       const tag = `${memory.category ?? "general"}/${memory.key}`;
       return `- [${tag}] ${memory.value}`;
     });
-    return ["## Core Memory", "", ...lines, ""].join("\n");
+  }
+
+  private renderCoreSections(memories: CoreMemoryRecord[]): string {
+    if (memories.length === 0) {
+      return "## Core General\n\n- No synced core memories yet.\n";
+    }
+
+    const groups = {
+      identity: memories.filter((m) => (m.category ?? "general") === "identity"),
+      preferences: memories.filter((m) => (m.category ?? "general") === "preferences"),
+      goalsAndConstraints: memories.filter((m) => ["goals", "constraints"].includes(m.category ?? "general")),
+      relationships: memories.filter((m) => (m.category ?? "general") === "relationships"),
+      general: memories.filter((m) => !["identity", "preferences", "goals", "constraints", "relationships"].includes(m.category ?? "general")),
+    };
+
+    const sections: string[] = [];
+    const pushSection = (heading: string, items: CoreMemoryRecord[]) => {
+      if (items.length === 0) return;
+      sections.push(heading, "", ...this.renderCoreList(items), "");
+    };
+
+    pushSection("## Core Identity", groups.identity);
+    pushSection("## Core Preferences", groups.preferences);
+    pushSection("## Core Goals & Constraints", groups.goalsAndConstraints);
+    pushSection("## Core Relationships", groups.relationships);
+    pushSection("## Core General", groups.general);
+
+    return sections.join("\n").trimEnd() + "\n";
+  }
+
+  private isNoisyRecallItem(item: { text: string; category?: string; score?: number }, coreMemories: CoreMemoryRecord[]): boolean {
+    const text = item.text.trim();
+    if (!text) return true;
+    if (NOISY_RECALL_PATTERNS.some((pattern) => pattern.test(text))) return true;
+
+    const normalized = text.toLowerCase();
+    return coreMemories.some((core) => {
+      const coreValue = core.value.trim().toLowerCase();
+      return coreValue.length > 0 && (normalized.includes(coreValue) || coreValue.includes(normalized));
+    });
+  }
+
+  private selectRecallItems(
+    items: Array<{ text: string; category?: string; score?: number }>,
+    coreMemories: CoreMemoryRecord[],
+  ): Array<{ text: string; category?: string; score?: number }> {
+    const seen = new Set<string>();
+    const filtered: Array<{ text: string; category?: string; score?: number }> = [];
+
+    for (const item of items) {
+      const normalized = item.text.trim().toLowerCase();
+      if (!normalized || seen.has(normalized)) continue;
+      if (this.isNoisyRecallItem(item, coreMemories)) continue;
+      seen.add(normalized);
+      filtered.push(item);
+      if (filtered.length >= 3) break;
+    }
+
+    return filtered;
   }
 
   private renderRecallSection(items: Array<{ text: string; category?: string; score?: number }>): string {
@@ -103,18 +177,19 @@ export class MarkdownSync {
       if (meta.length > 0) parts.push(` (${meta.join(", ")})`);
       return parts.join("");
     });
-    return ["## Recent Long-Term Memory", "", ...lines, ""].join("\n");
+    return ["## Recent Context", "", ...lines, ""].join("\n");
   }
 
   private buildMarkdown(scope: MemoryScope, coreMemories: CoreMemoryRecord[], recallItems: Array<{ text: string; category?: string; score?: number }>): string {
+    const selectedRecallItems = this.selectRecallItems(recallItems, coreMemories);
     const header = [
       GENERATED_BLOCK_START,
       "<!-- memory-memu:generated -->",
       `<!-- scope:user=${scope.userId} agent=${scope.agentId} session=${scope.sessionKey} -->`,
       "",
-      this.renderCoreSection(coreMemories).trimEnd(),
+      this.renderCoreSections(coreMemories).trimEnd(),
     ];
-    const recallSection = this.renderRecallSection(recallItems);
+    const recallSection = this.renderRecallSection(selectedRecallItems);
     if (recallSection) {
       header.push("", recallSection.trimEnd());
     }
@@ -290,12 +365,13 @@ export class MarkdownSync {
 
       this._lastSyncAt = Date.now();
       this._syncCount++;
-      this._totalWritten += coreMemories.length + recallItems.length;
+      const selectedRecallItems = this.selectRecallItems(recallItems, coreMemories);
+      this._totalWritten += coreMemories.length + selectedRecallItems.length;
 
-      audit("store", scope.userId, agentId, `markdown-sync: wrote ${coreMemories.length} core + ${recallItems.length} recall items to ${filePath}`);
+      audit("store", scope.userId, agentId, `markdown-sync: wrote ${coreMemories.length} core + ${selectedRecallItems.length} recall items to ${filePath}`);
 
       this.logger.info(
-        `markdown-sync: [${agentId}] wrote core=${coreMemories.length} recall=${recallItems.length} -> ${filePath}`,
+        `markdown-sync: [${agentId}] wrote core=${coreMemories.length} recall=${selectedRecallItems.length} -> ${filePath}`,
       );
     } catch (err) {
       this.logger.warn(`markdown-sync: [${agentId}] error: ${String(err)}`);
