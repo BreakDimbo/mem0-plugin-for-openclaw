@@ -14,6 +14,7 @@ import type { CoreMemoryRepository } from "../core-repository.js";
 import { applyInjectionBudget, escapeForInjection, formatCoreMemoriesContext, formatMemoriesContext } from "../security.js";
 import type { FreeTextBackend } from "../backends/free-text/base.js";
 import { compareMemorySets } from "../backends/free-text/compare.js";
+import { rerankMemoryResults } from "../metadata.js";
 
 type Logger = { info(msg: string): void; warn(msg: string): void };
 
@@ -195,23 +196,22 @@ export function createRecallHook(
         const cached = cache.get(cacheKey);
 
         let memories: MemuMemoryRecord[];
+        const searchLimit = Math.min(Math.max(config.recall.topK * 2, config.recall.topK), 10);
         if (cached) {
           memories = cached;
           metrics.recallHits++;
           logger.info(`recall-hook: cache hit key=${cacheKey} count=${memories.length}`);
         } else {
           memories = await primaryBackend.search(query, scope, {
-            maxItems: config.recall.topK,
+            maxItems: searchLimit,
             maxContextChars: config.recall.maxContextChars,
             includeSessionScope: config.backend.freeText.provider === "mem0",
-            quality: "durable",
           });
           let fallbackUsed = false;
           if (memories.length === 0 && fallbackBackend) {
             memories = await fallbackBackend.search(query, scope, {
-              maxItems: config.recall.topK,
+              maxItems: searchLimit,
               maxContextChars: config.recall.maxContextChars,
-              quality: "durable",
             });
             fallbackUsed = memories.length > 0;
             if (fallbackUsed) {
@@ -220,11 +220,10 @@ export function createRecallHook(
           }
           if (config.backend.freeText.compareRecall && fallbackBackend) {
             void fallbackBackend.search(query, scope, {
-              maxItems: config.recall.topK,
+              maxItems: searchLimit,
               maxContextChars: config.recall.maxContextChars,
-              quality: "durable",
             }).then((shadow) => {
-              const comparison = compareMemorySets(memories, shadow);
+              const comparison = compareMemorySets(memories, rerankMemoryResults(query, shadow).slice(0, config.recall.topK));
               metrics.recordRecallCompare(comparison.primaryCount, comparison.shadowCount);
               if (comparison.primaryCount !== comparison.shadowCount) {
                 logger.info(
@@ -233,6 +232,7 @@ export function createRecallHook(
               }
             }).catch(() => {});
           }
+          memories = rerankMemoryResults(query, memories).slice(0, config.recall.topK);
           metrics.recallMisses++;
           if (memories.length > 0) cache.set(cacheKey, memories);
           logger.info(`recall-hook: fetched ${memories.length} memories via ${primaryBackend.provider}${fallbackUsed ? " (fallback)" : ""} for query="${query.slice(0, 60)}..."`);

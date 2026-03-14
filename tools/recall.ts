@@ -11,6 +11,7 @@ import { buildDynamicScope } from "../types.js";
 import { formatMemoriesContext } from "../security.js";
 import type { FreeTextBackend } from "../backends/free-text/base.js";
 import { compareMemorySets } from "../backends/free-text/compare.js";
+import { rerankMemoryResults } from "../metadata.js";
 
 export function createRecallTool(
   primaryBackend: FreeTextBackend,
@@ -49,36 +50,35 @@ export function createRecallTool(
         if (memories) {
           metrics.recallHits++;
         } else {
+          const searchLimit = Math.min(Math.max(limit * 2, limit), 10);
           memories = await primaryBackend.search(args.query, scope, {
-            maxItems: limit,
+            maxItems: searchLimit,
             maxContextChars: config.recall.maxContextChars,
             category: args.category,
             includeSessionScope: config.backend.freeText.provider === "mem0",
-            quality: "durable",
           });
           if (memories.length === 0 && fallbackBackend) {
             memories = await fallbackBackend.search(args.query, scope, {
-              maxItems: limit,
+              maxItems: searchLimit,
               maxContextChars: config.recall.maxContextChars,
               category: args.category,
-              quality: "durable",
             });
             if (memories.length > 0) {
               metrics.recordRecallFallback();
             }
           }
           metrics.recallMisses++;
+          memories = rerankMemoryResults(args.query, memories).slice(0, limit);
           if (memories.length > 0) {
             cache.set(cacheKey, memories);
           }
           if (config.backend.freeText.compareRecall && fallbackBackend) {
             void fallbackBackend.search(args.query, scope, {
-              maxItems: limit,
+              maxItems: searchLimit,
               maxContextChars: config.recall.maxContextChars,
               category: args.category,
-              quality: "durable",
             }).then((shadow) => {
-              const comparison = compareMemorySets(memories ?? [], shadow);
+              const comparison = compareMemorySets(memories ?? [], rerankMemoryResults(args.query, shadow).slice(0, limit));
               metrics.recordRecallCompare(comparison.primaryCount, comparison.shadowCount);
             }).catch(() => {});
           }

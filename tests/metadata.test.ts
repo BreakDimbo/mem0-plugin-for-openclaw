@@ -1,4 +1,4 @@
-import { buildFreeTextMetadata, inferFreeTextMemoryKind, inferQuality, matchesMetadataFilters, metadataKindLabel } from "../metadata.js";
+import { buildFreeTextMetadata, inferFreeTextMemoryKind, inferQuality, inferQueryKindHints, matchesMetadataFilters, metadataKindLabel, rerankMemoryResults } from "../metadata.js";
 
 type TestResult = { name: string; passed: boolean; error?: string };
 const results: TestResult[] = [];
@@ -26,6 +26,11 @@ await test("inferFreeTextMemoryKind classifies preferences", () => {
 
 await test("inferFreeTextMemoryKind classifies tooling", () => {
   assertEqual(inferFreeTextMemoryKind("The user's preferred editor is Neovim."), "tooling", "tooling");
+});
+
+await test("inferFreeTextMemoryKind handles Chinese preference and tooling", () => {
+  assertEqual(inferFreeTextMemoryKind("用户偏好使用 pnpm 作为 JavaScript 包管理工具。"), "tooling", "tooling zh");
+  assertEqual(inferFreeTextMemoryKind("用户更喜欢茉莉花茶而不是咖啡。"), "preference", "preference zh");
 });
 
 await test("inferQuality marks benchmark chatter as transient", () => {
@@ -65,6 +70,36 @@ await test("matchesMetadataFilters rejects transient when durable required", () 
     { quality: "durable" },
   );
   assertEqual(passed, false, "durable filter rejects transient");
+});
+
+await test("inferQueryKindHints recognizes Chinese tooling query", () => {
+  const hints = inferQueryKindHints("用户偏好用什么包管理工具？");
+  assertEqual(hints.includes("tooling"), true, "tooling query hint");
+});
+
+await test("rerankMemoryResults boosts Chinese preference match over generic durable hit", () => {
+  const scope = { userId: "alice", agentId: "researcher", sessionKey: "agent:researcher:main" };
+  const ranked = rerankMemoryResults("用户更喜欢喝什么饮料？", [
+    {
+      id: "generic",
+      text: "用户主要使用 Arc 浏览器。",
+      category: "general",
+      source: "memu_item" as const,
+      scope,
+      score: 0.91,
+      metadata: { quality: "durable", memory_kind: "profile", capture_kind: "explicit" },
+    },
+    {
+      id: "pref",
+      text: "用户更喜欢茉莉花茶而不是咖啡。",
+      category: "general",
+      source: "memu_item" as const,
+      scope,
+      score: 0.84,
+      metadata: { quality: "durable", memory_kind: "preference", capture_kind: "explicit" },
+    },
+  ]);
+  assertEqual(ranked[0]?.id, "pref", "preference should rank first");
 });
 
 const passed = results.filter((r) => r.passed).length;

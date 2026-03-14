@@ -16,6 +16,7 @@ import { formatMemoriesContext, getAuditLog } from "./security.js";
 import type { FreeTextBackend } from "./backends/free-text/base.js";
 import { compareMemorySets } from "./backends/free-text/compare.js";
 import { benchmarkBackends, formatBenchmarkReport } from "./backends/free-text/benchmark.js";
+import { rerankMemoryResults } from "./metadata.js";
 
 function inferPeerKindFromId(id: string): "direct" | "group" | "channel" {
   const raw = id.trim().toLowerCase();
@@ -207,15 +208,14 @@ export function createMemuCommand(
           maxItems: 10,
           maxContextChars: config.recall.maxContextChars,
           includeSessionScope: config.backend.freeText.provider === "mem0",
-          quality: "durable",
         });
         if (memories.length === 0 && fallbackBackend) {
           memories = await fallbackBackend.search(query, runtimeScope, {
             maxItems: 10,
             maxContextChars: config.recall.maxContextChars,
-            quality: "durable",
           });
         }
+        memories = rerankMemoryResults(query, memories).slice(0, 10);
         if (memories.length === 0) {
           return { text: "No memories found." };
         }
@@ -233,18 +233,19 @@ export function createMemuCommand(
         }
 
         const primaryResults = await primaryBackend.search(query, runtimeScope, {
-          maxItems: config.recall.topK,
+          maxItems: Math.min(Math.max(config.recall.topK * 2, config.recall.topK), 10),
           maxContextChars: config.recall.maxContextChars,
           includeSessionScope: primaryBackend.provider === "mem0",
-          quality: "durable",
         });
         const shadowResults = await fallbackBackend.search(query, runtimeScope, {
-          maxItems: config.recall.topK,
+          maxItems: Math.min(Math.max(config.recall.topK * 2, config.recall.topK), 10),
           maxContextChars: config.recall.maxContextChars,
           includeSessionScope: fallbackBackend.provider === "mem0",
-          quality: "durable",
         });
-        const comparison = compareMemorySets(primaryResults, shadowResults);
+        const comparison = compareMemorySets(
+          rerankMemoryResults(query, primaryResults).slice(0, config.recall.topK),
+          rerankMemoryResults(query, shadowResults).slice(0, config.recall.topK),
+        );
 
         const lines = [
           "Memory Backend Compare",
