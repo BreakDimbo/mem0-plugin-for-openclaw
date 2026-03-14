@@ -19,6 +19,12 @@ export type FreeTextMemoryKind =
   | "profile"
   | "relationship"
   | "tooling"
+  | "technical"
+  | "decision"
+  | "architecture"
+  | "work"
+  | "lesson"
+  | "benchmark"
   | "schedule"
   | "project"
   | "general";

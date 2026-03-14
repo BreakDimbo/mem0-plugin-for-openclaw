@@ -32,6 +32,28 @@ type JsonCapableLlm = {
   ): Promise<unknown>;
 };
 
+const DEFAULT_LONG_TERM_CAPTURE_INSTRUCTIONS = `Extract durable, reusable knowledge from the conversation and store it as self-contained facts.
+
+Prioritize information that can improve future assistance across sessions:
+- user profile, preferences, routines, goals, constraints, and relationships
+- project context, work context, technical setup, architecture decisions, and operating procedures
+- important metrics, benchmarks, limits, thresholds, and configuration choices
+- lessons learned, stable conclusions, and repeated patterns
+
+Guidelines:
+- write each memory as a standalone factual statement in third person
+- prefer concise conclusion sentences over raw dialogue or code
+- merge duplicate facts and update stale facts instead of creating noisy variants
+- keep long-term knowledge, not one-off chatter or transient coordination
+- if the conversation contains a decision, remember both the decision and the reason when useful
+- if it contains a metric or configuration value, preserve the exact value
+- if it contains an architecture or workflow concept, store the stable summary rather than the entire discussion
+
+Exclude:
+- secrets, credentials, tokens, or private identifiers
+- temporary acknowledgements, greetings, or filler
+- raw code unless the enduring decision or constraint is the actual memory`;
+
 function toPathHref(path: string): string {
   return pathToFileURL(path).href;
 }
@@ -153,7 +175,7 @@ export class Mem0FreeTextBackend implements FreeTextBackend {
         ...(cfg.oss?.vectorStore ? { vectorStore: cfg.oss.vectorStore } : {}),
         ...(cfg.oss?.llm ? { llm: cfg.oss.llm } : {}),
         ...(cfg.oss?.historyDbPath ? { historyDbPath: cfg.oss.historyDbPath } : {}),
-        ...(cfg.customPrompt ? { customPrompt: cfg.customPrompt } : {}),
+        customPrompt: cfg.customPrompt || DEFAULT_LONG_TERM_CAPTURE_INSTRUCTIONS,
       });
       patchOssMemoryLlm(memory as Record<string, unknown>);
       return {
@@ -173,7 +195,7 @@ export class Mem0FreeTextBackend implements FreeTextBackend {
         ...(cfg.oss?.vectorStore ? { vectorStore: cfg.oss.vectorStore } : {}),
         ...(cfg.oss?.llm ? { llm: cfg.oss.llm } : {}),
         ...(cfg.oss?.historyDbPath ? { historyDbPath: cfg.oss.historyDbPath } : {}),
-        ...(cfg.customPrompt ? { customPrompt: cfg.customPrompt } : {}),
+        customPrompt: cfg.customPrompt || DEFAULT_LONG_TERM_CAPTURE_INSTRUCTIONS,
       });
       patchOssMemoryLlm(memory as Record<string, unknown>);
       this.logger.info(`mem0-backend: loaded OSS Memory from local source after package import failed: ${String(err)}`);
@@ -274,7 +296,7 @@ export class Mem0FreeTextBackend implements FreeTextBackend {
             user_id: effectiveUid,
             ...(options?.sessionScoped ? { run_id: scope.sessionKey } : {}),
             metadata,
-            ...(this.config.mem0.customInstructions ? { custom_instructions: this.config.mem0.customInstructions } : {}),
+            custom_instructions: this.config.mem0.customInstructions || DEFAULT_LONG_TERM_CAPTURE_INSTRUCTIONS,
             ...(this.config.mem0.enableGraph ? { enable_graph: true } : {}),
             output_format: "v1.1",
           };

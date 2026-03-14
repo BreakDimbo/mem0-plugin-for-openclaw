@@ -33,6 +33,29 @@ await test("inferFreeTextMemoryKind handles Chinese preference and tooling", () 
   assertEqual(inferFreeTextMemoryKind("用户更喜欢茉莉花茶而不是咖啡。"), "preference", "preference zh");
 });
 
+await test("inferFreeTextMemoryKind classifies generalized long-term engineering knowledge", () => {
+  assertEqual(
+    inferFreeTextMemoryKind("smart-router 分类器模型是 gemini-3.1-flash-lite-preview。"),
+    "technical",
+    "technical kind",
+  );
+  assertEqual(
+    inferFreeTextMemoryKind("memU retrieve 优化时 route_intention 状态为关闭。"),
+    "decision",
+    "decision kind",
+  );
+  assertEqual(
+    inferFreeTextMemoryKind("目标记忆架构的第1层是 JSONL 全量对话日志。"),
+    "architecture",
+    "architecture kind",
+  );
+  assertEqual(
+    inferFreeTextMemoryKind("优化后 retrieve 的 P95 延迟是 120ms。"),
+    "benchmark",
+    "benchmark kind",
+  );
+});
+
 await test("inferQuality marks benchmark chatter as transient", () => {
   assertEqual(inferQuality("This is a benchmark smoke test record."), "transient", "quality");
 });
@@ -75,6 +98,17 @@ await test("matchesMetadataFilters rejects transient when durable required", () 
 await test("inferQueryKindHints recognizes Chinese tooling query", () => {
   const hints = inferQueryKindHints("用户偏好用什么包管理工具？");
   assertEqual(hints.includes("tooling"), true, "tooling query hint");
+});
+
+await test("inferQueryKindHints recognizes generalized system and architecture queries", () => {
+  const technical = inferQueryKindHints("smart-router 分类器现在是什么模型？");
+  assertEqual(technical.includes("technical"), true, "technical query hint");
+
+  const architecture = inferQueryKindHints("目标记忆架构的第1层是什么？");
+  assertEqual(architecture.includes("architecture"), true, "architecture query hint");
+
+  const decision = inferQueryKindHints("route_intention 为什么关闭？");
+  assertEqual(decision.includes("decision"), true, "decision query hint");
 });
 
 await test("rerankMemoryResults boosts Chinese preference match over generic durable hit", () => {

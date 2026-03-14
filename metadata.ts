@@ -28,6 +28,12 @@ export function buildFreeTextMetadata(
 export function inferFreeTextMemoryKind(text: string, context?: string): FreeTextMemoryKind {
   const normalized = `${text} ${context ?? ""}`.trim().toLowerCase();
 
+  if (/\b(postmortem|retrospective|lesson learned|takeaway|learned that|in hindsight)\b|复盘|经验|教训|启发|总结得出/.test(normalized)) return "lesson";
+  if (/\b(benchmark|p95|latency|throughput|cost|pricing|qps|rps|timeout|cbresetms|dimension)\b|基准|延迟|吞吐|成本|费用|超时|维度|性能/.test(normalized)) return "benchmark";
+  if (/\b(decision|decided|we chose|tradeoff|reasoning|because we|agreed to|disabled|enabled|turned off|turned on)\b|决策|决定|取舍|原因|因为|约定|采用了|关闭|开启|状态为/.test(normalized)) return "decision";
+  if (/\b(architecture|layer|pipeline|storage model|memory architecture|compaction|jsonl|kv|schema)\b|架构|分层|管线|存储模型|记忆架构|压缩|日志|键值|模式/.test(normalized)) return "architecture";
+  if (/\b(config|setting|classifier|router|feature flag|embedding|model|retriev|route_intention|sufficiency_check)\b|配置|参数|分类器|路由|特性开关|embedding|模型|检索/.test(normalized)) return "technical";
+  if (/\b(job|career|work context|employer|company role|full-time work)\b|工作内容|职业背景|全职工作|岗位|公司角色/.test(normalized)) return "work";
   if (/\b(editor|neovim|vscode|shell|zsh|git|github actions|database|postgresql|python|pnpm|ruff|biome|aws|package manager|tool|framework|astro|obsidian|1password|msw|linter|formatter|ci provider)\b|编辑器|工具|数据库|包管理|框架|格式化|代码检查|云服务/.test(normalized)) return "tooling";
   if (/\b(prefers?|preference|likes?|dislikes?|favorite|favou?rite)\b|喜欢|偏好|更喜欢|不喜欢|最喜欢/.test(normalized)) return "preference";
   if (/\b(always|never|must|must not|do not|don't|avoid|forbid|forbidden|required)\b|必须|不能|不要|禁止|避免|规则|约束/.test(normalized)) return "constraint";
@@ -76,6 +82,12 @@ export function inferQueryKindHints(query: string): FreeTextMemoryKind[] {
 
   if (!normalized) return [];
 
+  const technicalLike = /\b(config|setting|model|embedding|retriev|latency|cost|timeout|dimension|router|classifier)\b|配置|参数|模型|embedding|检索|延迟|成本|超时|维度|路由|分类器/.test(normalized);
+  const decisionLike = /\b(decision|decided|tradeoff|why did|why was)\b|决策|取舍|为什么采用|为什么关闭|为什么开启/.test(normalized);
+  const architectureLike = /\b(architecture|layer|pipeline|storage model|memory architecture)\b|架构|分层|管线|存储模型|记忆架构|第.?层/.test(normalized);
+  const workLike = /\b(job|career|employer|full-time work|role at work)\b|工作内容|职业背景|全职工作|岗位/.test(normalized);
+  const lessonLike = /\b(lesson|takeaway|what did we learn|retrospective)\b|经验|教训|启发|复盘/.test(normalized);
+  const benchmarkLike = /\b(p95|latency|throughput|cost|pricing|benchmark|timeout|dimension)\b|延迟|吞吐|成本|费用|基准|超时|维度/.test(normalized);
   const toolingLike = /\b(editor|tool|database|language|linter|formatter|package manager|framework|ci|cloud|python)\b|编辑器|工具|数据库|语言|包管理|框架|格式化|代码检查|云服务/.test(normalized);
   const profileLike = /\b(name|timezone|office|based|live|phone|laptop|browser|keyboard)\b|名字|时区|办公室|住在|手机|电脑|浏览器|键盘/.test(normalized);
   const relationshipLike = /\b(partner|wife|husband|friend|colleague)\b|伴侣|妻子|老婆|丈夫|朋友|同事/.test(normalized);
@@ -85,6 +97,12 @@ export function inferQueryKindHints(query: string): FreeTextMemoryKind[] {
   const constraintLike = /\b(rule|constraint|must|must not|avoid|forbid|approval)\b|规则|约束|必须|不能|不要|禁止|审批/.test(normalized);
   const preferenceLike = /\b(prefer|favorite|like|dislike|drink|taste)\b|喜欢|偏好|更喜欢|口味|饮料/.test(normalized);
 
+  if (technicalLike) hints.add("technical");
+  if (decisionLike) hints.add("decision");
+  if (architectureLike) hints.add("architecture");
+  if (workLike) hints.add("work");
+  if (lessonLike) hints.add("lesson");
+  if (benchmarkLike) hints.add("benchmark");
   if (toolingLike) hints.add("tooling");
   if (profileLike) hints.add("profile");
   if (relationshipLike) hints.add("relationship");
@@ -183,6 +201,9 @@ const QUERY_CONCEPTS: QueryConcept[] = [
   { query: /图表|示意图|diagram/i, item: /图表|流程图|示意图/i, bonus: 0.16 },
   { query: /会议|日历|排期|calendar|schedule/i, item: /会议|日历|排期|日程/i, bonus: 0.16 },
   { query: /架构|层|workflow|memory architecture/i, item: /架构|分层|层|日志|长期记忆|核心记忆|压缩/i, bonus: 0.18 },
+  { query: /配置|参数|模型|embedding|retriev|router|classifier|latency|cost|timeout|dimension/i, item: /配置|参数|模型|embedding|检索|路由|分类器|延迟|成本|超时|维度/i, bonus: 0.18 },
+  { query: /决策|取舍|为什么|decision|tradeoff/i, item: /决策|取舍|原因|关闭|开启|采用/i, bonus: 0.16 },
+  { query: /经验|教训|复盘|lesson|takeaway/i, item: /经验|教训|复盘|总结|启发/i, bonus: 0.16 },
 ];
 
 export function genericConceptBoost(query: string, text: string): number {

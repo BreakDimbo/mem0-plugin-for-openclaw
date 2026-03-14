@@ -96,6 +96,34 @@ await test("store maps non-main agents to namespaced user and preserves session 
   assertEqual(metadata.tag, "demo", "custom metadata");
 });
 
+await test("store injects default long-term instructions for platform mode", async () => {
+  let capturedOptions: Record<string, unknown> | null = null;
+  const backend = new Mem0FreeTextBackend(
+    loadConfig({
+      backend: { freeText: { provider: "mem0" } },
+      mem0: { mode: "platform", apiKey: "test-key" },
+    }),
+    logger,
+    async () => ({
+      add: async (_messages, options) => {
+        capturedOptions = options;
+        return { results: [{ id: "m1", event: "ADD" }] };
+      },
+      search: async () => [],
+      getAll: async () => [],
+      delete: async () => {},
+    }),
+  );
+
+  await backend.store(
+    "记住这个长期结论",
+    { userId: "alice", agentId: "main", sessionKey: "agent:main:main" },
+    { metadata: { capture_kind: "explicit" } },
+  );
+
+  assert(typeof capturedOptions?.custom_instructions === "string", "default instructions should be included");
+});
+
 await test("search combines long-term and session memories without duplicates", async () => {
   const searchCalls: Array<Record<string, unknown>> = [];
   const backend = new Mem0FreeTextBackend(
