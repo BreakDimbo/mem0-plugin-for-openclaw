@@ -9,7 +9,9 @@ export type BackendCompareResult = {
 };
 
 function memoryKey(item: MemuMemoryRecord): string {
-  return `${item.id ?? ""}\0${item.text.trim().toLowerCase()}`;
+  const text = item.text.trim().toLowerCase();
+  if (text) return text;
+  return item.id ?? "";
 }
 
 export function compareMemorySets(primary: MemuMemoryRecord[], shadow: MemuMemoryRecord[]): BackendCompareResult {

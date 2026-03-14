@@ -15,6 +15,7 @@ import { buildDynamicScope } from "./types.js";
 import { formatMemoriesContext, getAuditLog } from "./security.js";
 import type { FreeTextBackend } from "./backends/free-text/base.js";
 import { compareMemorySets } from "./backends/free-text/compare.js";
+import { benchmarkBackends, formatBenchmarkReport } from "./backends/free-text/benchmark.js";
 
 function inferPeerKindFromId(id: string): "direct" | "group" | "channel" {
   const raw = id.trim().toLowerCase();
@@ -89,7 +90,7 @@ export function createMemuCommand(
 ) {
   return {
     name: "memu",
-    description: "memU memory management. Usage: /memu [status|search|compare|flush|audit|dashboard|core ...]",
+    description: "memU memory management. Usage: /memu [status|search|compare|benchmark|flush|audit|dashboard|core ...]",
     acceptsArgs: true,
     handler: async (ctx: any) => {
       const args = (typeof ctx?.args === "string" ? ctx.args : "").trim();
@@ -256,6 +257,27 @@ export function createMemuCommand(
         return { text: lines.join("\n") };
       }
 
+      if (action === "benchmark") {
+        const rawQueries = args.slice("benchmark".length).trim();
+        if (!rawQueries) {
+          return { text: "Usage: /memu benchmark <query1> || <query2> || <query3>" };
+        }
+        if (!fallbackBackend) {
+          return { text: "Benchmark requires a configured fallback backend." };
+        }
+
+        const queries = rawQueries.split("||").map((item) => item.trim()).filter(Boolean);
+        if (queries.length === 0) {
+          return { text: "Usage: /memu benchmark <query1> || <query2> || <query3>" };
+        }
+
+        const rows = await benchmarkBackends(primaryBackend, fallbackBackend, runtimeScope, queries, {
+          maxItems: config.recall.topK,
+          maxContextChars: config.recall.maxContextChars,
+        });
+        return { text: formatBenchmarkReport(primaryBackend.provider, fallbackBackend.provider, rows) };
+      }
+
       if (action === "flush") {
         const before = outbox.pending;
         await outbox.drain(config.outbox.drainTimeoutMs);
@@ -389,6 +411,7 @@ export function createMemuCommand(
           "  /memu sync [agentId]  — force Markdown sync",
           "  /memu search <query>  — search memories",
           "  /memu compare <query> — compare primary vs fallback recall",
+          "  /memu benchmark <q1> || <q2> — benchmark multiple queries",
           "  /memu flush           — flush pending outbox items",
           "  /memu dashboard       — full metrics dashboard",
           "  /memu audit [limit]   — view audit log",
