@@ -162,12 +162,38 @@ export function extractCoreProposal(text: string, scope: MemoryScope): ProposalD
   const msg = text.trim().replace(/\s+/g, " ");
   if (msg.length < 8 || msg.length > 500) return null;
 
+  const normalized = msg.toLowerCase();
+
+  // Core memory should only capture durable profile-like facts.
+  // Keep short-lived tasks, test chatter, and near-term plans in long-term
+  // free-text memory instead of elevating them into structured core memory.
+  const transientPatterns = [
+    /\b(today|tomorrow|tonight|this morning|this afternoon|this evening|next week)\b/i,
+    /\b明天\b|\b今天\b|\b今晚\b|\b下周\b/,
+    /\btest(ing)?\b|\bdebug\b|\boutbox\b|\bmemu\b/i,
+    /测试|调试|联调|修复/,
+    /\bplan(?:ning)?\b/i,
+    /计划于/,
+    /\bwill\b/i,
+  ];
+  if (transientPatterns.some((pattern) => pattern.test(msg))) {
+    return null;
+  }
+
   const patterns: Array<{ rx: RegExp; category: string; keyPrefix: string; reason: string }> = [
     { rx: /^my name is (.+)$/i, category: "identity", keyPrefix: "identity.name", reason: "user identity statement" },
-    { rx: /^i (?:prefer|like) (.+)$/i, category: "preferences", keyPrefix: "preferences", reason: "user preference statement" },
+    { rx: /^i (?:prefer|like|usually prefer) (.+)$/i, category: "preferences", keyPrefix: "preferences", reason: "user preference statement" },
     { rx: /^i(?:'m| am) from (.+)$/i, category: "identity", keyPrefix: "identity.location", reason: "user profile statement" },
-    { rx: /^(?:please )?remember (?:that )?(.+)$/i, category: "general", keyPrefix: "remember", reason: "explicit remember request" },
-    { rx: /^we (?:use|are using) (.+)$/i, category: "constraints", keyPrefix: "team.stack", reason: "team/project persistent detail" },
+    { rx: /^i(?:'m| am) based in (.+)$/i, category: "identity", keyPrefix: "identity.location", reason: "user profile statement" },
+    { rx: /^my timezone is (.+)$/i, category: "identity", keyPrefix: "identity.timezone", reason: "user profile statement" },
+    { rx: /^i work (?:on|with) (.+)$/i, category: "constraints", keyPrefix: "constraints.work", reason: "user long-term work context" },
+    { rx: /^we (?:use|are using|always use) (.+)$/i, category: "constraints", keyPrefix: "team.stack", reason: "team/project persistent detail" },
+    { rx: /^we do not use (.+)$/i, category: "constraints", keyPrefix: "constraints.avoid", reason: "team/project persistent constraint" },
+    { rx: /^our standard is (.+)$/i, category: "constraints", keyPrefix: "constraints.standard", reason: "team/project persistent standard" },
+    { rx: /^i always want (.+)$/i, category: "preferences", keyPrefix: "preferences", reason: "stable user preference statement" },
+    { rx: /^i never want (.+)$/i, category: "preferences", keyPrefix: "preferences.avoid", reason: "stable user preference statement" },
+    { rx: /^my long-term goal is (.+)$/i, category: "goals", keyPrefix: "goals.primary", reason: "user long-term goal statement" },
+    { rx: /^one of my goals is (.+)$/i, category: "goals", keyPrefix: "goals.secondary", reason: "user long-term goal statement" },
   ];
 
   for (const p of patterns) {
@@ -175,6 +201,7 @@ export function extractCoreProposal(text: string, scope: MemoryScope): ProposalD
     if (!m?.[1]) continue;
     const value = m[1].trim().replace(/[.。!?]+$/, "").slice(0, 220);
     if (!value) continue;
+    if (value.split(/\s+/).length < 2) continue;
     const suffix = sanitizeKeyPart(value.split(/[,:;]/)[0] ?? "fact");
     const key = `${p.keyPrefix}${suffix ? `.${suffix}` : ""}`.slice(0, 80);
     return {
