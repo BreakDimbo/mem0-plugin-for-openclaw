@@ -343,6 +343,7 @@ export function createRecallHook(
       let coreMemoriesForTouch: Array<{ id: string; category?: string; key: string; value: string }> = [];
       if (config.core.enabled) {
         const coreMemories = await coreRepo.list(scope, {
+          query,
           limit: config.core.topK,
         });
         logger.info(`recall-hook: scope user=${scope.userId} agent=${scope.agentId} core=${coreMemories.length}`);

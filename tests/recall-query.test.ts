@@ -1,4 +1,4 @@
-import { sanitizePromptQuery, splitRecallQueries } from "../hooks/recall.js";
+import { createRecallHook, sanitizePromptQuery, splitRecallQueries } from "../hooks/recall.js";
 
 type TestResult = { name: string; passed: boolean; error?: string };
 const results: TestResult[] = [];
@@ -61,6 +61,60 @@ await test("splitRecallQueries keeps multi-part Chinese memory questions", () =>
   assertEqual(parts[0], "用户叫什么名字？", "question 1 extracted");
   assertEqual(parts[1], "memU embedding 现在用什么？", "question 2 extracted");
   assertEqual(parts[2], "记忆系统一共有几层？", "question 3 extracted");
+});
+
+await test("createRecallHook passes the current query into core recall", async () => {
+  let seenQuery = "";
+  const hook = createRecallHook(
+    { provider: "mem0", search: async () => [] } as any,
+    null,
+    { resolveRuntimeScope: () => ({ userId: "u", agentId: "a", sessionKey: "agent:a:main" }) } as any,
+    {
+      list: async (_scope: any, opts?: { query?: string }) => {
+        seenQuery = opts?.query ?? "";
+        return [];
+      },
+    } as any,
+    { get: () => null, set: () => {} } as any,
+    { getBySender: async () => "" } as any,
+    {
+      scope: { userId: "u", agentId: "a", requireUserId: false, requireAgentId: false },
+      recall: {
+        enabled: true,
+        method: "rag",
+        hybrid: { enabled: false, alpha: 0.5, fallbackToRag: false },
+        topK: 2,
+        scoreThreshold: 0.3,
+        maxContextChars: 1200,
+        injectionBudgetChars: 1200,
+        cacheTtlMs: 1000,
+        cacheMaxSize: 10,
+        workspaceFallback: false,
+        workspaceFallbackMaxItems: 0,
+        workspaceFallbackMaxFiles: 0,
+      },
+      core: { enabled: true, topK: 5, maxItemChars: 240, autoExtractProposals: false, humanReviewRequired: false, touchOnRecall: false, proposalQueueMax: 10 },
+      backend: { freeText: { provider: "mem0", dualWrite: false, readFallback: "none", compareRecall: false } },
+      memu: { baseUrl: "", timeoutMs: 1000, cbResetMs: 1000, healthCheckPath: "/debug" },
+      mem0: { mode: "open-source", enableGraph: false, searchThreshold: 0.3, topK: 5 },
+      capture: { enabled: false, maxItemsPerRun: 0, minChars: 0, maxChars: 0, dedupeThreshold: 0.8 },
+      outbox: { enabled: false, concurrency: 1, batchSize: 1, maxRetries: 1, drainTimeoutMs: 1000, persistPath: "", flushIntervalMs: 1000 },
+      sync: { flushToMarkdown: false, flushIntervalSec: 300, memoryFilePath: "MEMORY.md" },
+    } as any,
+    { info: () => {}, warn: () => {} },
+    { recallTotal: 0, recallMisses: 0, recallErrors: 0, recordRecallLatency: () => {}, recordRecallCompare: () => {} } as any,
+    { registerAgent: () => {} } as any,
+  );
+
+  await hook(
+    {
+      prompt: "请只用一句中文回答：用户的时区是什么？",
+      messages: [{ role: "user", content: "用户的时区是什么？" }],
+    },
+    { agentId: "a", workspaceDir: "/tmp" } as any,
+  );
+
+  assertEqual(seenQuery, "用户的时区是什么？", "core recall query");
 });
 
 const passed = results.filter((r) => r.passed).length;
