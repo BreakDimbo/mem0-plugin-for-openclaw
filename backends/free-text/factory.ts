@@ -9,16 +9,22 @@ type Logger = { info(msg: string): void; warn(msg: string): void };
 
 export function createPrimaryFreeTextBackend(
   config: MemuPluginConfig,
-  deps: { adapter: MemUAdapter; client: MemUClient; logger: Logger },
+  deps: { adapter?: MemUAdapter | null; client?: MemUClient | null; logger: Logger },
 ): FreeTextBackend {
   if (config.backend.freeText.provider === "mem0") {
     return new Mem0FreeTextBackend(config, deps.logger);
+  }
+  if (!deps.adapter || !deps.client) {
+    throw new Error("memU free-text backend requires MemU adapter and client");
   }
   return new MemUFreeTextBackend(deps.adapter, () => deps.client.healthCheck());
 }
 
 export function createMemuFallbackBackend(
-  deps: { adapter: MemUAdapter; client: MemUClient },
+  deps: { adapter?: MemUAdapter | null; client?: MemUClient | null },
 ): FreeTextBackend {
+  if (!deps.adapter || !deps.client) {
+    throw new Error("memU fallback backend requires MemU adapter and client");
+  }
   return new MemUFreeTextBackend(deps.adapter, () => deps.client.healthCheck());
 }

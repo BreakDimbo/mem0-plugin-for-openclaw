@@ -147,6 +147,7 @@
           "enabled": { "type": "boolean", "default": true },
           "topK": { "type": "number", "default": 8, "minimum": 1, "maximum": 50 },
           "maxItemChars": { "type": "number", "default": 240, "minimum": 30, "maximum": 2000 },
+          "persistPath": { "type": "string", "description": "Directory for local Core Memory persistence", "default": "~/.openclaw/data/memory-memu" },
           "autoExtractProposals": { "type": "boolean", "default": true },
           "humanReviewRequired": { "type": "boolean", "default": true },
           "touchOnRecall": { "type": "boolean", "default": true },

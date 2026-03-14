@@ -1,21 +1,37 @@
-import type { MemUClient } from "./client.js";
+import { randomUUID } from "node:crypto";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
+
 import type { CoreMemoryRecord, MemoryScope } from "./types.js";
 import { genericConceptBoost, tokenizeSemanticQuery } from "./metadata.js";
 import { sanitizeCoreValue, shouldStoreCoreMemory } from "./security.js";
 
 type Logger = { info(msg: string): void; warn(msg: string): void };
 
-function asRecord(v: unknown): Record<string, unknown> | null {
-  return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
-}
+type StoredCoreRecord = {
+  id: string;
+  category: string;
+  key: string;
+  value: string;
+  importance?: number;
+  source?: string;
+  metadata?: Record<string, unknown>;
+  scope: MemoryScope;
+  createdAt: number;
+  updatedAt: number;
+  touchedAt?: number;
+};
 
-function toTimestamp(v: unknown): number | undefined {
-  if (typeof v === "number" && Number.isFinite(v)) return v;
-  if (typeof v === "string") {
-    const ts = Date.parse(v);
-    if (!Number.isNaN(ts)) return ts;
-  }
-  return undefined;
+type CoreStoreFile = {
+  version: 1;
+  items: StoredCoreRecord[];
+};
+
+function normalizeSearchText(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/\s+/g, "")
+    .replace(/[，。、“”"'`·:：；;（）()【】\[\]\-]/g, "");
 }
 
 function scoreTextMatch(query: string, key: string, value: string): number {
@@ -25,23 +41,14 @@ function scoreTextMatch(query: string, key: string, value: string): number {
   if (hay.includes(q)) return 1;
 
   const qWords = tokenizeSemanticQuery(query).filter((token) => token.trim().length >= 2);
-  if (qWords.length === 0) {
-    return genericConceptBoost(query, value);
-  }
+  if (qWords.length === 0) return genericConceptBoost(query, value);
 
   let hits = 0;
   for (const w of qWords) {
-    if (hay.includes(normalizeSearchText(w))) hits++;
+    if (hay.includes(normalizeSearchText(w))) hits += 1;
   }
   const lexical = hits / qWords.length;
   return lexical + genericConceptBoost(query, value);
-}
-
-function normalizeSearchText(text: string): string {
-  return text
-    .toLowerCase()
-    .replace(/\s+/g, "")
-    .replace(/[，。、“”"'`·:：；;（）()【】\[\]\-]/g, "");
 }
 
 function inferCategoryFromKey(key: string): string {
@@ -98,96 +105,116 @@ export function normalizeCoreCategory(category: string | undefined, key: string)
   }
 }
 
+function scopeMatches(scope: MemoryScope, record: StoredCoreRecord): boolean {
+  return record.scope.userId === scope.userId && record.scope.agentId === scope.agentId;
+}
+
+function cloneRecord(record: StoredCoreRecord): CoreMemoryRecord {
+  return {
+    id: record.id,
+    category: record.category,
+    key: record.key,
+    value: record.value,
+    importance: record.importance,
+    source: record.source,
+    metadata: record.metadata,
+    scope: { ...record.scope },
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+    touchedAt: record.touchedAt,
+  };
+}
+
 export class CoreMemoryRepository {
-  private readonly client: MemUClient;
+  private readonly persistPath: string;
   private readonly logger: Logger;
   private readonly maxItemChars: number;
+  private loadPromise: Promise<CoreStoreFile> | null = null;
+  private writeQueue: Promise<void> = Promise.resolve();
+  private state: CoreStoreFile | null = null;
 
-  constructor(client: MemUClient, logger: Logger, maxItemChars: number) {
-    this.client = client;
+  constructor(persistPath: string, logger: Logger, maxItemChars: number) {
+    this.persistPath = persistPath.replace(/^~/, homedir());
     this.logger = logger;
     this.maxItemChars = maxItemChars;
   }
 
-  private normalizeRecords(items: unknown, scope: MemoryScope): CoreMemoryRecord[] {
-    const candidates = Array.isArray(items) ? items : [];
-    const out: CoreMemoryRecord[] = [];
-    for (const raw of candidates) {
-      const obj = asRecord(raw);
-      if (!obj) continue;
-
-      const id = String(obj.id ?? obj.memory_id ?? obj.key ?? "");
-      const key = String(obj.key ?? obj.name ?? obj.memory_key ?? "").trim();
-      const valueRaw = String(obj.value ?? obj.text ?? obj.content ?? "").trim();
-      if (!id || !key || !valueRaw) continue;
-
-      const value = sanitizeCoreValue(valueRaw, this.maxItemChars);
-      if (!shouldStoreCoreMemory(key, value, this.maxItemChars)) continue;
-
-      out.push({
-        id,
-        category: typeof obj.category === "string" ? obj.category : undefined,
-        key,
-        value,
-        importance: typeof obj.importance === "number" ? obj.importance : undefined,
-        source: typeof obj.source === "string" ? obj.source : undefined,
-        score: typeof obj.score === "number" ? obj.score : undefined,
-        metadata: asRecord(obj.metadata) ?? undefined,
-        scope,
-        createdAt: toTimestamp(obj.created_at),
-        updatedAt: toTimestamp(obj.updated_at),
-        touchedAt: toTimestamp(obj.touched_at ?? obj.last_accessed_at),
-      });
-    }
-    return out;
+  private get filePath(): string {
+    return this.persistPath ? `${this.persistPath}/core-memory.json` : "";
   }
 
-  async list(
-    scope: MemoryScope,
-    opts?: { query?: string; limit?: number },
-  ): Promise<CoreMemoryRecord[]> {
-    try {
-      const requestedLimit = opts?.limit;
-      const fetchLimit = opts?.query
-        ? Math.max(Math.max(requestedLimit ?? 10, 10) * 5, 50)
-        : requestedLimit;
-      const res = await this.client.coreList({
-        userId: scope.userId,
-        agentId: scope.agentId,
-        limit: fetchLimit,
-      });
-      if (res.status !== "success") return [];
+  private async ensureLoaded(): Promise<CoreStoreFile> {
+    if (this.state) return this.state;
+    if (!this.loadPromise) {
+      this.loadPromise = this.loadFromDisk();
+    }
+    this.state = await this.loadPromise;
+    this.loadPromise = null;
+    return this.state;
+  }
 
-      let records = this.normalizeRecords(res.items, scope);
+  private async loadFromDisk(): Promise<CoreStoreFile> {
+    if (!this.filePath) return { version: 1, items: [] };
+    try {
+      const raw = await readFile(this.filePath, "utf-8");
+      const parsed = JSON.parse(raw) as Partial<CoreStoreFile>;
+      if (parsed && Array.isArray(parsed.items)) {
+        return {
+          version: 1,
+          items: parsed.items.filter((item): item is StoredCoreRecord => !!item && typeof item === "object"),
+        };
+      }
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT") {
+        this.logger.warn(`core-repo: load failed: ${String(err)}`);
+      }
+    }
+    return { version: 1, items: [] };
+  }
+
+  private async persist(): Promise<void> {
+    if (!this.filePath) return;
+    const state = await this.ensureLoaded();
+    this.writeQueue = this.writeQueue.then(async () => {
+      await mkdir(this.persistPath, { recursive: true });
+      await writeFile(this.filePath, JSON.stringify(state, null, 2), "utf-8");
+    }).catch((err) => {
+      this.logger.warn(`core-repo: persist failed: ${String(err)}`);
+    });
+    await this.writeQueue;
+  }
+
+  private async listScopeRecords(scope: MemoryScope): Promise<StoredCoreRecord[]> {
+    const state = await this.ensureLoaded();
+    return state.items.filter((item) => scopeMatches(scope, item));
+  }
+
+  async list(scope: MemoryScope, opts?: { query?: string; limit?: number }): Promise<CoreMemoryRecord[]> {
+    try {
+      let records = (await this.listScopeRecords(scope)).map(cloneRecord);
       const totalBeforeLimit = records.length;
 
-      // Calculate score if query provided (for sorting), but don't filter by score
-      // Core Memory should always return top items by importance/recency
       if (opts?.query) {
-        const q = opts.query;
-        records = records
-          .map((r) => ({ ...r, score: r.score ?? scoreTextMatch(q, r.key, r.value) }));
+        records = records.map((record) => ({
+          ...record,
+          score: record.score ?? scoreTextMatch(opts.query!, record.key, record.value),
+        }));
       }
 
-      // Sort by: score (if query) > importance > updatedAt
       records.sort((a, b) => {
-        // First by score desc (if query was provided)
         const scoreA = a.score ?? 0;
         const scoreB = b.score ?? 0;
         if (scoreA !== scoreB) return scoreB - scoreA;
-        // Then by importance desc (top-level field, not metadata)
         const impA = a.importance ?? (a.metadata?.importance as number | undefined) ?? 5;
         const impB = b.importance ?? (b.metadata?.importance as number | undefined) ?? 5;
         if (impA !== impB) return impB - impA;
-        // Finally by updatedAt desc (most recent first)
         return (b.updatedAt ?? 0) - (a.updatedAt ?? 0);
       });
 
-      const limit = requestedLimit ?? records.length;
+      const limit = opts?.limit ?? records.length;
       records = records.slice(0, limit);
-      this.logger.info(
-        `core-repo: list agent=${scope.agentId} total=${totalBeforeLimit} returned=${records.length} limit=${limit}`
-      );
+      this.logger.info(`core-repo: list agent=${scope.agentId} total=${totalBeforeLimit} returned=${records.length} limit=${limit}`);
       return records;
     } catch (err) {
       this.logger.warn(`core-repo: list failed: ${String(err)}`);
@@ -209,28 +236,35 @@ export class CoreMemoryRepository {
   ): Promise<boolean> {
     const key = payload.key.trim().toLowerCase();
     const value = sanitizeCoreValue(payload.value, this.maxItemChars);
-    if (!shouldStoreCoreMemory(key, value, this.maxItemChars)) {
-      return false;
-    }
+    if (!shouldStoreCoreMemory(key, value, this.maxItemChars)) return false;
+
     try {
-      const res = await this.client.coreUpsert({
-        userId: scope.userId,
-        agentId: scope.agentId,
-        items: [
-          {
-            category: normalizeCoreCategory(payload.category, key),
-            key,
-            value,
-            importance: payload.importance,
-            provenance: {
-              source: payload.source ?? "memory-memu",
-              ...(payload.metadata ?? {}),
-            },
-            validUntil: payload.validUntil,
-          },
-        ],
-      });
-      return res.status === "success";
+      const state = await this.ensureLoaded();
+      const category = normalizeCoreCategory(payload.category, key);
+      const now = Date.now();
+      const existing = state.items.find((item) => scopeMatches(scope, item) && item.category === category && item.key === key);
+      if (existing) {
+        existing.value = value;
+        existing.importance = payload.importance;
+        existing.source = payload.source ?? existing.source ?? "memory-memu";
+        existing.metadata = payload.metadata ? { ...payload.metadata } : existing.metadata;
+        existing.updatedAt = now;
+      } else {
+        state.items.push({
+          id: randomUUID(),
+          category,
+          key,
+          value,
+          importance: payload.importance,
+          source: payload.source ?? "memory-memu",
+          metadata: payload.metadata ? { ...payload.metadata } : undefined,
+          scope: { ...scope },
+          createdAt: now,
+          updatedAt: now,
+        });
+      }
+      await this.persist();
+      return true;
     } catch (err) {
       this.logger.warn(`core-repo: upsert failed: ${String(err)}`);
       return false;
@@ -257,8 +291,7 @@ export class CoreMemoryRepository {
           key,
           value,
           importance: item.importance,
-          provenance: item.provenance ? { source: item.provenance } : undefined,
-          validUntil: item.validUntil,
+          source: item.provenance ?? "memory-memu",
         };
       })
       .filter((item) => shouldStoreCoreMemory(item.key, item.value, this.maxItemChars));
@@ -266,12 +299,31 @@ export class CoreMemoryRepository {
     if (normalizedItems.length === 0) return false;
 
     try {
-      const res = await this.client.coreUpsert({
-        userId: scope.userId,
-        agentId: scope.agentId,
-        items: normalizedItems,
-      });
-      return res.status === "success";
+      const state = await this.ensureLoaded();
+      const now = Date.now();
+      for (const item of normalizedItems) {
+        const existing = state.items.find((record) => scopeMatches(scope, record) && record.category === item.category && record.key === item.key);
+        if (existing) {
+          existing.value = item.value;
+          existing.importance = item.importance;
+          existing.source = item.source;
+          existing.updatedAt = now;
+        } else {
+          state.items.push({
+            id: randomUUID(),
+            category: item.category,
+            key: item.key,
+            value: item.value,
+            importance: item.importance,
+            source: item.source,
+            scope: { ...scope },
+            createdAt: now,
+            updatedAt: now,
+          });
+        }
+      }
+      await this.persist();
+      return true;
     } catch (err) {
       this.logger.warn(`core-repo: upsertMany failed: ${String(err)}`);
       return false;
@@ -281,12 +333,11 @@ export class CoreMemoryRepository {
   async delete(scope: MemoryScope, ref: { category?: string; key?: string; id?: string }): Promise<boolean> {
     let category = ref.category?.trim();
     let key = ref.key?.trim().toLowerCase();
-    if (!category && key) {
-      category = inferCategoryFromKey(key);
-    }
+    if (!category && key) category = inferCategoryFromKey(key);
+
     if ((!category || !key) && ref.id) {
       const records = await this.list(scope, { limit: 200 });
-      const found = records.find((r) => r.id === ref.id);
+      const found = records.find((record) => record.id === ref.id);
       if (found) {
         category = found.category;
         key = found.key.trim().toLowerCase();
@@ -295,13 +346,12 @@ export class CoreMemoryRepository {
     if (!category || !key) return false;
 
     try {
-      const res = await this.client.coreDelete({
-        userId: scope.userId,
-        agentId: scope.agentId,
-        category,
-        key,
-      });
-      return res.status === "success" && res.deleted;
+      const state = await this.ensureLoaded();
+      const before = state.items.length;
+      state.items = state.items.filter((item) => !(scopeMatches(scope, item) && item.category === category && item.key === key));
+      if (state.items.length === before) return false;
+      await this.persist();
+      return true;
     } catch (err) {
       this.logger.warn(`core-repo: delete failed: ${String(err)}`);
       return false;
@@ -321,20 +371,26 @@ export class CoreMemoryRepository {
       const targetKey = ref.key.trim().toLowerCase();
       const targetCategory = ref.category?.trim();
       ids = records
-        .filter((r) => r.key.trim().toLowerCase() === targetKey && (!targetCategory || r.category === targetCategory))
-        .map((r) => r.id);
+        .filter((record) => record.key.trim().toLowerCase() === targetKey && (!targetCategory || record.category === targetCategory))
+        .map((record) => record.id);
     }
 
     if (ids.length === 0) return false;
 
     try {
-      const res = await this.client.coreTouch({
-        userId: scope.userId,
-        agentId: scope.agentId,
-        ids,
-        kind: ref.kind ?? "access",
-      });
-      return res.status === "success" && res.touched > 0;
+      const state = await this.ensureLoaded();
+      const now = Date.now();
+      let touched = 0;
+      for (const item of state.items) {
+        if (scopeMatches(scope, item) && ids.includes(item.id)) {
+          item.touchedAt = now;
+          item.updatedAt = Math.max(item.updatedAt, now);
+          touched += 1;
+        }
+      }
+      if (touched === 0) return false;
+      await this.persist();
+      return true;
     } catch (err) {
       this.logger.warn(`core-repo: touch failed: ${String(err)}`);
       return false;

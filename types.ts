@@ -202,6 +202,7 @@ export type MemuPluginConfig = {
     enabled: boolean;
     topK: number;
     maxItemChars: number;
+    persistPath: string;
     autoExtractProposals: boolean;
     humanReviewRequired: boolean;
     touchOnRecall: boolean;
@@ -287,6 +288,7 @@ export const DEFAULT_CONFIG: MemuPluginConfig = {
     enabled: true,
     topK: 8,
     maxItemChars: 240,
+    persistPath: "~/.openclaw/data/memory-memu",
     autoExtractProposals: true,
     humanReviewRequired: true,
     touchOnRecall: true,
@@ -514,6 +516,7 @@ export function loadConfig(raw?: Record<string, unknown>): MemuPluginConfig {
       enabled: bool(co.enabled, DEFAULT_CONFIG.core.enabled),
       topK: numInRange(co.topK, DEFAULT_CONFIG.core.topK, 1, 50),
       maxItemChars: numInRange(co.maxItemChars, DEFAULT_CONFIG.core.maxItemChars, 30, 2_000),
+      persistPath: typeof co.persistPath === "string" ? co.persistPath : DEFAULT_CONFIG.core.persistPath,
       autoExtractProposals: bool(co.autoExtractProposals, DEFAULT_CONFIG.core.autoExtractProposals),
       humanReviewRequired: bool(co.humanReviewRequired, DEFAULT_CONFIG.core.humanReviewRequired),
       touchOnRecall: bool(co.touchOnRecall, DEFAULT_CONFIG.core.touchOnRecall),

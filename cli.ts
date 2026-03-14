@@ -3,7 +3,6 @@
 // Phase 3: metrics dashboard, audit log viewer
 // ============================================================================
 
-import type { MemUClient } from "./client.js";
 import type { LRUCache } from "./cache.js";
 import type { OutboxWorker } from "./outbox.js";
 import type { Metrics } from "./metrics.js";
@@ -77,7 +76,14 @@ function parseCoreRef(raw: string | undefined): { id?: string; key?: string } {
 }
 
 export function createMemuCommand(
-  client: MemUClient,
+  client: {
+    healthCheck(): Promise<boolean>;
+    circuitState: string;
+    failCount: number;
+    totalRequests: number;
+    totalErrors: number;
+    latencyStats: { p50: number; p95: number; p99: number };
+  } | null,
   primaryBackend: FreeTextBackend,
   fallbackBackend: FreeTextBackend | null,
   coreRepo: CoreMemoryRepository,
@@ -125,7 +131,7 @@ export function createMemuCommand(
       const runtimeScope = buildDynamicScope(config.scope, scopeCtx);
 
       if (action === "status") {
-        const healthy = await client.healthCheck();
+        const healthy = client ? await client.healthCheck() : true;
         const backendStatus = await primaryBackend.healthCheck();
         const fallbackStatus = fallbackBackend ? await fallbackBackend.healthCheck() : null;
         const recentOutbox = outbox.recent
@@ -147,9 +153,9 @@ export function createMemuCommand(
           "══════════════════",
           "",
           "Connection:",
-          `  Server:          ${config.memu.baseUrl}`,
-          `  Status:          ${healthy ? "Online" : "OFFLINE"}`,
-          `  Circuit Breaker: ${client.circuitState} (failures: ${client.failCount})`,
+          `  Server:          ${client ? config.memu.baseUrl : "(disabled)"}`,
+          `  Status:          ${client ? (healthy ? "Online" : "OFFLINE") : "disabled"}`,
+          `  Circuit Breaker: ${client?.circuitState ?? "disabled"}${client ? ` (failures: ${client.failCount})` : ""}`,
           "",
           "Free-text Backend:",
           `  Primary:         ${backendStatus.provider} (${backendStatus.healthy ? "Online" : "OFFLINE"})`,
@@ -310,10 +316,10 @@ export function createMemuCommand(
             hitRate: cache.hitRate,
           },
           client: {
-            totalRequests: client.totalRequests,
-            totalErrors: client.totalErrors,
-            circuitState: client.circuitState,
-            latencyStats: client.latencyStats,
+            totalRequests: client?.totalRequests ?? 0,
+            totalErrors: client?.totalErrors ?? 0,
+            circuitState: client?.circuitState ?? "disabled",
+            latencyStats: client?.latencyStats ?? { p50: 0, p95: 0, p99: 0 },
           },
         });
         return { text: metrics.formatDashboard(snap) };

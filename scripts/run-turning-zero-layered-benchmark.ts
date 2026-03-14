@@ -77,7 +77,7 @@ async function buildRecallHook(config: ReturnType<typeof loadConfig>) {
   const client = new MemUClient(config.memu.baseUrl, config.memu.timeoutMs, config.memu.cbResetMs, config.memu.healthCheckPath, logger);
   const adapter = new MemUAdapter(client, config, logger);
   const primary = createPrimaryFreeTextBackend(config, { adapter, client, logger });
-  const coreRepo = new CoreMemoryRepository(client, logger, config.core.maxItemChars);
+  const coreRepo = new CoreMemoryRepository(config.core.persistPath, logger, config.core.maxItemChars);
   const cache = new LRUCache(config.recall.cacheMaxSize, config.recall.cacheTtlMs);
   const inbound = { getBySender: async () => "" };
   const metrics = {

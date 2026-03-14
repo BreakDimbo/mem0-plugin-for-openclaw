@@ -6,14 +6,14 @@
 
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
-import type { MemUAdapter } from "./adapter.js";
 import type { CoreMemoryRepository } from "./core-repository.js";
-import type { CoreMemoryRecord, MemuPluginConfig, MemoryScope } from "./types.js";
+import type { CoreMemoryRecord, MemuPluginConfig, MemoryScope, PluginHookContext } from "./types.js";
 import { audit } from "./security.js";
 import type { FreeTextBackend } from "./backends/free-text/base.js";
 import { metadataKindLabel } from "./metadata.js";
 
 type Logger = { info(msg: string): void; warn(msg: string): void };
+type ScopeResolver = { resolveRuntimeScope(ctx?: PluginHookContext): MemoryScope };
 
 const GENERATED_BLOCK_START = "<!-- memory-memu:start -->";
 const GENERATED_BLOCK_END = "<!-- memory-memu:end -->";
@@ -42,7 +42,7 @@ const NOISY_RECALL_PATTERNS = [
 export class MarkdownSync {
   private primaryBackend: FreeTextBackend;
   private fallbackBackend: FreeTextBackend | null;
-  private adapter: MemUAdapter;
+  private scopeResolver: ScopeResolver;
   private coreRepo: CoreMemoryRepository;
   private config: MemuPluginConfig;
   private logger: Logger;
@@ -62,14 +62,14 @@ export class MarkdownSync {
   constructor(
     primaryBackend: FreeTextBackend,
     fallbackBackend: FreeTextBackend | null,
-    adapter: MemUAdapter,
+    scopeResolver: ScopeResolver,
     coreRepo: CoreMemoryRepository,
     config: MemuPluginConfig,
     logger: Logger,
   ) {
     this.primaryBackend = primaryBackend;
     this.fallbackBackend = fallbackBackend;
-    this.adapter = adapter;
+    this.scopeResolver = scopeResolver;
     this.coreRepo = coreRepo;
     this.config = config;
     this.logger = logger;
@@ -372,7 +372,7 @@ export class MarkdownSync {
     }
 
     try {
-      const scope = this.adapter.resolveRuntimeScope({ agentId });
+      const scope = this.scopeResolver.resolveRuntimeScope({ agentId });
       const coreMemories = await this.coreRepo.list(scope, {
         limit: this.config.core.topK,
       });
