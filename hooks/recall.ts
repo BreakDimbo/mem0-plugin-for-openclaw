@@ -23,11 +23,6 @@ type SessionInjectionSnapshot = {
   timestamp: number;
 };
 
-type SessionInjectedItems = {
-  core: Map<string, number>;
-  relevant: Map<string, number>;
-};
-
 type SessionCoreCacheEntry = {
   items: Array<{ id: string; category?: string; key: string; value: string; score?: number }>;
   fetchedAt: number;
@@ -40,8 +35,6 @@ type SessionRelevantCacheEntry = {
 
 const SESSION_INJECTION_CACHE = new Map<string, SessionInjectionSnapshot>();
 const SESSION_INJECTION_CACHE_LIMIT = 200;
-const SESSION_INJECTED_ITEMS = new Map<string, SessionInjectedItems>();
-const SESSION_ITEM_RECENCY_MS = 10 * 60 * 1000;
 const SESSION_CORE_CACHE = new Map<string, SessionCoreCacheEntry>();
 const SESSION_CORE_CACHE_TTL_MS = 5 * 60 * 1000;
 const SESSION_RELEVANT_CACHE = new Map<string, SessionRelevantCacheEntry>();
@@ -328,65 +321,6 @@ function shouldSkipDuplicateSessionInjection(key: string, signature: string): bo
   return snapshot.signature === signature;
 }
 
-function getSessionInjectedItems(key: string): SessionInjectedItems {
-  let entry = SESSION_INJECTED_ITEMS.get(key);
-  if (!entry) {
-    entry = { core: new Map<string, number>(), relevant: new Map<string, number>() };
-    SESSION_INJECTED_ITEMS.set(key, entry);
-  }
-  return entry;
-}
-
-function pruneExpiredInjectedItems(items: Map<string, number>, now: number): void {
-  for (const [itemKey, ts] of items) {
-    if (now - ts > SESSION_ITEM_RECENCY_MS) {
-      items.delete(itemKey);
-    }
-  }
-}
-
-function filterRecentlyInjectedCore<T extends { id: string }>(sessionKey: string, items: T[]): T[] {
-  const now = Date.now();
-  const state = getSessionInjectedItems(sessionKey);
-  pruneExpiredInjectedItems(state.core, now);
-  return items.filter((item) => !state.core.has(item.id));
-}
-
-function filterRecentlyInjectedRelevant(sessionKey: string, items: MemuMemoryRecord[]): MemuMemoryRecord[] {
-  const now = Date.now();
-  const state = getSessionInjectedItems(sessionKey);
-  pruneExpiredInjectedItems(state.relevant, now);
-  return items.filter((item) => {
-    const itemKey = item.id || item.text.trim();
-    return itemKey ? !state.relevant.has(itemKey) : true;
-  });
-}
-
-function rememberInjectedCore(sessionKey: string, items: Array<{ id: string }>): void {
-  const now = Date.now();
-  const state = getSessionInjectedItems(sessionKey);
-  for (const item of items) {
-    state.core.set(item.id, now);
-  }
-}
-
-function rememberInjectedRelevant(sessionKey: string, items: MemuMemoryRecord[]): void {
-  const now = Date.now();
-  const state = getSessionInjectedItems(sessionKey);
-  for (const item of items) {
-    const itemKey = item.id || item.text.trim();
-    if (itemKey) state.relevant.set(itemKey, now);
-  }
-}
-
-function buildCoreSnapshotSignature(
-  items: Array<{ id: string; category?: string; key: string; value: string }>,
-): string {
-  return items
-    .map((item) => `${item.id}|${item.category ?? ""}|${item.key}|${item.value}`)
-    .join("\n");
-}
-
 function scoreCoreCandidate(
   searchQueries: string[],
   item: { key: string; value: string; score?: number },
@@ -559,7 +493,6 @@ export function createRecallHook(
 
       let coreContext = "";
       let coreMemories: Array<{ id: string; category?: string; key: string; value: string; score?: number }> = [];
-      let coreMemoriesForTouch: Array<{ id: string; category?: string; key: string; value: string }> = [];
       if (config.core.enabled) {
         const cachedCore = getSessionCoreCache(injectionKey);
         let corePool: Array<{ id: string; category?: string; key: string; value: string; score?: number }>;
@@ -585,31 +518,25 @@ export function createRecallHook(
           dedupeCoreMemories(corePool).slice(0, Math.max(config.core.topK * 2, config.core.topK)),
           searchQueries.length,
         );
-        coreMemories = filterRecentlyInjectedCore(injectionKey, coreMemories);
         logger.info(`recall-hook: scope user=${scope.userId} agent=${scope.agentId} core=${coreMemories.length}`);
-        coreMemoriesForTouch = coreMemories.map((m) => ({ id: m.id, category: m.category, key: m.key, value: m.value }));
         coreContext = formatCoreMemoriesContext(coreMemories);
       }
 
       if (filteredMemories.length > 0 && !shouldSuppressRelevantMemories(coreMemories, searchQueries.length)) {
-        filteredMemories = filterRecentlyInjectedRelevant(injectionKey, filteredMemories);
         memoryContext = formatMemoriesContext(filteredMemories);
       }
 
       metrics.recordRecallLatency(Date.now() - start);
       const injected = applyInjectionBudget([coreContext, memoryContext], config.recall.injectionBudgetChars);
       if (!injected) return;
-      const coreSignature = buildCoreSnapshotSignature(coreMemoriesForTouch);
-      const shouldSkipByBlock = !memoryContext && shouldSkipDuplicateSessionInjection(injectionKey, coreSignature);
+      const shouldSkipByBlock = shouldSkipDuplicateSessionInjection(injectionKey, injected);
       if (shouldSkipByBlock) {
         logger.info(`recall-hook: skip duplicate injection session=${scope.sessionKey}`);
         return;
       }
-      rememberSessionInjection(injectionKey, coreSignature || injected);
-      if (coreMemories.length > 0) rememberInjectedCore(injectionKey, coreMemories);
-      if (filteredMemories.length > 0) rememberInjectedRelevant(injectionKey, filteredMemories);
-      if (config.core.enabled && config.core.touchOnRecall && coreMemoriesForTouch.length > 0) {
-        const injectedIds = coreMemoriesForTouch
+      rememberSessionInjection(injectionKey, injected);
+      if (config.core.enabled && config.core.touchOnRecall && coreMemories.length > 0) {
+        const injectedIds = coreMemories
           .filter((m) => {
             const tag = m.category ? `${escapeForInjection(m.category)}/${escapeForInjection(m.key)}` : escapeForInjection(m.key);
             return injected.includes(`[${tag}] ${escapeForInjection(m.value)}`);
