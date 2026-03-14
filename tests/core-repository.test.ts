@@ -87,6 +87,43 @@ await test("list ignores non-success status", async () => {
   assertEqual(records.length, 0, "should return empty list");
 });
 
+await test("list ranks Chinese query-matching core facts above irrelevant high-importance facts", async () => {
+  let seenLimit: number | undefined;
+  const client = {
+    coreList: async ({ limit }: { limit?: number }) => {
+      seenLimit = limit;
+      return ({
+      status: "success",
+      items: [
+        {
+          id: "role",
+          category: "identity",
+          key: "identity.current_role",
+          value: "用户现在的职业是某互联网公司高级后端工程师。",
+          importance: 10,
+          updated_at: "2026-03-02T12:00:00.000Z",
+        },
+        {
+          id: "tz",
+          category: "identity",
+          key: "identity.timezone",
+          value: "用户的时区是 UTC+8。",
+          importance: 8,
+          updated_at: "2026-03-01T12:00:00.000Z",
+        },
+      ],
+      total: 2,
+      limit: 20,
+    });
+    },
+  } as any;
+
+  const repo = new CoreMemoryRepository(client, testLogger, 240);
+  const records = await repo.list(scope, { query: "用户的时区是什么？", limit: 2 });
+  assertEqual(seenLimit, 50, "query fetch should request a larger candidate pool");
+  assertEqual(records[0]?.key, "identity.timezone", "timezone fact should rank first");
+});
+
 // -- Summary --
 const passed = results.filter((r) => r.passed).length;
 const failed = results.filter((r) => !r.passed).length;

@@ -63,18 +63,20 @@ const CASES: E2ECase[] = [
 ];
 
 async function main() {
+  const limit = parseOptionalPositiveInt(process.env.E2E_LIMIT);
+  const cases = limit ? CASES.slice(0, limit) : CASES;
   const runId = new Date().toISOString().replace(/[:.]/g, "-");
   const results: E2EResult[] = [];
 
-  console.log(`Running ${CASES.length} live end-to-end recall cases...`);
-  for (const [index, item] of CASES.entries()) {
+  console.log(`Running ${cases.length} live end-to-end recall cases...`);
+  for (const [index, item] of cases.entries()) {
     const message = `请只用一句中文回答：${item.query}`;
     const started = Date.now();
     const answer = await runAgentQuery(message);
     const durationMs = Date.now() - started;
     const hit = includesExpected(answer, item.expected);
     results.push({ id: item.id, query: item.query, expected: item.expected, answer, hit, durationMs });
-    console.log(`[${index + 1}/${CASES.length}] ${item.id} hit=${hit ? "Y" : "N"} ${durationMs}ms`);
+    console.log(`[${index + 1}/${cases.length}] ${item.id} hit=${hit ? "Y" : "N"} ${durationMs}ms`);
   }
 
   const summary = {
@@ -100,6 +102,12 @@ async function main() {
   console.log("═══════");
   console.log(JSON.stringify(summary, null, 2));
   console.log(`Report: ${reportPath}`);
+}
+
+function parseOptionalPositiveInt(value: string | undefined): number | null {
+  if (!value) return null;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
 async function runAgentQuery(message: string): Promise<string> {

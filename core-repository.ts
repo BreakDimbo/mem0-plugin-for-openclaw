@@ -1,5 +1,6 @@
 import type { MemUClient } from "./client.js";
 import type { CoreMemoryRecord, MemoryScope } from "./types.js";
+import { genericConceptBoost, tokenizeSemanticQuery } from "./metadata.js";
 import { sanitizeCoreValue, shouldStoreCoreMemory } from "./security.js";
 
 type Logger = { info(msg: string): void; warn(msg: string): void };
@@ -18,18 +19,29 @@ function toTimestamp(v: unknown): number | undefined {
 }
 
 function scoreTextMatch(query: string, key: string, value: string): number {
-  const q = query.trim().toLowerCase();
+  const q = normalizeSearchText(query);
   if (!q) return 0;
-  const hay = `${key} ${value}`.toLowerCase();
+  const hay = normalizeSearchText(`${key} ${value}`);
   if (hay.includes(q)) return 1;
-  const qWords = q.split(/\s+/).filter(Boolean);
-  if (qWords.length === 0) return 0;
+
+  const qWords = tokenizeSemanticQuery(query).filter((token) => token.trim().length >= 2);
+  if (qWords.length === 0) {
+    return genericConceptBoost(query, value);
+  }
+
   let hits = 0;
   for (const w of qWords) {
-    if (w.length < 2) continue;
-    if (hay.includes(w)) hits++;
+    if (hay.includes(normalizeSearchText(w))) hits++;
   }
-  return hits / qWords.length;
+  const lexical = hits / qWords.length;
+  return lexical + genericConceptBoost(query, value);
+}
+
+function normalizeSearchText(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/\s+/g, "")
+    .replace(/[，。、“”"'`·:：；;（）()【】\[\]\-]/g, "");
 }
 
 function inferCategoryFromKey(key: string): string {
@@ -135,10 +147,14 @@ export class CoreMemoryRepository {
     opts?: { query?: string; limit?: number },
   ): Promise<CoreMemoryRecord[]> {
     try {
+      const requestedLimit = opts?.limit;
+      const fetchLimit = opts?.query
+        ? Math.max(Math.max(requestedLimit ?? 10, 10) * 5, 50)
+        : requestedLimit;
       const res = await this.client.coreList({
         userId: scope.userId,
         agentId: scope.agentId,
-        limit: opts?.limit,
+        limit: fetchLimit,
       });
       if (res.status !== "success") return [];
 
@@ -167,7 +183,7 @@ export class CoreMemoryRepository {
         return (b.updatedAt ?? 0) - (a.updatedAt ?? 0);
       });
 
-      const limit = opts?.limit ?? records.length;
+      const limit = requestedLimit ?? records.length;
       records = records.slice(0, limit);
       this.logger.info(
         `core-repo: list agent=${scope.agentId} total=${totalBeforeLimit} returned=${records.length} limit=${limit}`
