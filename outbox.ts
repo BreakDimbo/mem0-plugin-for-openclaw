@@ -17,6 +17,8 @@ type OutboxRecentEvent = {
   id: string;
   at: number;
   agentId?: string;
+  memoryKind?: string;
+  quality?: string;
   retryCount?: number;
   error?: string;
 };
@@ -211,7 +213,14 @@ export class OutboxWorker {
       nextRetryAt: 0,
     });
     this._lastEnqueuedAt = Date.now();
-    this.pushRecentEvent({ type: "enqueued", id, at: this._lastEnqueuedAt, agentId: scope.agentId });
+    this.pushRecentEvent({
+      type: "enqueued",
+      id,
+      at: this._lastEnqueuedAt,
+      agentId: scope.agentId,
+      memoryKind: typeof metadata?.memory_kind === "string" ? metadata.memory_kind : undefined,
+      quality: typeof metadata?.quality === "string" ? metadata.quality : undefined,
+    });
 
     this.logger.info(`outbox: enqueued id=${id} (queue size: ${this.queue.length})`);
 
@@ -274,7 +283,14 @@ export class OutboxWorker {
             this._sent++;
             this._lastSentAt = Date.now();
             changed = true;
-            this.pushRecentEvent({ type: "sent", id: item.id, at: this._lastSentAt, agentId: item.scope.agentId });
+            this.pushRecentEvent({
+              type: "sent",
+              id: item.id,
+              at: this._lastSentAt,
+              agentId: item.scope.agentId,
+              memoryKind: typeof item.payload.metadata?.memory_kind === "string" ? String(item.payload.metadata.memory_kind) : undefined,
+              quality: typeof item.payload.metadata?.quality === "string" ? String(item.payload.metadata.quality) : undefined,
+            });
             this.logger.info(`outbox: sent id=${item.id}`);
           } else {
             item.retryCount++;
@@ -298,6 +314,8 @@ export class OutboxWorker {
                 id: item.id,
                 at: this._lastFailedAt,
                 agentId: item.scope.agentId,
+                memoryKind: typeof item.payload.metadata?.memory_kind === "string" ? String(item.payload.metadata.memory_kind) : undefined,
+                quality: typeof item.payload.metadata?.quality === "string" ? String(item.payload.metadata.quality) : undefined,
                 retryCount: item.retryCount,
                 error: dlItem.lastError,
               });
@@ -312,6 +330,8 @@ export class OutboxWorker {
                 id: item.id,
                 at: Date.now(),
                 agentId: item.scope.agentId,
+                memoryKind: typeof item.payload.metadata?.memory_kind === "string" ? String(item.payload.metadata.memory_kind) : undefined,
+                quality: typeof item.payload.metadata?.quality === "string" ? String(item.payload.metadata.quality) : undefined,
                 retryCount: item.retryCount,
               });
               this.logger.warn(`outbox: retry id=${item.id} attempt=${item.retryCount} next_in=${delay}ms`);

@@ -11,6 +11,7 @@ import type { CoreMemoryRepository } from "./core-repository.js";
 import type { CoreMemoryRecord, MemuPluginConfig, MemoryScope } from "./types.js";
 import { audit } from "./security.js";
 import type { FreeTextBackend } from "./backends/free-text/base.js";
+import { metadataKindLabel } from "./metadata.js";
 
 type Logger = { info(msg: string): void; warn(msg: string): void };
 
@@ -161,13 +162,14 @@ export class MarkdownSync {
   }
 
   private selectRecallItems(
-    items: Array<{ text: string; category?: string; score?: number }>,
+    items: Array<{ text: string; category?: string; score?: number; metadata?: Record<string, unknown> }>,
     coreMemories: CoreMemoryRecord[],
-  ): Array<{ text: string; category?: string; score?: number }> {
+  ): Array<{ text: string; category?: string; score?: number; metadata?: Record<string, unknown> }> {
+    const ranked = [...items].sort((a, b) => this.rankRecallItem(b) - this.rankRecallItem(a));
     const seen = new Set<string>();
-    const filtered: Array<{ text: string; category?: string; score?: number }> = [];
+    const filtered: Array<{ text: string; category?: string; score?: number; metadata?: Record<string, unknown> }> = [];
 
-    for (const item of items) {
+    for (const item of ranked) {
       const normalized = item.text.trim().toLowerCase();
       if (!normalized || seen.has(normalized)) continue;
       if (this.isNoisyRecallItem(item, coreMemories)) continue;
@@ -179,11 +181,13 @@ export class MarkdownSync {
     return filtered;
   }
 
-  private renderRecallSection(items: Array<{ text: string; category?: string; score?: number }>): string {
+  private renderRecallSection(items: Array<{ text: string; category?: string; score?: number; metadata?: Record<string, unknown> }>): string {
     if (items.length === 0) return "";
     const lines = items.map((item) => {
       const parts = [`- ${item.text}`];
       const meta: string[] = [];
+      const kind = metadataKindLabel(item.metadata);
+      if (kind) meta.push(kind);
       if (item.category) meta.push(item.category);
       if (item.score !== undefined) meta.push(`score=${item.score.toFixed(2)}`);
       if (meta.length > 0) parts.push(` (${meta.join(", ")})`);
@@ -192,7 +196,7 @@ export class MarkdownSync {
     return ["## Recent Context", "", ...lines, ""].join("\n");
   }
 
-  private buildMarkdown(scope: MemoryScope, coreMemories: CoreMemoryRecord[], recallItems: Array<{ text: string; category?: string; score?: number }>): string {
+  private buildMarkdown(scope: MemoryScope, coreMemories: CoreMemoryRecord[], recallItems: Array<{ text: string; category?: string; score?: number; metadata?: Record<string, unknown> }>): string {
     const selectedRecallItems = this.selectRecallItems(recallItems, coreMemories);
     const header = [
       GENERATED_BLOCK_START,
@@ -208,6 +212,22 @@ export class MarkdownSync {
     header.push("", GENERATED_BLOCK_END);
     header.push("");
     return `${header.join("\n")}\n`;
+  }
+
+  private rankRecallItem(item: { score?: number; metadata?: Record<string, unknown> }): number {
+    const quality = typeof item.metadata?.quality === "string" ? item.metadata.quality : "";
+    const kind = typeof item.metadata?.memory_kind === "string" ? item.metadata.memory_kind : "";
+    const qualityScore = quality === "durable" ? 20 : 0;
+    const kindScore =
+      kind === "preference" ? 10 :
+      kind === "constraint" ? 9 :
+      kind === "profile" ? 8 :
+      kind === "relationship" ? 7 :
+      kind === "tooling" ? 6 :
+      kind === "workflow" ? 5 :
+      kind === "project" ? 4 :
+      kind === "schedule" ? 3 : 0;
+    return qualityScore + kindScore + (item.score ?? 0);
   }
 
   private mergeWithExisting(existing: string, generatedBlock: string): string {

@@ -134,6 +134,8 @@ export function createMemuCommand(
               `${new Date(event.at).toISOString()} ${event.type}`,
               `id=${event.id}`,
               event.agentId ? `agent=${event.agentId}` : "",
+              event.memoryKind ? `kind=${event.memoryKind}` : "",
+              event.quality ? `quality=${event.quality}` : "",
               typeof event.retryCount === "number" ? `retry=${event.retryCount}` : "",
               event.error ? `error=${event.error}` : "",
             ].filter(Boolean);

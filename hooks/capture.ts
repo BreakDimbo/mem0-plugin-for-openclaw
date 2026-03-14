@@ -13,6 +13,7 @@ import { shouldCapture } from "../security.js";
 import type { CoreMemoryRepository } from "../core-repository.js";
 import { extractCoreProposal } from "../core-proposals.js";
 import type { CoreProposalQueue } from "../core-proposals.js";
+import { buildFreeTextMetadata } from "../metadata.js";
 
 type Logger = { info(msg: string): void; warn(msg: string): void };
 
@@ -161,7 +162,13 @@ export function createCaptureHook(
     const toCapture = candidates.slice(-config.capture.maxItemsPerRun);
 
     for (const text of toCapture) {
-      outbox.enqueue(text, scope);
+      outbox.enqueue(
+        text,
+        scope,
+        buildFreeTextMetadata(text, scope, {
+          captureKind: "auto",
+        }),
+      );
       metrics.captureCaptured++;
 
       if (config.core.enabled && config.core.autoExtractProposals) {

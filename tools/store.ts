@@ -7,6 +7,7 @@ import type { OutboxWorker } from "../outbox.js";
 import type { MemuPluginConfig, PluginHookContext } from "../types.js";
 import { buildDynamicScope } from "../types.js";
 import { shouldCapture, audit } from "../security.js";
+import { buildFreeTextMetadata } from "../metadata.js";
 
 export function createStoreTool(outbox: OutboxWorker, config: MemuPluginConfig, toolCtx?: PluginHookContext) {
   return {
@@ -29,8 +30,12 @@ export function createStoreTool(outbox: OutboxWorker, config: MemuPluginConfig, 
       const text = args.context ? `${args.content} (context: ${args.context})` : args.content;
       const sentBefore = outbox.sent;
       const failedBefore = outbox.failed;
+      const metadata = buildFreeTextMetadata(args.content, scope, {
+        captureKind: "explicit",
+        context: args.context,
+      });
 
-      outbox.enqueue(text, scope);
+      outbox.enqueue(text, scope, metadata);
       await outbox.flush();
       audit("store", scope.userId, scope.agentId, `explicit store: "${text.slice(0, 80)}..."`);
 

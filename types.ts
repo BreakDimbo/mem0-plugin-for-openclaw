@@ -12,6 +12,30 @@ export type MemoryScope = {
   sessionKey: string;
 };
 
+export type FreeTextMemoryKind =
+  | "preference"
+  | "workflow"
+  | "constraint"
+  | "profile"
+  | "relationship"
+  | "tooling"
+  | "schedule"
+  | "project"
+  | "general";
+
+export type FreeTextMemoryMetadata = {
+  source: "memory-memu";
+  content_kind: "free-text";
+  capture_kind?: "explicit" | "auto";
+  memory_kind?: FreeTextMemoryKind;
+  quality?: "durable" | "transient";
+  workspace_agent?: string;
+  scope_user_id?: string;
+  scope_agent_id?: string;
+  scope_session_key?: string;
+  [key: string]: unknown;
+};
+
 // -- Records --
 
 export type MemuMemoryRecord = {

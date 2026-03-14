@@ -1,5 +1,5 @@
 import { pathToFileURL } from "node:url";
-import type { MemoryScope, MemuMemoryRecord, MemuPluginConfig } from "../../types.js";
+import type { FreeTextMemoryMetadata, MemoryScope, MemuMemoryRecord, MemuPluginConfig } from "../../types.js";
 import type { FreeTextBackend, FreeTextBackendStatus, FreeTextForgetOptions, FreeTextSearchOptions, FreeTextStoreOptions } from "./base.js";
 
 type Logger = { info(msg: string): void; warn(msg: string): void };
@@ -247,7 +247,11 @@ export class Mem0FreeTextBackend implements FreeTextBackend {
       const provider = await this.providerInstance();
       const effectiveUid = effectiveUserId(scope);
       const messages = [{ role: "user", content: text }];
-      const metadata = this.buildBaseMetadata(scope, String(options?.metadata?.capture_kind ?? ""), options?.metadata);
+      const metadata = this.buildBaseMetadata(
+        scope,
+        String(options?.metadata?.capture_kind ?? ""),
+        options?.metadata as FreeTextMemoryMetadata | undefined,
+      );
       const addOptions: Record<string, unknown> = this.config.mem0.mode === "open-source"
         ? {
             userId: effectiveUid,
