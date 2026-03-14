@@ -134,6 +134,51 @@ function extractLikelyQuestionLine(raw: string): string {
   return lines.slice(-1)[0] ?? "";
 }
 
+export function splitRecallQueries(raw: string): string[] {
+  const cleaned = sanitizePromptQuery(raw);
+  if (!cleaned) return [];
+
+  const direct = cleaned.trim();
+  const normalized = direct
+    .replace(/^(请只用一句中文回答[:：]?|请用一句中文回答[:：]?|请用三行中文回答，不要解释[:：]?|请回答[:：]?)/, "")
+    .trim();
+
+  const numberedMatches = normalized
+    .replace(/(?!^)(\d+[.、]|[一二三四五六七八九十]+[、.])\s*/g, "\n$1 ")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => /^(?:\d+[.、]|[一二三四五六七八九十]+[、.])\s*/.test(line))
+    .map((line) => line.replace(/^(?:\d+[.、]|[一二三四五六七八九十]+[、.])\s*/, "").trim())
+    .filter(Boolean);
+
+  const parts = (numberedMatches.length > 0 ? numberedMatches : normalized.split(/[；;\n]+/))
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => isLikelyQuery(line));
+
+  const unique = new Set<string>();
+  for (const part of [direct, ...parts]) {
+    const normalized = part.trim();
+    if (!normalized || unique.has(normalized)) continue;
+    unique.add(normalized);
+    if (unique.size >= 4) break;
+  }
+
+  return Array.from(unique);
+}
+
+function dedupeMemories(items: MemuMemoryRecord[]): MemuMemoryRecord[] {
+  const seen = new Set<string>();
+  const output: MemuMemoryRecord[] = [];
+  for (const item of items) {
+    const key = item.id ?? item.text.trim();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    output.push(item);
+  }
+  return output;
+}
+
 export function sanitizePromptQuery(raw: string): string {
   const s = stripInjectedBlocks(raw.trim());
   if (!s) return "";
@@ -215,6 +260,8 @@ export function createRecallHook(
 
     if (!query) query = sanitizePromptQuery(promptRaw);
     if (!query || query.length < 3) return;
+    const recallQueries = splitRecallQueries(query);
+    const searchQueries = recallQueries.length > 0 ? recallQueries : [query];
 
     metrics.recallTotal++;
     const start = Date.now();
@@ -223,37 +270,40 @@ export function createRecallHook(
       const scope = buildDynamicScope(config.scope, ctx);
       let memoryContext = "";
       if (config.recall.enabled) {
-        const cacheKey = LRUCache.buildCacheKey(`${primaryBackend.provider}\0${query}`, scope.sessionKey, config.recall.topK);
+        const cacheKey = LRUCache.buildCacheKey(`${primaryBackend.provider}\0${searchQueries.join("\u241f")}`, scope.sessionKey, config.recall.topK);
         const cached = cache.get(cacheKey);
 
         let memories: MemuMemoryRecord[];
-        const searchLimit = Math.min(Math.max(config.recall.topK * 2, config.recall.topK), 10);
+        const searchLimit = Math.min(Math.max(config.recall.topK * 3, config.recall.topK + 2), 12);
         if (cached) {
           memories = cached;
           metrics.recallHits++;
           logger.info(`recall-hook: cache hit key=${cacheKey} count=${memories.length}`);
         } else {
-          memories = await primaryBackend.search(query, scope, {
+          const primaryResults = await Promise.all(searchQueries.map((searchQuery) => primaryBackend.search(searchQuery, scope, {
             maxItems: searchLimit,
             maxContextChars: config.recall.maxContextChars,
             includeSessionScope: config.backend.freeText.provider === "mem0",
-          });
+          })));
+          memories = dedupeMemories(primaryResults.flat());
           let fallbackUsed = false;
           if (memories.length === 0 && fallbackBackend) {
-            memories = await fallbackBackend.search(query, scope, {
+            const fallbackResults = await Promise.all(searchQueries.map((searchQuery) => fallbackBackend.search(searchQuery, scope, {
               maxItems: searchLimit,
               maxContextChars: config.recall.maxContextChars,
-            });
+            })));
+            memories = dedupeMemories(fallbackResults.flat());
             fallbackUsed = memories.length > 0;
             if (fallbackUsed) {
               metrics.recordRecallFallback();
             }
           }
           if (config.backend.freeText.compareRecall && fallbackBackend) {
-            void fallbackBackend.search(query, scope, {
+            void Promise.all(searchQueries.map((searchQuery) => fallbackBackend.search(searchQuery, scope, {
               maxItems: searchLimit,
               maxContextChars: config.recall.maxContextChars,
-            }).then((shadow) => {
+            }))).then((shadowResults) => {
+              const shadow = dedupeMemories(shadowResults.flat());
               const comparison = compareMemorySets(memories, rerankMemoryResults(query, shadow).slice(0, config.recall.topK));
               metrics.recordRecallCompare(comparison.primaryCount, comparison.shadowCount);
               if (comparison.primaryCount !== comparison.shadowCount) {
@@ -266,7 +316,7 @@ export function createRecallHook(
           memories = rerankMemoryResults(query, memories).slice(0, config.recall.topK);
           metrics.recallMisses++;
           if (memories.length > 0) cache.set(cacheKey, memories);
-          logger.info(`recall-hook: fetched ${memories.length} memories via ${primaryBackend.provider}${fallbackUsed ? " (fallback)" : ""} for query="${query.slice(0, 60)}..."`);
+          logger.info(`recall-hook: fetched ${memories.length} memories via ${primaryBackend.provider}${fallbackUsed ? " (fallback)" : ""} for ${searchQueries.length} query parts="${query.slice(0, 60)}..."`);
         }
 
         let filtered = memories.filter((m) => m.score === undefined || m.score >= config.recall.scoreThreshold);
