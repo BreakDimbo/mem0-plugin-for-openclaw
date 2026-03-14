@@ -299,6 +299,17 @@ function normalizeForMatch(text: string): string {
     .replace(/[?？!！。，、；;:："'`·()\[\]【】\-_/]/g, "");
 }
 
+// Map Chinese ordinal numerals to Arabic so "第三层" and "第3层" produce the same token.
+const CN_NUMERAL_MAP: Record<string, string> = {
+  一: "1", 二: "2", 三: "3", 四: "4", 五: "5",
+  六: "6", 七: "7", 八: "8", 九: "9", 十: "10",
+};
+function normalizeOrdinalNumeral(ordinal: string): string {
+  return ordinal.replace(/[一二三四五六七八九十]/g, (c) => CN_NUMERAL_MAP[c] ?? c);
+}
+
+// Strip instruction prefixes that appear both in benchmark queries (e.g. "请只用一句中文回答：")
+// and in real agent prompts. Removing them before matching prevents false focus-query hits.
 function stripQueryBoilerplate(query: string): string {
   return query
     .replace(/^(请只用一句中文回答|请用一句中文回答|请用三行中文回答，不要解释|请用三行中文回答不要解释|请回答|请问)[:：]?\s*/g, "")
@@ -342,12 +353,18 @@ function stripQueryStopTerms(query: string): string {
 }
 
 function buildSearchTerms(text: string): string[] {
-  const normalized = normalizeForMatch(stripQueryStopTerms(text));
+  const stripped = stripQueryStopTerms(text);
+  const normalized = normalizeForMatch(stripped);
   if (!normalized) return [];
   const tokens = new Set<string>();
 
   for (const word of normalized.match(/[a-z0-9+_-]{2,}/g) ?? []) {
     tokens.add(word);
+  }
+  // Preserve ordinal tokens like "第1层" / "第3步", normalising Chinese numerals to Arabic
+  // so "第三层" and "第3层" produce the same token and can match each other.
+  for (const ordinal of stripped.match(/第\s*[0-9一二三四五六七八九十百]+\s*[\u4e00-\u9fff]/g) ?? []) {
+    tokens.add(normalizeForMatch(normalizeOrdinalNumeral(ordinal)));
   }
   for (const chunk of normalized.match(/[\u4e00-\u9fff]{2,}/g) ?? []) {
     tokens.add(chunk);
@@ -365,6 +382,10 @@ function tokenizeDocument(text: string): string[] {
   const tokens: string[] = [];
   for (const word of normalized.match(/[a-z0-9+_-]{2,}/g) ?? []) {
     tokens.push(word);
+  }
+  // Preserve ordinal tokens like "第1层" / "第3步", normalising Chinese numerals to Arabic.
+  for (const ordinal of text.match(/第\s*[0-9一二三四五六七八九十百]+\s*[\u4e00-\u9fff]/g) ?? []) {
+    tokens.push(normalizeForMatch(normalizeOrdinalNumeral(ordinal)));
   }
   for (const chunk of normalized.match(/[\u4e00-\u9fff]{2,}/g) ?? []) {
     for (let size = 2; size <= Math.min(3, chunk.length); size += 1) {
@@ -502,7 +523,7 @@ function scoreCoreCandidate(
       const compactFocusQuery = normalizeForMatch(stripQueryStopTerms(searchQuery));
       if (!compactQuery) return 0;
       const compactDocument = normalizeForMatch(documentText);
-      if (compactFocusQuery && compactDocument.includes(compactFocusQuery)) return 1.2;
+      if (compactFocusQuery && compactFocusQuery.length >= 2 && compactDocument.includes(compactFocusQuery)) return 1.2;
       if (compactDocument.includes(compactQuery)) return 1;
       const terms = buildSearchTerms(searchQuery);
       const conceptBoost = genericConceptBoost(searchQuery, item.value);
@@ -511,9 +532,12 @@ function scoreCoreCandidate(
       const compactnessBoost = normalizedValue.length > 0
         ? Math.max(0, 0.12 - Math.min(0.12, normalizedValue.length / 400))
         : 0;
-      const categoryBoost = intent.categoryHints.includes((item.category ?? "general").toLowerCase()) ? 0.22 : 0;
+      const categoryBoost = intent.categoryHints.includes((item.category ?? "general").toLowerCase()) ? 0.12 : 0;
       if (overlapScore === 0 && conceptBoost < 0.8) return 0;
-      return overlapScore + conceptBoost * 0.25 + compactnessBoost + categoryBoost;
+      // Normalize overlapScore into [0, 1) so token-overlap matches never exceed
+      // the exact-match tiers (compactQuery=1.0, compactFocusQuery=1.2).
+      const normalizedOverlap = overlapScore / (overlapScore + 2.0);
+      return Math.min(0.99, normalizedOverlap + conceptBoost * 0.25 + compactnessBoost + categoryBoost);
     }),
   );
 }

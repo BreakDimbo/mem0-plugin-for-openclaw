@@ -1,5 +1,28 @@
+# Dependencies
 node_modules/
-memory.db
-vector_store.db
-*.sqlite
-*.sqlite3
+
+# Build output
+dist/
+
+# Local databases (runtime state, not source)
+*.db
+*.db-shm
+*.db-wal
+
+# Benchmark / report outputs
+reports/
+
+# Environment and secrets
+.env
+.env.*
+*.key
+*.pem
+
+# macOS
+.DS_Store
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
