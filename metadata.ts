@@ -76,14 +76,31 @@ export function inferQueryKindHints(query: string): FreeTextMemoryKind[] {
 
   if (!normalized) return [];
 
-  if (/\b(prefer|favorite|like|dislike|drink|taste)\b|喜欢|偏好|更喜欢|口味|饮料/.test(normalized)) hints.add("preference");
-  if (/\b(rule|constraint|must|must not|avoid|forbid|approval)\b|规则|约束|必须|不能|不要|禁止|审批/.test(normalized)) hints.add("constraint");
-  if (/\b(name|timezone|office|based|live|phone|laptop|browser|keyboard)\b|名字|时区|办公室|住在|手机|电脑|浏览器|键盘/.test(normalized)) hints.add("profile");
-  if (/\b(partner|wife|husband|friend|colleague)\b|伴侣|妻子|老婆|丈夫|朋友|同事/.test(normalized)) hints.add("relationship");
-  if (/\b(editor|tool|database|language|linter|formatter|package manager|framework|ci|cloud|python)\b|编辑器|工具|数据库|语言|包管理|框架|格式化|代码检查|云服务/.test(normalized)) hints.add("tooling");
-  if (/\b(when|time|schedule|every|weekday|morning|afternoon|evening|night)\b|什么时候|几点|日程|每天|每周|周几|早上|下午|晚上/.test(normalized)) hints.add("schedule");
-  if (/\b(project|docs|documentation|workspace|research|newsletter)\b|项目|文档|工作区|研究|通讯/.test(normalized)) hints.add("project");
-  if (/\b(review|workflow|refactor|summary|pull request|task tracker)\b|评审|流程|重构|总结|任务追踪|代码审查/.test(normalized)) hints.add("workflow");
+  const toolingLike = /\b(editor|tool|database|language|linter|formatter|package manager|framework|ci|cloud|python)\b|编辑器|工具|数据库|语言|包管理|框架|格式化|代码检查|云服务/.test(normalized);
+  const profileLike = /\b(name|timezone|office|based|live|phone|laptop|browser|keyboard)\b|名字|时区|办公室|住在|手机|电脑|浏览器|键盘/.test(normalized);
+  const relationshipLike = /\b(partner|wife|husband|friend|colleague)\b|伴侣|妻子|老婆|丈夫|朋友|同事/.test(normalized);
+  const scheduleLike = /\b(when|time|schedule|every|weekday|morning|afternoon|evening|night)\b|什么时候|几点|日程|每天|每周|周几|早上|下午|晚上/.test(normalized);
+  const projectLike = /\b(project|docs|documentation|workspace|research|newsletter)\b|项目|文档|工作区|研究|通讯/.test(normalized);
+  const workflowLike = /\b(review|workflow|refactor|summary|pull request|task tracker)\b|评审|流程|重构|总结|任务追踪|代码审查/.test(normalized);
+  const constraintLike = /\b(rule|constraint|must|must not|avoid|forbid|approval)\b|规则|约束|必须|不能|不要|禁止|审批/.test(normalized);
+  const preferenceLike = /\b(prefer|favorite|like|dislike|drink|taste)\b|喜欢|偏好|更喜欢|口味|饮料/.test(normalized);
+
+  if (toolingLike) hints.add("tooling");
+  if (profileLike) hints.add("profile");
+  if (relationshipLike) hints.add("relationship");
+  if (scheduleLike) hints.add("schedule");
+  if (projectLike) hints.add("project");
+  if (workflowLike) hints.add("workflow");
+  if (constraintLike) hints.add("constraint");
+
+  // In Chinese, preference words often appear inside tooling/profile queries
+  // ("更喜欢用什么编辑器"), so only treat them as preference-first when the
+  // query does not already specify a stronger domain noun.
+  if (preferenceLike && !toolingLike && !profileLike && !scheduleLike && !relationshipLike && !projectLike && !workflowLike) {
+    hints.add("preference");
+  } else if (preferenceLike && normalized.includes("饮料")) {
+    hints.add("preference");
+  }
 
   return Array.from(hints);
 }
