@@ -13,6 +13,7 @@ import { buildDynamicScope } from "../types.js";
 import type { CoreMemoryRepository } from "../core-repository.js";
 import { applyInjectionBudget, escapeForInjection, formatCoreMemoriesContext, formatMemoriesContext } from "../security.js";
 import type { FreeTextBackend } from "../backends/free-text/base.js";
+import { compareMemorySets } from "../backends/free-text/compare.js";
 
 type Logger = { info(msg: string): void; warn(msg: string): void };
 
@@ -211,14 +212,21 @@ export function createRecallHook(
               maxContextChars: config.recall.maxContextChars,
             });
             fallbackUsed = memories.length > 0;
+            if (fallbackUsed) {
+              metrics.recordRecallFallback();
+            }
           }
           if (config.backend.freeText.compareRecall && fallbackBackend) {
             void fallbackBackend.search(query, scope, {
               maxItems: config.recall.topK,
               maxContextChars: config.recall.maxContextChars,
             }).then((shadow) => {
-              if (shadow.length !== memories.length) {
-                logger.info(`recall-hook: compare primary=${primaryBackend.provider} count=${memories.length} shadow=${fallbackBackend.provider} count=${shadow.length}`);
+              const comparison = compareMemorySets(memories, shadow);
+              metrics.recordRecallCompare(comparison.primaryCount, comparison.shadowCount);
+              if (comparison.primaryCount !== comparison.shadowCount) {
+                logger.info(
+                  `recall-hook: compare primary=${primaryBackend.provider} count=${comparison.primaryCount} shadow=${fallbackBackend.provider} count=${comparison.shadowCount} overlap=${comparison.overlapCount}`,
+                );
               }
             }).catch(() => {});
           }

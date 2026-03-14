@@ -14,6 +14,7 @@ import type { MemuPluginConfig, MemuMemoryRecord, PluginHookContext } from "./ty
 import { buildDynamicScope } from "./types.js";
 import { formatMemoriesContext, getAuditLog } from "./security.js";
 import type { FreeTextBackend } from "./backends/free-text/base.js";
+import { compareMemorySets } from "./backends/free-text/compare.js";
 
 function inferPeerKindFromId(id: string): "direct" | "group" | "channel" {
   const raw = id.trim().toLowerCase();
@@ -88,7 +89,7 @@ export function createMemuCommand(
 ) {
   return {
     name: "memu",
-    description: "memU memory management. Usage: /memu [status|search|flush|audit|dashboard|core ...]",
+    description: "memU memory management. Usage: /memu [status|search|compare|flush|audit|dashboard|core ...]",
     acceptsArgs: true,
     handler: async (ctx: any) => {
       const args = (typeof ctx?.args === "string" ? ctx.args : "").trim();
@@ -215,6 +216,44 @@ export function createMemuCommand(
         }
 
         return { text: formatMemoriesContext(memories) };
+      }
+
+      if (action === "compare") {
+        const query = tokens.slice(1).join(" ");
+        if (!query) {
+          return { text: "Usage: /memu compare <query>" };
+        }
+        if (!fallbackBackend) {
+          return { text: "Compare requires a configured fallback backend." };
+        }
+
+        const primaryResults = await primaryBackend.search(query, runtimeScope, {
+          maxItems: config.recall.topK,
+          maxContextChars: config.recall.maxContextChars,
+          includeSessionScope: primaryBackend.provider === "mem0",
+        });
+        const shadowResults = await fallbackBackend.search(query, runtimeScope, {
+          maxItems: config.recall.topK,
+          maxContextChars: config.recall.maxContextChars,
+          includeSessionScope: fallbackBackend.provider === "mem0",
+        });
+        const comparison = compareMemorySets(primaryResults, shadowResults);
+
+        const lines = [
+          "Memory Backend Compare",
+          "══════════════════════",
+          `Query: ${query}`,
+          `Primary: ${primaryBackend.provider} (${comparison.primaryCount})`,
+          `Shadow:  ${fallbackBackend.provider} (${comparison.shadowCount})`,
+          `Overlap: ${comparison.overlapCount}`,
+          ...(comparison.primaryOnly.length > 0
+            ? ["", `${primaryBackend.provider} only:`, ...comparison.primaryOnly.slice(0, 3).map((item) => `  - ${item.text}`)]
+            : []),
+          ...(comparison.shadowOnly.length > 0
+            ? ["", `${fallbackBackend.provider} only:`, ...comparison.shadowOnly.slice(0, 3).map((item) => `  - ${item.text}`)]
+            : []),
+        ];
+        return { text: lines.join("\n") };
       }
 
       if (action === "flush") {
@@ -349,6 +388,7 @@ export function createMemuCommand(
           "  /memu status          — show connection, scope & queue status",
           "  /memu sync [agentId]  — force Markdown sync",
           "  /memu search <query>  — search memories",
+          "  /memu compare <query> — compare primary vs fallback recall",
           "  /memu flush           — flush pending outbox items",
           "  /memu dashboard       — full metrics dashboard",
           "  /memu audit [limit]   — view audit log",

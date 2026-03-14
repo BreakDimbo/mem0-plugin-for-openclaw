@@ -10,6 +10,9 @@ export type MetricSnapshot = {
     misses: number;
     errors: number;
     avgLatencyMs: number;
+    fallbackReads: number;
+    compareRuns: number;
+    compareMismatches: number;
   };
   capture: {
     total: number;
@@ -51,6 +54,9 @@ export class Metrics {
   recallHits = 0;
   recallMisses = 0;
   recallErrors = 0;
+  recallFallbackReads = 0;
+  recallCompareRuns = 0;
+  recallCompareMismatches = 0;
   private recallLatencies: number[] = [];
 
   // Capture
@@ -74,6 +80,17 @@ export class Metrics {
 
   get uptimeMs(): number {
     return Date.now() - this.startTime;
+  }
+
+  recordRecallFallback(): void {
+    this.recallFallbackReads++;
+  }
+
+  recordRecallCompare(primaryCount: number, shadowCount: number): void {
+    this.recallCompareRuns++;
+    if (primaryCount !== shadowCount) {
+      this.recallCompareMismatches++;
+    }
   }
 
   snapshot(deps: {
@@ -101,6 +118,9 @@ export class Metrics {
         misses: this.recallMisses,
         errors: this.recallErrors,
         avgLatencyMs: this.avgRecallLatencyMs,
+        fallbackReads: this.recallFallbackReads,
+        compareRuns: this.recallCompareRuns,
+        compareMismatches: this.recallCompareMismatches,
       },
       capture: {
         total: this.captureTotal,
@@ -151,6 +171,8 @@ export class Metrics {
       `  Cache Hits: ${snap.recall.hits}`,
       `  Fetched:    ${snap.recall.misses}`,
       `  Errors:     ${snap.recall.errors}`,
+      `  Fallbacks:  ${snap.recall.fallbackReads}`,
+      `  Compare:    ${snap.recall.compareRuns} runs / ${snap.recall.compareMismatches} mismatches`,
       `  Avg Latency: ${snap.recall.avgLatencyMs}ms`,
       "",
       "Capture:",

@@ -10,6 +10,7 @@ import type { MemuPluginConfig, MemuMemoryRecord, PluginHookContext } from "../t
 import { buildDynamicScope } from "../types.js";
 import { formatMemoriesContext } from "../security.js";
 import type { FreeTextBackend } from "../backends/free-text/base.js";
+import { compareMemorySets } from "../backends/free-text/compare.js";
 
 export function createRecallTool(
   primaryBackend: FreeTextBackend,
@@ -60,10 +61,23 @@ export function createRecallTool(
               maxContextChars: config.recall.maxContextChars,
               category: args.category,
             });
+            if (memories.length > 0) {
+              metrics.recordRecallFallback();
+            }
           }
           metrics.recallMisses++;
           if (memories.length > 0) {
             cache.set(cacheKey, memories);
+          }
+          if (config.backend.freeText.compareRecall && fallbackBackend) {
+            void fallbackBackend.search(args.query, scope, {
+              maxItems: limit,
+              maxContextChars: config.recall.maxContextChars,
+              category: args.category,
+            }).then((shadow) => {
+              const comparison = compareMemorySets(memories ?? [], shadow);
+              metrics.recordRecallCompare(comparison.primaryCount, comparison.shadowCount);
+            }).catch(() => {});
           }
         }
 
