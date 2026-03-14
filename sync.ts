@@ -41,7 +41,6 @@ const NOISY_RECALL_PATTERNS = [
 
 export class MarkdownSync {
   private primaryBackend: FreeTextBackend;
-  private fallbackBackend: FreeTextBackend | null;
   private scopeResolver: ScopeResolver;
   private coreRepo: CoreMemoryRepository;
   private config: MemuPluginConfig;
@@ -61,14 +60,12 @@ export class MarkdownSync {
 
   constructor(
     primaryBackend: FreeTextBackend,
-    fallbackBackend: FreeTextBackend | null,
     scopeResolver: ScopeResolver,
     coreRepo: CoreMemoryRepository,
     config: MemuPluginConfig,
     logger: Logger,
   ) {
     this.primaryBackend = primaryBackend;
-    this.fallbackBackend = fallbackBackend;
     this.scopeResolver = scopeResolver;
     this.coreRepo = coreRepo;
     this.config = config;
@@ -386,15 +383,6 @@ export class MarkdownSync {
               quality: "durable",
             })
           : [];
-      if (recallItems.length === 0 && this.fallbackBackend) {
-        recallItems = await this.fallbackBackend.search("long-term memory summary", scope, {
-          maxItems: Math.max(8, this.config.recall.topK),
-          maxContextChars: this.config.recall.maxContextChars,
-          includeSessionScope: false,
-          quality: "durable",
-        });
-      }
-
       const markdown = this.buildMarkdown(scope, coreMemories, recallItems);
       let existing = "";
       try {

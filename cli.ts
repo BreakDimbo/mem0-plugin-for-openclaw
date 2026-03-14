@@ -13,8 +13,6 @@ import type { MemuPluginConfig, MemuMemoryRecord, PluginHookContext } from "./ty
 import { buildDynamicScope } from "./types.js";
 import { formatMemoriesContext, getAuditLog } from "./security.js";
 import type { FreeTextBackend } from "./backends/free-text/base.js";
-import { compareMemorySets } from "./backends/free-text/compare.js";
-import { benchmarkBackends, formatBenchmarkReport } from "./backends/free-text/benchmark.js";
 import { rerankMemoryResults } from "./metadata.js";
 
 function inferPeerKindFromId(id: string): "direct" | "group" | "channel" {
@@ -76,16 +74,7 @@ function parseCoreRef(raw: string | undefined): { id?: string; key?: string } {
 }
 
 export function createMemuCommand(
-  client: {
-    healthCheck(): Promise<boolean>;
-    circuitState: string;
-    failCount: number;
-    totalRequests: number;
-    totalErrors: number;
-    latencyStats: { p50: number; p95: number; p99: number };
-  } | null,
   primaryBackend: FreeTextBackend,
-  fallbackBackend: FreeTextBackend | null,
   coreRepo: CoreMemoryRepository,
   proposalQueue: CoreProposalQueue,
   cache: LRUCache<MemuMemoryRecord[]>,
@@ -131,9 +120,7 @@ export function createMemuCommand(
       const runtimeScope = buildDynamicScope(config.scope, scopeCtx);
 
       if (action === "status") {
-        const healthy = client ? await client.healthCheck() : true;
         const backendStatus = await primaryBackend.healthCheck();
-        const fallbackStatus = fallbackBackend ? await fallbackBackend.healthCheck() : null;
         const recentOutbox = outbox.recent
           .slice(-5)
           .map((event) => {
@@ -153,16 +140,12 @@ export function createMemuCommand(
           "══════════════════",
           "",
           "Connection:",
-          `  Server:          ${client ? config.memu.baseUrl : "(disabled)"}`,
-          `  Status:          ${client ? (healthy ? "Online" : "OFFLINE") : "disabled"}`,
-          `  Circuit Breaker: ${client?.circuitState ?? "disabled"}${client ? ` (failures: ${client.failCount})` : ""}`,
+          "  Server:          (local core store)",
+          "  Status:          active",
+          "  Circuit Breaker: disabled",
           "",
           "Free-text Backend:",
           `  Primary:         ${backendStatus.provider} (${backendStatus.healthy ? "Online" : "OFFLINE"})`,
-          `  Dual Write:      ${config.backend.freeText.dualWrite ? "enabled" : "disabled"}`,
-          `  Read Fallback:   ${config.backend.freeText.readFallback}`,
-          `  Compare Recall:  ${config.backend.freeText.compareRecall ? "enabled" : "disabled"}`,
-          ...(fallbackStatus ? [`  Fallback:        ${fallbackStatus.provider} (${fallbackStatus.healthy ? "Online" : "OFFLINE"})`] : []),
           "",
           "Scope:",
           `  User ID:  ${runtimeScope.userId}`,
@@ -213,82 +196,14 @@ export function createMemuCommand(
         let memories = await primaryBackend.search(query, runtimeScope, {
           maxItems: 10,
           maxContextChars: config.recall.maxContextChars,
-          includeSessionScope: config.backend.freeText.provider === "mem0",
+          includeSessionScope: true,
         });
-        if (memories.length === 0 && fallbackBackend) {
-          memories = await fallbackBackend.search(query, runtimeScope, {
-            maxItems: 10,
-            maxContextChars: config.recall.maxContextChars,
-          });
-        }
         memories = rerankMemoryResults(query, memories).slice(0, 10);
         if (memories.length === 0) {
           return { text: "No memories found." };
         }
 
         return { text: formatMemoriesContext(memories) };
-      }
-
-      if (action === "compare") {
-        const query = tokens.slice(1).join(" ");
-        if (!query) {
-          return { text: "Usage: /memu compare <query>" };
-        }
-        if (!fallbackBackend) {
-          return { text: "Compare requires a configured fallback backend." };
-        }
-
-        const primaryResults = await primaryBackend.search(query, runtimeScope, {
-          maxItems: Math.min(Math.max(config.recall.topK * 2, config.recall.topK), 10),
-          maxContextChars: config.recall.maxContextChars,
-          includeSessionScope: primaryBackend.provider === "mem0",
-        });
-        const shadowResults = await fallbackBackend.search(query, runtimeScope, {
-          maxItems: Math.min(Math.max(config.recall.topK * 2, config.recall.topK), 10),
-          maxContextChars: config.recall.maxContextChars,
-          includeSessionScope: fallbackBackend.provider === "mem0",
-        });
-        const comparison = compareMemorySets(
-          rerankMemoryResults(query, primaryResults).slice(0, config.recall.topK),
-          rerankMemoryResults(query, shadowResults).slice(0, config.recall.topK),
-        );
-
-        const lines = [
-          "Memory Backend Compare",
-          "══════════════════════",
-          `Query: ${query}`,
-          `Primary: ${primaryBackend.provider} (${comparison.primaryCount})`,
-          `Shadow:  ${fallbackBackend.provider} (${comparison.shadowCount})`,
-          `Overlap: ${comparison.overlapCount}`,
-          ...(comparison.primaryOnly.length > 0
-            ? ["", `${primaryBackend.provider} only:`, ...comparison.primaryOnly.slice(0, 3).map((item) => `  - ${item.text}`)]
-            : []),
-          ...(comparison.shadowOnly.length > 0
-            ? ["", `${fallbackBackend.provider} only:`, ...comparison.shadowOnly.slice(0, 3).map((item) => `  - ${item.text}`)]
-            : []),
-        ];
-        return { text: lines.join("\n") };
-      }
-
-      if (action === "benchmark") {
-        const rawQueries = args.slice("benchmark".length).trim();
-        if (!rawQueries) {
-          return { text: "Usage: /memu benchmark <query1> || <query2> || <query3>" };
-        }
-        if (!fallbackBackend) {
-          return { text: "Benchmark requires a configured fallback backend." };
-        }
-
-        const queries = rawQueries.split("||").map((item) => item.trim()).filter(Boolean);
-        if (queries.length === 0) {
-          return { text: "Usage: /memu benchmark <query1> || <query2> || <query3>" };
-        }
-
-        const rows = await benchmarkBackends(primaryBackend, fallbackBackend, runtimeScope, queries, {
-          maxItems: config.recall.topK,
-          maxContextChars: config.recall.maxContextChars,
-        });
-        return { text: formatBenchmarkReport(primaryBackend.provider, fallbackBackend.provider, rows) };
       }
 
       if (action === "flush") {
@@ -316,10 +231,10 @@ export function createMemuCommand(
             hitRate: cache.hitRate,
           },
           client: {
-            totalRequests: client?.totalRequests ?? 0,
-            totalErrors: client?.totalErrors ?? 0,
-            circuitState: client?.circuitState ?? "disabled",
-            latencyStats: client?.latencyStats ?? { p50: 0, p95: 0, p99: 0 },
+            totalRequests: 0,
+            totalErrors: 0,
+            circuitState: "disabled",
+            latencyStats: { p50: 0, p95: 0, p99: 0 },
           },
         });
         return { text: metrics.formatDashboard(snap) };
@@ -423,8 +338,6 @@ export function createMemuCommand(
           "  /memu status          — show connection, scope & queue status",
           "  /memu sync [agentId]  — force Markdown sync",
           "  /memu search <query>  — search memories",
-          "  /memu compare <query> — compare primary vs fallback recall",
-          "  /memu benchmark <q1> || <q2> — benchmark multiple queries",
           "  /memu flush           — flush pending outbox items",
           "  /memu dashboard       — full metrics dashboard",
           "  /memu audit [limit]   — view audit log",

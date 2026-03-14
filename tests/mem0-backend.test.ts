@@ -48,12 +48,10 @@ await test("effectiveUserId namespaces non-main agents", () => {
 
 await test("loadConfig parses mem0 backend options", () => {
   const cfg = loadConfig({
-    backend: { freeText: { provider: "mem0", dualWrite: true, readFallback: "memu", compareRecall: true } },
+    backend: { freeText: { provider: "mem0" } },
     mem0: { mode: "open-source", topK: 7, searchThreshold: 0.42, customPrompt: "extract facts" },
   });
   assertEqual(cfg.backend.freeText.provider, "mem0", "provider");
-  assertEqual(cfg.backend.freeText.dualWrite, true, "dualWrite");
-  assertEqual(cfg.backend.freeText.compareRecall, true, "compareRecall");
   assertEqual(cfg.mem0.mode, "open-source", "mode");
   assertEqual(cfg.mem0.topK, 7, "topK");
   assertEqual(cfg.mem0.searchThreshold, 0.42, "searchThreshold");

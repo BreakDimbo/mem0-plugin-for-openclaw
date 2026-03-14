@@ -8,8 +8,6 @@ import type { OpenClawPluginDefinition, OpenClawPluginApi } from "openclaw/plugi
 import { buildDynamicScope } from "./types.js";
 import { loadConfig } from "./types.js";
 import type { MemuMemoryRecord } from "./types.js";
-import { MemUClient } from "./client.js";
-import { MemUAdapter } from "./adapter.js";
 import { LRUCache } from "./cache.js";
 import { InboundMessageCache } from "./inbound-cache.js";
 import { OutboxWorker } from "./outbox.js";
@@ -17,7 +15,7 @@ import { MarkdownSync } from "./sync.js";
 import { Metrics } from "./metrics.js";
 import { CoreMemoryRepository } from "./core-repository.js";
 import { CoreProposalQueue } from "./core-proposals.js";
-import { createMemuFallbackBackend, createPrimaryFreeTextBackend } from "./backends/free-text/factory.js";
+import { createPrimaryFreeTextBackend } from "./backends/free-text/factory.js";
 
 import { createRecallHook } from "./hooks/recall.js";
 import { createCaptureHook } from "./hooks/capture.js";
@@ -49,25 +47,8 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
   register(api: OpenClawPluginApi) {
     // -- Config --
     const config = loadConfig(api.pluginConfig as Record<string, unknown> | undefined);
-    const needsMemu =
-      config.backend.freeText.provider === "memu" ||
-      config.backend.freeText.dualWrite ||
-      config.backend.freeText.readFallback === "memu" ||
-      config.backend.freeText.compareRecall;
 
     // -- Core modules --
-    const client = needsMemu
-      ? new MemUClient(
-          config.memu.baseUrl,
-          config.memu.timeoutMs,
-          config.memu.cbResetMs,
-          config.memu.healthCheckPath,
-          api.logger,
-        )
-      : null;
-    const adapter = needsMemu && client
-      ? new MemUAdapter(client, config.scope, api.logger, config.recall.method, config.recall.hybrid)
-      : null;
     const scopeResolver = {
       resolveRuntimeScope: (ctx?: { agentId?: string; sessionKey?: string; sessionId?: string; workspaceDir?: string }) =>
         buildDynamicScope(config.scope, ctx),
@@ -78,15 +59,7 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
     const metrics = new Metrics();
     const proposalQueue = new CoreProposalQueue(config.outbox.persistPath, config.core.proposalQueueMax, api.logger);
 
-    const primaryFreeTextBackend = createPrimaryFreeTextBackend(config, { adapter, client, logger: api.logger });
-    const fallbackFreeTextBackend =
-      config.backend.freeText.provider === "mem0" && config.backend.freeText.readFallback === "memu" && adapter && client
-        ? createMemuFallbackBackend({ adapter, client })
-        : null;
-    const secondaryFreeTextBackend =
-      config.backend.freeText.provider === "mem0" && config.backend.freeText.dualWrite && adapter && client
-        ? createMemuFallbackBackend({ adapter, client })
-        : null;
+    const primaryFreeTextBackend = createPrimaryFreeTextBackend(config, { logger: api.logger });
 
     const outbox = new OutboxWorker(primaryFreeTextBackend, api.logger, {
       concurrency: config.outbox.concurrency,
@@ -94,13 +67,12 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
       maxRetries: config.outbox.maxRetries,
       persistPath: config.outbox.persistPath,
       flushIntervalMs: config.outbox.flushIntervalMs,
-      secondaryBackend: secondaryFreeTextBackend,
     });
 
-    const sync = new MarkdownSync(primaryFreeTextBackend, fallbackFreeTextBackend, scopeResolver, coreRepo, config, api.logger);
+    const sync = new MarkdownSync(primaryFreeTextBackend, scopeResolver, coreRepo, config, api.logger);
 
     api.logger.info(
-      `memory-memu: registered (baseUrl: ${needsMemu ? config.memu.baseUrl : "(disabled)"}, userId: ${config.scope.userId}, agentId: ${config.scope.agentId}, freeText=${config.backend.freeText.provider}, recall: ${config.recall.enabled}, capture: ${config.capture.enabled})`,
+      `memory-memu: registered (core=local, freeText=${config.backend.freeText.provider}, userId: ${config.scope.userId}, agentId: ${config.scope.agentId}, recall: ${config.recall.enabled}, capture: ${config.capture.enabled})`,
     );
 
     // ========================================================================
@@ -108,7 +80,7 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
     // ========================================================================
 
     if (config.recall.enabled || config.core.enabled) {
-      api.on("before_prompt_build", createRecallHook(primaryFreeTextBackend, fallbackFreeTextBackend, scopeResolver, coreRepo, cache, inbound, config, api.logger, metrics, sync), {
+      api.on("before_prompt_build", createRecallHook(primaryFreeTextBackend, scopeResolver, coreRepo, cache, inbound, config, api.logger, metrics, sync), {
         priority: HOOK_PRIORITY.recall,
       });
     }
@@ -127,10 +99,10 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
     // Tools (factory pattern to capture runtime context)
     // ========================================================================
 
-    api.registerTool((ctx: any) => createRecallTool(primaryFreeTextBackend, fallbackFreeTextBackend, cache, config, metrics, ctx));
+    api.registerTool((ctx: any) => createRecallTool(primaryFreeTextBackend, cache, config, metrics, ctx));
     api.registerTool((ctx: any) => createStoreTool(outbox, config, ctx));
     api.registerTool((ctx: any) => createForgetTool(primaryFreeTextBackend, config, ctx));
-    api.registerTool((ctx: any) => createStatsTool(client, primaryFreeTextBackend, fallbackFreeTextBackend, cache, outbox, metrics, ctx));
+    api.registerTool((ctx: any) => createStatsTool(primaryFreeTextBackend, cache, outbox, metrics, ctx));
     api.registerTool((ctx: any) => createCoreListTool(coreRepo, config, ctx));
     api.registerTool((ctx: any) => createCoreUpsertTool(coreRepo, config, ctx));
     api.registerTool((ctx: any) => createCoreDeleteTool(coreRepo, config, ctx));
@@ -143,9 +115,7 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
 
     api.registerCommand(
       createMemuCommand(
-        client,
         primaryFreeTextBackend,
-        fallbackFreeTextBackend,
         coreRepo,
         proposalQueue,
         cache,
@@ -164,16 +134,7 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
     api.registerService({
       id: "memory-memu",
       start: async (_ctx) => {
-        if (client) {
-          const healthy = await client.healthCheck();
-          if (healthy) {
-            api.logger.info(`memory-memu: Connected to ${config.memu.baseUrl}`);
-          } else {
-            api.logger.warn(`memory-memu: Server at ${config.memu.baseUrl} unreachable — memU fallback unavailable until it comes online`);
-          }
-        } else {
-          api.logger.info("memory-memu: memU server disabled for current backend configuration");
-        }
+        api.logger.info("memory-memu: using local core store and mem0 free-text backend");
 
         // Start outbox worker (loads persisted queue from disk)
         if (config.outbox.enabled) {

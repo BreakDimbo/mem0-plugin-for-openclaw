@@ -150,17 +150,8 @@ export type ScopeConfig = {
 export type MemuPluginConfig = {
   backend: {
     freeText: {
-      provider: "memu" | "mem0";
-      dualWrite: boolean;
-      readFallback: "none" | "memu";
-      compareRecall: boolean;
+      provider: "mem0";
     };
-  };
-  memu: {
-    baseUrl: string;
-    timeoutMs: number;
-    cbResetMs: number;
-    healthCheckPath: string;
   };
   mem0: {
     mode: "platform" | "open-source";
@@ -234,17 +225,8 @@ export type MemuPluginConfig = {
 export const DEFAULT_CONFIG: MemuPluginConfig = {
   backend: {
     freeText: {
-      provider: "memu",
-      dualWrite: false,
-      readFallback: "memu",
-      compareRecall: false,
+      provider: "mem0",
     },
-  },
-  memu: {
-    baseUrl: "http://127.0.0.1:8000",
-    timeoutMs: 12000,
-    cbResetMs: 10_000,
-    healthCheckPath: "/debug",
   },
   mem0: {
     mode: "open-source",
@@ -412,7 +394,6 @@ function strMap(v: unknown): Record<string, string> | undefined {
 export function loadConfig(raw?: Record<string, unknown>): MemuPluginConfig {
   if (!raw) return { ...DEFAULT_CONFIG };
 
-  const m = (raw.memu ?? {}) as Record<string, unknown>;
   const b = (raw.backend ?? {}) as Record<string, unknown>;
   const ft = (b.freeText ?? {}) as Record<string, unknown>;
   const mem0 = (raw.mem0 ?? {}) as Record<string, unknown>;
@@ -424,18 +405,9 @@ export function loadConfig(raw?: Record<string, unknown>): MemuPluginConfig {
   const s = (raw.sync ?? {}) as Record<string, unknown>;
 
   return {
-    memu: {
-      baseUrl: str(m.baseUrl, DEFAULT_CONFIG.memu.baseUrl),
-      timeoutMs: numInRange(m.timeoutMs, DEFAULT_CONFIG.memu.timeoutMs, 500, 30_000),
-      cbResetMs: numInRange(m.cbResetMs, DEFAULT_CONFIG.memu.cbResetMs, 1_000, 120_000),
-      healthCheckPath: str(m.healthCheckPath, DEFAULT_CONFIG.memu.healthCheckPath),
-    },
     backend: {
       freeText: {
         provider: ft.provider === "mem0" ? "mem0" : DEFAULT_CONFIG.backend.freeText.provider,
-        dualWrite: bool(ft.dualWrite, DEFAULT_CONFIG.backend.freeText.dualWrite),
-        readFallback: ft.readFallback === "none" ? "none" : DEFAULT_CONFIG.backend.freeText.readFallback,
-        compareRecall: bool(ft.compareRecall, DEFAULT_CONFIG.backend.freeText.compareRecall),
       },
     },
     mem0: {

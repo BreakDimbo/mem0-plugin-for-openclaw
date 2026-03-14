@@ -121,7 +121,6 @@ await test("createRecallHook loads session core cache once and reranks against c
   let listCalls = 0;
   const hook = createRecallHook(
     { provider: "mem0", search: async () => [] } as any,
-    null,
     { resolveRuntimeScope: () => ({ userId: "u", agentId: "a", sessionKey: "agent:a:main" }) } as any,
     {
       list: async () => {
@@ -151,8 +150,7 @@ await test("createRecallHook loads session core cache once and reranks against c
         workspaceFallbackMaxFiles: 0,
       },
       core: { enabled: true, topK: 5, maxItemChars: 240, autoExtractProposals: false, humanReviewRequired: false, touchOnRecall: false, proposalQueueMax: 10 },
-      backend: { freeText: { provider: "mem0", dualWrite: false, readFallback: "none", compareRecall: false } },
-      memu: { baseUrl: "", timeoutMs: 1000, cbResetMs: 1000, healthCheckPath: "/debug" },
+      backend: { freeText: { provider: "mem0" } },
       mem0: { mode: "open-source", enableGraph: false, searchThreshold: 0.3, topK: 5 },
       capture: { enabled: false, maxItemsPerRun: 0, minChars: 0, maxChars: 0, dedupeThreshold: 0.8 },
       outbox: { enabled: false, concurrency: 1, batchSize: 1, maxRetries: 1, drainTimeoutMs: 1000, persistPath: "", flushIntervalMs: 1000 },
@@ -186,7 +184,6 @@ await test("createRecallHook keeps only strongly relevant core memories for a fo
   let prepend = "";
   const hook = createRecallHook(
     { provider: "mem0", search: async () => [] } as any,
-    null,
     { resolveRuntimeScope: () => ({ userId: "u", agentId: "a", sessionKey: "agent:a:main" }) } as any,
     {
       list: async () => [
@@ -214,8 +211,7 @@ await test("createRecallHook keeps only strongly relevant core memories for a fo
         workspaceFallbackMaxFiles: 0,
       },
       core: { enabled: true, topK: 5, maxItemChars: 240, autoExtractProposals: false, humanReviewRequired: false, touchOnRecall: false, proposalQueueMax: 10 },
-      backend: { freeText: { provider: "mem0", dualWrite: false, readFallback: "none", compareRecall: false } },
-      memu: { baseUrl: "", timeoutMs: 1000, cbResetMs: 1000, healthCheckPath: "/debug" },
+      backend: { freeText: { provider: "mem0" } },
       mem0: { mode: "open-source", enableGraph: false, searchThreshold: 0.3, topK: 5 },
       capture: { enabled: false, maxItemsPerRun: 0, minChars: 0, maxChars: 0, dedupeThreshold: 0.8 },
       outbox: { enabled: false, concurrency: 1, batchSize: 1, maxRetries: 1, drainTimeoutMs: 1000, persistPath: "", flushIntervalMs: 1000 },
@@ -242,7 +238,6 @@ await test("createRecallHook caches core memory per session and reranks locally"
   let listCalls = 0;
   const hook = createRecallHook(
     { provider: "mem0", search: async () => [] } as any,
-    null,
     { resolveRuntimeScope: () => ({ userId: "u", agentId: "a", sessionKey: "agent:a:main" }) } as any,
     {
       list: async () => {
@@ -273,8 +268,7 @@ await test("createRecallHook caches core memory per session and reranks locally"
         workspaceFallbackMaxFiles: 0,
       },
       core: { enabled: true, topK: 5, maxItemChars: 240, autoExtractProposals: false, humanReviewRequired: false, touchOnRecall: false, proposalQueueMax: 10 },
-      backend: { freeText: { provider: "mem0", dualWrite: false, readFallback: "none", compareRecall: false } },
-      memu: { baseUrl: "", timeoutMs: 1000, cbResetMs: 1000, healthCheckPath: "/debug" },
+      backend: { freeText: { provider: "mem0" } },
       mem0: { mode: "open-source", enableGraph: false, searchThreshold: 0.3, topK: 5 },
       capture: { enabled: false, maxItemsPerRun: 0, minChars: 0, maxChars: 0, dedupeThreshold: 0.8 },
       outbox: { enabled: false, concurrency: 1, batchSize: 1, maxRetries: 1, drainTimeoutMs: 1000, persistPath: "", flushIntervalMs: 1000 },
@@ -307,7 +301,6 @@ await test("createRecallHook caches core memory per session and reranks locally"
 await test("createRecallHook suppresses lower-priority relevant memories when core strongly covers a single-fact query", async () => {
   const hook = createRecallHook(
     { provider: "mem0", search: async () => [{ id: "m1", text: "用户的人格类型是 INTJ", category: "mem0", score: 0.9, source: "memu_item", scope: { userId: "u", agentId: "a", sessionKey: "s" } }] } as any,
-    null,
     { resolveRuntimeScope: () => ({ userId: "u", agentId: "a", sessionKey: "agent:a:main" }) } as any,
     {
       list: async () => [
@@ -333,8 +326,7 @@ await test("createRecallHook suppresses lower-priority relevant memories when co
         workspaceFallbackMaxFiles: 0,
       },
       core: { enabled: true, topK: 5, maxItemChars: 240, autoExtractProposals: false, humanReviewRequired: false, touchOnRecall: false, proposalQueueMax: 10 },
-      backend: { freeText: { provider: "mem0", dualWrite: false, readFallback: "none", compareRecall: false } },
-      memu: { baseUrl: "", timeoutMs: 1000, cbResetMs: 1000, healthCheckPath: "/debug" },
+      backend: { freeText: { provider: "mem0" } },
       mem0: { mode: "open-source", enableGraph: false, searchThreshold: 0.3, topK: 5 },
       capture: { enabled: false, maxItemsPerRun: 0, minChars: 0, maxChars: 0, dedupeThreshold: 0.8 },
       outbox: { enabled: false, concurrency: 1, batchSize: 1, maxRetries: 1, drainTimeoutMs: 1000, persistPath: "", flushIntervalMs: 1000 },
@@ -361,7 +353,6 @@ await test("createRecallHook suppresses lower-priority relevant memories when co
 await test("createRecallHook skips duplicate injection inside the same session", async () => {
   const hook = createRecallHook(
     { provider: "mem0", search: async () => [] } as any,
-    null,
     { resolveRuntimeScope: () => ({ userId: "u", agentId: "a", sessionKey: "agent:a:main" }) } as any,
     {
       list: async () => [
@@ -387,8 +378,7 @@ await test("createRecallHook skips duplicate injection inside the same session",
         workspaceFallbackMaxFiles: 0,
       },
       core: { enabled: true, topK: 5, maxItemChars: 240, autoExtractProposals: false, humanReviewRequired: false, touchOnRecall: false, proposalQueueMax: 10 },
-      backend: { freeText: { provider: "mem0", dualWrite: false, readFallback: "none", compareRecall: false } },
-      memu: { baseUrl: "", timeoutMs: 1000, cbResetMs: 1000, healthCheckPath: "/debug" },
+      backend: { freeText: { provider: "mem0" } },
       mem0: { mode: "open-source", enableGraph: false, searchThreshold: 0.3, topK: 5 },
       capture: { enabled: false, maxItemsPerRun: 0, minChars: 0, maxChars: 0, dedupeThreshold: 0.8 },
       outbox: { enabled: false, concurrency: 1, batchSize: 1, maxRetries: 1, drainTimeoutMs: 1000, persistPath: "", flushIntervalMs: 1000 },
@@ -426,7 +416,6 @@ await test("createRecallHook skips duplicate injection inside the same session",
 await test("createRecallHook avoids re-injecting the same stable core facts across turns in one session", async () => {
   const hook = createRecallHook(
     { provider: "mem0", search: async () => [] } as any,
-    null,
     { resolveRuntimeScope: () => ({ userId: "u", agentId: "a", sessionKey: "agent:a:main" }) } as any,
     {
       list: async () => {
@@ -455,8 +444,7 @@ await test("createRecallHook avoids re-injecting the same stable core facts acro
         workspaceFallbackMaxFiles: 0,
       },
       core: { enabled: true, topK: 5, maxItemChars: 240, autoExtractProposals: false, humanReviewRequired: false, touchOnRecall: false, proposalQueueMax: 10 },
-      backend: { freeText: { provider: "mem0", dualWrite: false, readFallback: "none", compareRecall: false } },
-      memu: { baseUrl: "", timeoutMs: 1000, cbResetMs: 1000, healthCheckPath: "/debug" },
+      backend: { freeText: { provider: "mem0" } },
       mem0: { mode: "open-source", enableGraph: false, searchThreshold: 0.3, topK: 5 },
       capture: { enabled: false, maxItemsPerRun: 0, minChars: 0, maxChars: 0, dedupeThreshold: 0.8 },
       outbox: { enabled: false, concurrency: 1, batchSize: 1, maxRetries: 1, drainTimeoutMs: 1000, persistPath: "", flushIntervalMs: 1000 },
@@ -505,7 +493,6 @@ await test("createRecallHook reuses relevant selections for similar session quer
         ];
       },
     } as any,
-    null,
     { resolveRuntimeScope: () => ({ userId: "u", agentId: "a", sessionKey: "agent:a:main" }) } as any,
     { list: async () => [] } as any,
     { get: () => null, set: () => {} } as any,
@@ -527,8 +514,7 @@ await test("createRecallHook reuses relevant selections for similar session quer
         workspaceFallbackMaxFiles: 0,
       },
       core: { enabled: false, topK: 5, maxItemChars: 240, autoExtractProposals: false, humanReviewRequired: false, touchOnRecall: false, proposalQueueMax: 10 },
-      backend: { freeText: { provider: "mem0", dualWrite: false, readFallback: "none", compareRecall: false } },
-      memu: { baseUrl: "", timeoutMs: 1000, cbResetMs: 1000, healthCheckPath: "/debug" },
+      backend: { freeText: { provider: "mem0" } },
       mem0: { mode: "open-source", enableGraph: false, searchThreshold: 0.3, topK: 5 },
       capture: { enabled: false, maxItemsPerRun: 0, minChars: 0, maxChars: 0, dedupeThreshold: 0.8 },
       outbox: { enabled: false, concurrency: 1, batchSize: 1, maxRetries: 1, drainTimeoutMs: 1000, persistPath: "", flushIntervalMs: 1000 },

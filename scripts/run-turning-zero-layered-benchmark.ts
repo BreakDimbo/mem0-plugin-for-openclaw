@@ -3,12 +3,10 @@ import { readFile, writeFile } from "node:fs/promises";
 import { promisify } from "node:util";
 
 import { LRUCache } from "../cache.js";
-import { MemUClient } from "../client.js";
 import { CoreMemoryRepository } from "../core-repository.js";
 import { createRecallHook } from "../hooks/recall.js";
-import { loadConfig } from "../types.js";
+import { buildDynamicScope, loadConfig } from "../types.js";
 import { createPrimaryFreeTextBackend } from "../backends/free-text/factory.js";
-import { MemUAdapter } from "../adapter.js";
 import { includesExpected, summarizeLayeredRows, type LayeredBenchmarkRow } from "./layered-benchmark.js";
 import { TURNING_ZERO_E2E_CASES } from "./turning-zero-e2e-fixtures.js";
 
@@ -74,9 +72,11 @@ async function loadPluginConfig() {
 
 async function buildRecallHook(config: ReturnType<typeof loadConfig>) {
   const logger = { info: (_msg: string) => {}, warn: (_msg: string) => {} };
-  const client = new MemUClient(config.memu.baseUrl, config.memu.timeoutMs, config.memu.cbResetMs, config.memu.healthCheckPath, logger);
-  const adapter = new MemUAdapter(client, config, logger);
-  const primary = createPrimaryFreeTextBackend(config, { adapter, client, logger });
+  const scopeResolver = {
+    resolveRuntimeScope: (ctx?: { agentId?: string; sessionKey?: string; sessionId?: string; workspaceDir?: string }) =>
+      buildDynamicScope(config.scope, ctx),
+  };
+  const primary = createPrimaryFreeTextBackend(config, { logger });
   const coreRepo = new CoreMemoryRepository(config.core.persistPath, logger, config.core.maxItemChars);
   const cache = new LRUCache(config.recall.cacheMaxSize, config.recall.cacheTtlMs);
   const inbound = { getBySender: async () => "" };
@@ -90,7 +90,7 @@ async function buildRecallHook(config: ReturnType<typeof loadConfig>) {
     recordRecallFallback: () => {},
   };
   const sync = { registerAgent: () => {} };
-  return createRecallHook(primary, null, adapter, coreRepo, cache, inbound as any, config, logger, metrics as any, sync as any);
+  return createRecallHook(primary, scopeResolver, coreRepo, cache, inbound as any, config, logger, metrics as any, sync as any);
 }
 
 async function renderInjectedContext(

@@ -13,7 +13,6 @@ import { buildDynamicScope } from "../types.js";
 import type { CoreMemoryRepository } from "../core-repository.js";
 import { applyInjectionBudget, escapeForInjection, formatCoreMemoriesContext, formatMemoriesContext } from "../security.js";
 import type { FreeTextBackend } from "../backends/free-text/base.js";
-import { compareMemorySets } from "../backends/free-text/compare.js";
 import { genericConceptBoost, rerankMemoryResults, tokenizeSemanticQuery } from "../metadata.js";
 import { resolveWorkspaceDir, searchWorkspaceFacts } from "../workspace-facts.js";
 
@@ -466,7 +465,6 @@ export function sanitizePromptQuery(raw: string): string {
 
 export function createRecallHook(
   primaryBackend: FreeTextBackend,
-  fallbackBackend: FreeTextBackend | null,
   adapter: { resolveRuntimeScope(ctx?: { agentId?: string; sessionKey?: string; sessionId?: string; workspaceDir?: string }): MemoryScope },
   coreRepo: CoreMemoryRepository,
   cache: LRUCache<MemuMemoryRecord[]>,
@@ -532,40 +530,13 @@ export function createRecallHook(
           const primaryResults = await Promise.all(searchQueries.map((searchQuery) => primaryBackend.search(searchQuery, scope, {
             maxItems: searchLimit,
             maxContextChars: config.recall.maxContextChars,
-            includeSessionScope: config.backend.freeText.provider === "mem0",
+            includeSessionScope: true,
           })));
           memories = dedupeMemories(primaryResults.flat());
-          let fallbackUsed = false;
-          if (memories.length === 0 && fallbackBackend) {
-            const fallbackResults = await Promise.all(searchQueries.map((searchQuery) => fallbackBackend.search(searchQuery, scope, {
-              maxItems: searchLimit,
-              maxContextChars: config.recall.maxContextChars,
-            })));
-            memories = dedupeMemories(fallbackResults.flat());
-            fallbackUsed = memories.length > 0;
-            if (fallbackUsed) {
-              metrics.recordRecallFallback();
-            }
-          }
-          if (config.backend.freeText.compareRecall && fallbackBackend) {
-            void Promise.all(searchQueries.map((searchQuery) => fallbackBackend.search(searchQuery, scope, {
-              maxItems: searchLimit,
-              maxContextChars: config.recall.maxContextChars,
-            }))).then((shadowResults) => {
-              const shadow = dedupeMemories(shadowResults.flat());
-              const comparison = compareMemorySets(memories, rerankMemoryResults(query, shadow).slice(0, config.recall.topK));
-              metrics.recordRecallCompare(comparison.primaryCount, comparison.shadowCount);
-              if (comparison.primaryCount !== comparison.shadowCount) {
-                logger.info(
-                  `recall-hook: compare primary=${primaryBackend.provider} count=${comparison.primaryCount} shadow=${fallbackBackend.provider} count=${comparison.shadowCount} overlap=${comparison.overlapCount}`,
-                );
-              }
-            }).catch(() => {});
-          }
           memories = rerankMemoryResults(query, memories).slice(0, config.recall.topK);
           metrics.recallMisses++;
           if (memories.length > 0) cache.set(cacheKey, memories);
-          logger.info(`recall-hook: fetched ${memories.length} memories via ${primaryBackend.provider}${fallbackUsed ? " (fallback)" : ""} for ${searchQueries.length} query parts="${query.slice(0, 60)}..."`);
+          logger.info(`recall-hook: fetched ${memories.length} memories via ${primaryBackend.provider} for ${searchQueries.length} query parts="${query.slice(0, 60)}..."`);
         }
 
         filteredMemories = memories.filter((m) => m.score === undefined || m.score >= config.recall.scoreThreshold);

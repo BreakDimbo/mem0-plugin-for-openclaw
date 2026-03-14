@@ -1,19 +1,14 @@
 {
   "id": "memory-memu",
-  "name": "memU Enhanced Memory",
-  "description": "Enhanced memory plugin with memU for long-term structured recall, scoped retrieval, and async capture",
+  "name": "Enhanced Memory",
+  "description": "Enhanced memory plugin with local core memory, mem0 long-term recall, scoped retrieval, and async capture",
   "kind": "memory",
   "version": "1.0.0",
   "uiHints": {
-    "baseUrl": {
-      "label": "memU Server URL",
-      "placeholder": "http://127.0.0.1:8000",
-      "help": "Base URL of the memU-server instance"
-    },
     "userId": {
       "label": "User ID",
       "placeholder": "default_user",
-      "help": "Default user identifier for memU storage"
+      "help": "Default user identifier for memory storage"
     },
     "scope.userIdByAgent": {
       "label": "Per-Agent User IDs",
@@ -48,7 +43,7 @@
     "backend.freeText.provider": {
       "label": "Free-Text Backend",
       "advanced": true,
-      "help": "Choose memU or mem0 as the free-text memory backend"
+      "help": "Current free-text backend (mem0 only)"
     },
     "mem0.mode": {
       "label": "Mem0 Mode",
@@ -60,25 +55,13 @@
     "type": "object",
     "additionalProperties": false,
     "properties": {
-      "memu": {
-        "type": "object",
-        "properties": {
-          "baseUrl": { "type": "string", "default": "http://127.0.0.1:8000" },
-          "timeoutMs": { "type": "number", "default": 5000, "minimum": 500, "maximum": 30000 },
-          "cbResetMs": { "type": "number", "default": 10000, "minimum": 1000, "maximum": 120000 },
-          "healthCheckPath": { "type": "string", "default": "/debug" }
-        }
-      },
       "backend": {
         "type": "object",
         "properties": {
           "freeText": {
             "type": "object",
             "properties": {
-              "provider": { "type": "string", "enum": ["memu", "mem0"], "default": "memu" },
-              "dualWrite": { "type": "boolean", "default": false },
-              "readFallback": { "type": "string", "enum": ["none", "memu"], "default": "memu" },
-              "compareRecall": { "type": "boolean", "default": false }
+              "provider": { "type": "string", "enum": ["mem0"], "default": "mem0" }
             }
           }
         }
