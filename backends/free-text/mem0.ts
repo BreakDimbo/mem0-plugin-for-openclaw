@@ -23,6 +23,14 @@ type Mem0Provider = {
 
 type Mem0ProviderFactory = () => Promise<Mem0Provider>;
 
+type JsonCapableLlm = {
+  generateResponse(
+    messages: Array<{ role: string; content: string | unknown }>,
+    responseFormat?: { type: string },
+    tools?: unknown[],
+  ): Promise<unknown>;
+};
+
 function toPathHref(path: string): string {
   return pathToFileURL(path).href;
 }
@@ -31,6 +39,74 @@ function normalizeArray<T>(value: T[] | { results?: T[] } | null | undefined): T
   if (Array.isArray(value)) return value;
   if (Array.isArray(value?.results)) return value.results;
   return [];
+}
+
+export function sanitizeJsonLikeResponse(value: unknown): unknown {
+  if (typeof value !== "string") return value;
+  const trimmed = value.trim();
+  if (!trimmed) return trimmed;
+
+  const extracted = extractBalancedJson(trimmed);
+  if (extracted) return extracted;
+
+  return trimmed
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
+}
+
+function extractBalancedJson(text: string): string | null {
+  const start = text.search(/[\[{]/);
+  if (start === -1) return null;
+
+  const open = text[start];
+  const close = open === "{" ? "}" : "]";
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === "\\") {
+        escaped = true;
+      } else if (ch === "\"") {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (ch === "\"") {
+      inString = true;
+      continue;
+    }
+
+    if (ch === open) depth++;
+    if (ch === close) {
+      depth--;
+      if (depth === 0) {
+        return text.slice(start, i + 1).trim();
+      }
+    }
+  }
+
+  return null;
+}
+
+function patchOssMemoryLlm(memory: Record<string, unknown>): void {
+  const llm = memory.llm as JsonCapableLlm | undefined;
+  if (!llm || typeof llm.generateResponse !== "function") return;
+  if ((llm.generateResponse as any).__memoryMemuPatched) return;
+
+  const original = llm.generateResponse.bind(llm);
+  const wrapped = async (...args: Parameters<JsonCapableLlm["generateResponse"]>) => {
+    const response = await original(...args);
+    return sanitizeJsonLikeResponse(response);
+  };
+  (wrapped as any).__memoryMemuPatched = true;
+  llm.generateResponse = wrapped;
 }
 
 export function effectiveUserId(scope: MemoryScope): string {
@@ -78,6 +154,7 @@ export class Mem0FreeTextBackend implements FreeTextBackend {
         ...(cfg.oss?.historyDbPath ? { historyDbPath: cfg.oss.historyDbPath } : {}),
         ...(cfg.customPrompt ? { customPrompt: cfg.customPrompt } : {}),
       });
+      patchOssMemoryLlm(memory as Record<string, unknown>);
       return {
         add: (messages, options) => memory.add(messages, options),
         search: async (query, options) => normalizeArray(await memory.search(query, options)),
@@ -97,6 +174,7 @@ export class Mem0FreeTextBackend implements FreeTextBackend {
         ...(cfg.oss?.historyDbPath ? { historyDbPath: cfg.oss.historyDbPath } : {}),
         ...(cfg.customPrompt ? { customPrompt: cfg.customPrompt } : {}),
       });
+      patchOssMemoryLlm(memory as Record<string, unknown>);
       this.logger.info(`mem0-backend: loaded OSS Memory from local source after package import failed: ${String(err)}`);
       return {
         add: (messages, options) => memory.add(messages, options),

@@ -1,4 +1,4 @@
-import { Mem0FreeTextBackend, effectiveUserId } from "../backends/free-text/mem0.js";
+import { Mem0FreeTextBackend, effectiveUserId, sanitizeJsonLikeResponse } from "../backends/free-text/mem0.js";
 import { loadConfig } from "../types.js";
 
 type TestResult = { name: string; passed: boolean; error?: string };
@@ -142,6 +142,12 @@ await test("search combines long-term and session memories without duplicates", 
   assert(results.some((item) => item.text === "long fact"), "includes long-term fact");
   assert(results.some((item) => item.text === "session fact"), "includes session fact");
   assertEqual(results.filter((item) => item.text === "shared fact").length, 1, "dedup shared fact");
+});
+
+await test("sanitizeJsonLikeResponse trims trailing fence noise after JSON", () => {
+  const raw = '{\n  "memory": [{"id":"0","text":"fact","event":"ADD"}]\n}\n```';
+  const cleaned = sanitizeJsonLikeResponse(raw);
+  assertEqual(cleaned, '{\n  "memory": [{"id":"0","text":"fact","event":"ADD"}]\n}', "cleaned response");
 });
 
 const passed = results.filter((r) => r.passed).length;
