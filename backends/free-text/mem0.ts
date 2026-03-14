@@ -1,6 +1,7 @@
 import { pathToFileURL } from "node:url";
 import type { FreeTextMemoryMetadata, MemoryScope, MemuMemoryRecord, MemuPluginConfig } from "../../types.js";
 import type { FreeTextBackend, FreeTextBackendStatus, FreeTextForgetOptions, FreeTextSearchOptions, FreeTextStoreOptions } from "./base.js";
+import { matchesMetadataFilters } from "../../metadata.js";
 
 type Logger = { info(msg: string): void; warn(msg: string): void };
 
@@ -223,6 +224,17 @@ export class Mem0FreeTextBackend implements FreeTextBackend {
       .filter((item) => item.text.trim().length > 0);
   }
 
+  private filterResults(items: MemuMemoryRecord[], options?: FreeTextSearchOptions): MemuMemoryRecord[] {
+    let filtered = items;
+    if (options?.category) {
+      filtered = filtered.filter((item) => item.category === options.category);
+    }
+    if (options?.quality || options?.memoryKinds?.length || options?.captureKind) {
+      filtered = filtered.filter((item) => matchesMetadataFilters(item.metadata, options));
+    }
+    return filtered;
+  }
+
   async healthCheck(): Promise<FreeTextBackendStatus> {
     try {
       await this.providerInstance();
@@ -309,12 +321,14 @@ export class Mem0FreeTextBackend implements FreeTextBackend {
           };
 
       const longTerm = this.normalizeSearchResults(normalizeArray(await provider.search(query, longTermOptions)), scope);
+      const filteredLongTerm = this.filterResults(longTerm, options);
       if (!options?.includeSessionScope) {
-        return longTerm.slice(0, options?.maxItems ?? longTerm.length);
+        return filteredLongTerm.slice(0, options?.maxItems ?? filteredLongTerm.length);
       }
       const session = this.normalizeSearchResults(normalizeArray(await provider.search(query, sessionOptions)), scope);
-      const seen = new Set(longTerm.map((item) => item.id ?? item.text));
-      const combined = [...longTerm, ...session.filter((item) => !seen.has(item.id ?? item.text))];
+      const filteredSession = this.filterResults(session, options);
+      const seen = new Set(filteredLongTerm.map((item) => item.id ?? item.text));
+      const combined = [...filteredLongTerm, ...filteredSession.filter((item) => !seen.has(item.id ?? item.text))];
       return combined.slice(0, options?.maxItems ?? combined.length);
     } catch (err) {
       this.logger.warn(`mem0-backend: search failed: ${String(err)}`);
@@ -333,12 +347,14 @@ export class Mem0FreeTextBackend implements FreeTextBackend {
         ? { userId: effectiveUid, runId: scope.sessionKey }
         : { user_id: effectiveUid, run_id: scope.sessionKey, page_size: options?.limit ?? 50 };
       const longTerm = this.normalizeSearchResults(normalizeArray(await provider.getAll(longTermOptions)), scope);
+      const filteredLongTerm = this.filterResults(longTerm);
       if (!options?.includeSessionScope) {
-        return longTerm.slice(0, options?.limit ?? longTerm.length);
+        return filteredLongTerm.slice(0, options?.limit ?? filteredLongTerm.length);
       }
       const session = this.normalizeSearchResults(normalizeArray(await provider.getAll(sessionOptions)), scope);
-      const seen = new Set(longTerm.map((item) => item.id ?? item.text));
-      return [...longTerm, ...session.filter((item) => !seen.has(item.id ?? item.text))].slice(0, options?.limit ?? Number.MAX_SAFE_INTEGER);
+      const filteredSession = this.filterResults(session);
+      const seen = new Set(filteredLongTerm.map((item) => item.id ?? item.text));
+      return [...filteredLongTerm, ...filteredSession.filter((item) => !seen.has(item.id ?? item.text))].slice(0, options?.limit ?? Number.MAX_SAFE_INTEGER);
     } catch (err) {
       this.logger.warn(`mem0-backend: list failed: ${String(err)}`);
       return [];

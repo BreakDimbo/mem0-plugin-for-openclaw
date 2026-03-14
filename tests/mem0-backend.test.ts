@@ -144,6 +144,51 @@ await test("search combines long-term and session memories without duplicates", 
   assertEqual(results.filter((item) => item.text === "shared fact").length, 1, "dedup shared fact");
 });
 
+await test("search applies metadata filters before returning results", async () => {
+  const backend = new Mem0FreeTextBackend(
+    loadConfig({
+      backend: { freeText: { provider: "mem0" } },
+      mem0: {
+        mode: "open-source",
+        topK: 5,
+        searchThreshold: 0.25,
+      },
+    }),
+    logger,
+    async () => ({
+      add: async () => ({ results: [] }),
+      search: async () => [
+        {
+          id: "p1",
+          memory: "The user prefers jasmine tea over coffee.",
+          score: 0.91,
+          categories: ["mem0"],
+          metadata: { quality: "durable", memory_kind: "preference", capture_kind: "explicit" },
+        },
+        {
+          id: "s1",
+          memory: "Tomorrow morning standup moved to 9am.",
+          score: 0.95,
+          categories: ["mem0"],
+          metadata: { quality: "transient", memory_kind: "schedule", capture_kind: "auto" },
+        },
+      ],
+      getAll: async () => [],
+      delete: async () => {},
+    }),
+  );
+
+  const results = await backend.search("what should we remember", { userId: "alice", agentId: "researcher", sessionKey: "agent:researcher:main" }, {
+    maxItems: 5,
+    quality: "durable",
+    memoryKinds: ["preference"],
+    captureKind: "explicit",
+  });
+
+  assertEqual(results.length, 1, "only durable preference should remain");
+  assertEqual(results[0]?.text, "The user prefers jasmine tea over coffee.", "expected durable preference");
+});
+
 await test("sanitizeJsonLikeResponse trims trailing fence noise after JSON", () => {
   const raw = '{\n  "memory": [{"id":"0","text":"fact","event":"ADD"}]\n}\n```';
   const cleaned = sanitizeJsonLikeResponse(raw);

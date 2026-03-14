@@ -207,11 +207,13 @@ export function createMemuCommand(
           maxItems: 10,
           maxContextChars: config.recall.maxContextChars,
           includeSessionScope: config.backend.freeText.provider === "mem0",
+          quality: "durable",
         });
         if (memories.length === 0 && fallbackBackend) {
           memories = await fallbackBackend.search(query, runtimeScope, {
             maxItems: 10,
             maxContextChars: config.recall.maxContextChars,
+            quality: "durable",
           });
         }
         if (memories.length === 0) {
@@ -234,11 +236,13 @@ export function createMemuCommand(
           maxItems: config.recall.topK,
           maxContextChars: config.recall.maxContextChars,
           includeSessionScope: primaryBackend.provider === "mem0",
+          quality: "durable",
         });
         const shadowResults = await fallbackBackend.search(query, runtimeScope, {
           maxItems: config.recall.topK,
           maxContextChars: config.recall.maxContextChars,
           includeSessionScope: fallbackBackend.provider === "mem0",
+          quality: "durable",
         });
         const comparison = compareMemorySets(primaryResults, shadowResults);
 

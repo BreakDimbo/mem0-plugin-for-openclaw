@@ -5,6 +5,9 @@ export type FreeTextSearchOptions = {
   maxContextChars?: number;
   category?: string;
   includeSessionScope?: boolean;
+  quality?: "durable" | "transient";
+  memoryKinds?: string[];
+  captureKind?: "explicit" | "auto";
 };
 
 export type FreeTextStoreOptions = {

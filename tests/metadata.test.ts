@@ -1,4 +1,4 @@
-import { buildFreeTextMetadata, inferFreeTextMemoryKind, inferQuality, metadataKindLabel } from "../metadata.js";
+import { buildFreeTextMetadata, inferFreeTextMemoryKind, inferQuality, matchesMetadataFilters, metadataKindLabel } from "../metadata.js";
 
 type TestResult = { name: string; passed: boolean; error?: string };
 const results: TestResult[] = [];
@@ -49,6 +49,22 @@ await test("buildFreeTextMetadata includes scope and durable kind", () => {
 await test("metadataKindLabel hides general kind", () => {
   assertEqual(metadataKindLabel({ memory_kind: "general" }), undefined, "general hidden");
   assertEqual(metadataKindLabel({ memory_kind: "tooling" }), "tooling", "tooling shown");
+});
+
+await test("matchesMetadataFilters accepts durable preference filters", () => {
+  const passed = matchesMetadataFilters(
+    { quality: "durable", memory_kind: "preference", capture_kind: "explicit" },
+    { quality: "durable", memoryKinds: ["preference"], captureKind: "explicit" },
+  );
+  assertEqual(passed, true, "durable preference filter");
+});
+
+await test("matchesMetadataFilters rejects transient when durable required", () => {
+  const passed = matchesMetadataFilters(
+    { quality: "transient", memory_kind: "schedule", capture_kind: "auto" },
+    { quality: "durable" },
+  );
+  assertEqual(passed, false, "durable filter rejects transient");
 });
 
 const passed = results.filter((r) => r.passed).length;

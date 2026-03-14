@@ -1,6 +1,7 @@
 import type { MemUAdapter } from "../../adapter.js";
 import type { MemoryScope, MemuMemoryRecord } from "../../types.js";
 import type { FreeTextBackend, FreeTextBackendStatus, FreeTextForgetOptions, FreeTextSearchOptions, FreeTextStoreOptions } from "./base.js";
+import { matchesMetadataFilters } from "../../metadata.js";
 
 export class MemUFreeTextBackend implements FreeTextBackend {
   readonly provider = "memu";
@@ -28,7 +29,11 @@ export class MemUFreeTextBackend implements FreeTextBackend {
   }
 
   async search(query: string, scope: MemoryScope, options?: FreeTextSearchOptions): Promise<MemuMemoryRecord[]> {
-    return this.adapter.recall(query, scope, options);
+    const results = await this.adapter.recall(query, scope, options);
+    return results.filter((item) => {
+      if (options?.category && item.category !== options.category) return false;
+      return matchesMetadataFilters(item.metadata, options);
+    });
   }
 
   async list(scope: MemoryScope, options?: { limit?: number; includeSessionScope?: boolean }): Promise<MemuMemoryRecord[]> {

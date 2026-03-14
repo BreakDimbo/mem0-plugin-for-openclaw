@@ -54,12 +54,14 @@ export function createRecallTool(
             maxContextChars: config.recall.maxContextChars,
             category: args.category,
             includeSessionScope: config.backend.freeText.provider === "mem0",
+            quality: "durable",
           });
           if (memories.length === 0 && fallbackBackend) {
             memories = await fallbackBackend.search(args.query, scope, {
               maxItems: limit,
               maxContextChars: config.recall.maxContextChars,
               category: args.category,
+              quality: "durable",
             });
             if (memories.length > 0) {
               metrics.recordRecallFallback();
@@ -74,6 +76,7 @@ export function createRecallTool(
               maxItems: limit,
               maxContextChars: config.recall.maxContextChars,
               category: args.category,
+              quality: "durable",
             }).then((shadow) => {
               const comparison = compareMemorySets(memories ?? [], shadow);
               metrics.recordRecallCompare(comparison.primaryCount, comparison.shadowCount);

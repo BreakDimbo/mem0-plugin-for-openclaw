@@ -380,16 +380,18 @@ export class MarkdownSync {
       let recallItems =
         this.config.recall.enabled && coreMemories.length > 0
           ? await this.primaryBackend.search("long-term memory summary", scope, {
-              maxItems: Math.min(8, this.config.recall.topK),
+              maxItems: Math.max(8, this.config.recall.topK),
               maxContextChars: this.config.recall.maxContextChars,
               includeSessionScope: false,
+              quality: "durable",
             })
           : [];
       if (recallItems.length === 0 && this.fallbackBackend) {
         recallItems = await this.fallbackBackend.search("long-term memory summary", scope, {
-          maxItems: Math.min(8, this.config.recall.topK),
+          maxItems: Math.max(8, this.config.recall.topK),
           maxContextChars: this.config.recall.maxContextChars,
           includeSessionScope: false,
+          quality: "durable",
         });
       }
 

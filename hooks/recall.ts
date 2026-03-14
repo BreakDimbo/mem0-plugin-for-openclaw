@@ -204,12 +204,14 @@ export function createRecallHook(
             maxItems: config.recall.topK,
             maxContextChars: config.recall.maxContextChars,
             includeSessionScope: config.backend.freeText.provider === "mem0",
+            quality: "durable",
           });
           let fallbackUsed = false;
           if (memories.length === 0 && fallbackBackend) {
             memories = await fallbackBackend.search(query, scope, {
               maxItems: config.recall.topK,
               maxContextChars: config.recall.maxContextChars,
+              quality: "durable",
             });
             fallbackUsed = memories.length > 0;
             if (fallbackUsed) {
@@ -220,6 +222,7 @@ export function createRecallHook(
             void fallbackBackend.search(query, scope, {
               maxItems: config.recall.topK,
               maxContextChars: config.recall.maxContextChars,
+              quality: "durable",
             }).then((shadow) => {
               const comparison = compareMemorySets(memories, shadow);
               metrics.recordRecallCompare(comparison.primaryCount, comparison.shadowCount);

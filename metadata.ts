@@ -1,4 +1,5 @@
 import type { FreeTextMemoryKind, FreeTextMemoryMetadata, MemoryScope } from "./types.js";
+import type { FreeTextSearchOptions } from "./backends/free-text/base.js";
 
 export function buildFreeTextMetadata(
   text: string,
@@ -50,4 +51,21 @@ export function inferQuality(text: string): "durable" | "transient" {
 export function metadataKindLabel(metadata: Record<string, unknown> | undefined): string | undefined {
   const kind = typeof metadata?.memory_kind === "string" ? metadata.memory_kind : undefined;
   return kind && kind !== "general" ? kind : undefined;
+}
+
+export function matchesMetadataFilters(
+  metadata: Record<string, unknown> | undefined,
+  options: Pick<FreeTextSearchOptions, "quality" | "memoryKinds" | "captureKind"> | undefined,
+): boolean {
+  if (!options) return true;
+
+  const quality = typeof metadata?.quality === "string" ? metadata.quality : undefined;
+  const kind = typeof metadata?.memory_kind === "string" ? metadata.memory_kind : undefined;
+  const captureKind = typeof metadata?.capture_kind === "string" ? metadata.capture_kind : undefined;
+
+  if (options.quality && quality !== options.quality) return false;
+  if (options.captureKind && captureKind !== options.captureKind) return false;
+  if (options.memoryKinds?.length && (!kind || !options.memoryKinds.includes(kind))) return false;
+
+  return true;
 }
