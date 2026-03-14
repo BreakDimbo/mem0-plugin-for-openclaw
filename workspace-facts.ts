@@ -1,43 +1,17 @@
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { buildFreeTextMetadata, rerankMemoryResults } from "./metadata.js";
+import { buildFreeTextMetadata, genericConceptBoost, rerankMemoryResults, tokenizeSemanticQuery } from "./metadata.js";
 import type { MemuMemoryRecord, MemoryScope } from "./types.js";
 
 const TOP_LEVEL_FILES = ["USER.md", "MEMORY.md", "IDENTITY.md", "TOOLS.md", "HEARTBEAT.md", "AGENTS.md"];
 const NESTED_DIRS = ["memory", "notes", ".learnings"];
 const MAX_SNIPPET_CHARS = 220;
-const CONCEPT_MATCHERS: Array<{ query: RegExp; item: RegExp; bonus: number }> = [
-  { query: /笔记|note-taking|obsidian/i, item: /obsidian|笔记/i, bonus: 0.35 },
-  { query: /饮料|喝什么|drink|coffee|tea/i, item: /茶|咖啡|饮料|乌龙|茉莉/i, bonus: 0.35 },
-  { query: /伴侣|住在哪里|住哪|partner|wife|husband/i, item: /伴侣|西安|新加坡|住在/i, bonus: 0.30 },
-  { query: /电话|接电话/i, item: /电话|10[:：点]|十点/i, bonus: 0.30 },
-  { query: /图表|diagram|mermaid/i, item: /图表|diagram|mermaid/i, bonus: 0.30 },
-  { query: /包管理|package manager|pnpm|npm|yarn/i, item: /包管理|pnpm|npm|yarn/i, bonus: 0.30 },
-];
-
-function tokenizeQuery(query: string): string[] {
-  const lower = query.toLowerCase();
-  const tokens = new Set<string>();
-  for (const word of lower.match(/[a-z0-9_+-]{2,}/g) ?? []) tokens.add(word);
-  for (const chunk of lower.match(/[\u4e00-\u9fff]{2,}/g) ?? []) {
-    tokens.add(chunk);
-    for (let i = 0; i <= chunk.length - 2; i++) {
-      tokens.add(chunk.slice(i, i + 2));
-    }
-  }
-  return Array.from(tokens);
-}
 
 function scoreSnippet(query: string, text: string): number {
   const normalized = text.toLowerCase();
-  const tokens = tokenizeQuery(query);
-  let conceptBonus = 0;
-  for (const matcher of CONCEPT_MATCHERS) {
-    if (matcher.query.test(query) && matcher.item.test(text)) {
-      conceptBonus += matcher.bonus;
-    }
-  }
+  const tokens = tokenizeSemanticQuery(query);
+  const conceptBonus = genericConceptBoost(query, text);
   if (tokens.length === 0) return conceptBonus;
   let hits = 0;
   for (const token of tokens) {

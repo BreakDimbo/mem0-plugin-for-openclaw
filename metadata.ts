@@ -120,6 +120,17 @@ export function rerankMemoryResults(
   });
 }
 
+export function tokenizeSemanticQuery(query: string): string[] {
+  const lower = query.toLowerCase();
+  const tokens = new Set<string>();
+  for (const word of lower.match(/[a-z0-9_+-]{2,}/g) ?? []) tokens.add(word);
+  for (const chunk of lower.match(/[\u4e00-\u9fff]{2,}/g) ?? []) {
+    tokens.add(chunk);
+    for (let i = 0; i <= chunk.length - 2; i++) tokens.add(chunk.slice(i, i + 2));
+  }
+  return Array.from(tokens);
+}
+
 function scoreMemoryForQuery(
   query: string,
   item: MemuMemoryRecord,
@@ -149,7 +160,7 @@ function scoreMemoryForQuery(
     }
   }
 
-  score += lexicalConceptBoost(query, item.text);
+  score += genericConceptBoost(query, item.text);
 
   return score;
 }
@@ -161,28 +172,20 @@ type QueryConcept = {
 };
 
 const QUERY_CONCEPTS: QueryConcept[] = [
-  { query: /饮料|喝什么|喝啥|coffee|drink/i, item: /茶|咖啡|乌龙|茉莉|气泡水|饮料/i, bonus: 0.26 },
-  { query: /编辑器|editor/i, item: /编辑器|neovim|vscode/i, bonus: 0.24 },
-  { query: /深度工作|专注时间/i, item: /深度工作|7[:：点]|9[:：点]|工作日/i, bonus: 0.24 },
-  { query: /羽毛球/i, item: /羽毛球|周五|晚上/i, bonus: 0.24 },
-  { query: /电话|接电话/i, item: /电话|10[:：点]|十点/i, bonus: 0.22 },
-  { query: /包管理|package manager|pnpm|npm|yarn/i, item: /包管理|pnpm|npm|yarn/i, bonus: 0.24 },
-  { query: /笔记|note-taking|obsidian/i, item: /笔记|obsidian/i, bonus: 0.24 },
-  { query: /日历|calendar|会议/i, item: /日历|calendar|飞书日历|会议/i, bonus: 0.22 },
-  { query: /图表|diagram|mermaid/i, item: /图表|diagram|mermaid/i, bonus: 0.24 },
-  { query: /日志|时间戳|timestamp|utc/i, item: /日志|时间戳|timestamp|utc/i, bonus: 0.22 },
-  { query: /伴侣|妻子|丈夫|住在|住哪里/i, item: /伴侣|妻子|丈夫|西安|新加坡|住在/i, bonus: 0.22 },
-  { query: /阅读目标|读书/i, item: /阅读|读书|四本书/i, bonus: 0.22 },
-  { query: /备餐/i, item: /备餐|周日|晚上/i, bonus: 0.22 },
-  { query: /办公室|office/i, item: /办公室|新加坡办公室/i, bonus: 0.22 },
-  { query: /数据库|database|postgres/i, item: /数据库|postgres/i, bonus: 0.24 },
-  { query: /时区|timezone/i, item: /时区|utc\+?8/i, bonus: 0.22 },
-  { query: /重构|refactor/i, item: /重构|单元测试/i, bonus: 0.22 },
-  { query: /任务追踪|task tracker|linear/i, item: /任务追踪|linear/i, bonus: 0.22 },
-  { query: /环境工具|uv|python environment/i, item: /\buv\b|环境工具/i, bonus: 0.22 },
+  { query: /饮料|喝什么|喝啥|drink|beverage/i, item: /饮料|茶|咖啡|口味/i, bonus: 0.22 },
+  { query: /编辑器|开发工具|editor|ide/i, item: /编辑器|工具|终端|代码/i, bonus: 0.20 },
+  { query: /笔记|记录|知识库|note/i, item: /笔记|记录|知识库|vault/i, bonus: 0.18 },
+  { query: /沟通|表达|风格|communication|style/i, item: /沟通|表达|风格|直击要害|结论先行/i, bonus: 0.18 },
+  { query: /时间|什么时候|时区|timezone|timestamp|日志/i, item: /时间|时区|时间戳|日志|utc/i, bonus: 0.18 },
+  { query: /关系|伴侣|家人|同事|relationship|partner/i, item: /伴侣|家人|同事|关系|住在/i, bonus: 0.18 },
+  { query: /项目|目标|project|goal/i, item: /项目|目标|方向|转型|探索/i, bonus: 0.16 },
+  { query: /工具链|包管理|依赖|toolchain|package manager/i, item: /工具链|包管理|依赖|环境/i, bonus: 0.18 },
+  { query: /图表|示意图|diagram/i, item: /图表|流程图|示意图/i, bonus: 0.16 },
+  { query: /会议|日历|排期|calendar|schedule/i, item: /会议|日历|排期|日程/i, bonus: 0.16 },
+  { query: /架构|层|workflow|memory architecture/i, item: /架构|分层|层|日志|长期记忆|核心记忆|压缩/i, bonus: 0.18 },
 ];
 
-function lexicalConceptBoost(query: string, text: string): number {
+export function genericConceptBoost(query: string, text: string): number {
   let boost = 0;
   for (const concept of QUERY_CONCEPTS) {
     if (concept.query.test(query) && concept.item.test(text)) {

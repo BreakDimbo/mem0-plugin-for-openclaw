@@ -157,7 +157,8 @@ export function splitRecallQueries(raw: string): string[] {
     .filter((line) => isLikelyQuery(line));
 
   const unique = new Set<string>();
-  for (const part of [direct, ...parts]) {
+  const seed = numberedMatches.length > 1 ? parts : [direct, ...parts];
+  for (const part of seed) {
     const normalized = part.trim();
     if (!normalized || unique.has(normalized)) continue;
     unique.add(normalized);

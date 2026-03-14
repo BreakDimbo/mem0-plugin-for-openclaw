@@ -58,10 +58,9 @@ await test("sanitizePromptQuery strips injected memory blocks and keeps the trai
 await test("splitRecallQueries keeps multi-part Chinese memory questions", () => {
   const raw = "请用三行中文回答，不要解释：1. 用户叫什么名字？2. memU embedding 现在用什么？3. 记忆系统一共有几层？";
   const parts = splitRecallQueries(raw);
-  assertEqual(parts[0], "请用三行中文回答，不要解释：1. 用户叫什么名字？2. memU embedding 现在用什么？3. 记忆系统一共有几层？", "full query retained");
-  assertEqual(parts[1], "用户叫什么名字？", "question 1 extracted");
-  assertEqual(parts[2], "memU embedding 现在用什么？", "question 2 extracted");
-  assertEqual(parts[3], "记忆系统一共有几层？", "question 3 extracted");
+  assertEqual(parts[0], "用户叫什么名字？", "question 1 extracted");
+  assertEqual(parts[1], "memU embedding 现在用什么？", "question 2 extracted");
+  assertEqual(parts[2], "记忆系统一共有几层？", "question 3 extracted");
 });
 
 const passed = results.filter((r) => r.passed).length;
