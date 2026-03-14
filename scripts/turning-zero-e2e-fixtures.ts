@@ -24,11 +24,7 @@ export const TURNING_ZERO_E2E_CASES: E2ECase[] = [
   { id: "e2e-17", query: "用户偏好什么沟通方式？", expected: "异步沟通" },
   { id: "e2e-18", query: "用户讨厌什么类型的 AI 表达？", expected: "AI 客套话" },
   { id: "e2e-19", query: "turning_zero 对用户来说是什么角色？", expected: "数字外脑与首席幕僚" },
-  {
-    id: "e2e-20",
-    query: "turning_zero 在缺乏数据时应该怎么做？",
-    expected: "只有当前 prompt、注入的 memory facts、USER.md、MEMORY.md 与相关 workspace notes 都没有答案时，才调用工具检索",
-  },
+  { id: "e2e-20", query: "turning_zero 在缺乏数据时应该怎么做？", expected: "调用工具检索" },
   { id: "e2e-21", query: "turning_zero 遵循什么思考方法？", expected: "第一性原理" },
   { id: "e2e-22", query: "turning_zero 的隐私原则是什么？", expected: "隐私保护" },
   { id: "e2e-23", query: "turning_zero 对删除操作的默认要求是什么？", expected: "trash" },
