@@ -219,10 +219,10 @@ export const DEFAULT_CONFIG: MemuPluginConfig = {
   },
   capture: {
     enabled: true,
-    maxItemsPerRun: 3,
-    minChars: 10,
-    maxChars: 500,
-    dedupeThreshold: 0.95,
+    maxItemsPerRun: 2,
+    minChars: 24,
+    maxChars: 400,
+    dedupeThreshold: 0.8,
   },
   outbox: {
     enabled: true,

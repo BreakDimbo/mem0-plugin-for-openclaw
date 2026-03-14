@@ -18,6 +18,13 @@ type Logger = { info(msg: string): void; warn(msg: string): void };
 
 // Patterns indicating system/internal messages to skip
 const SKIP_PREFIXES = ["[system]", "[tool_result]", "<system", "```tool", "<relevant-memories>"];
+const LOW_SIGNAL_PATTERNS = [
+  /^\s*(ok|okay|好的|嗯|行|收到|知道了|谢谢|thanks?)\s*[.!。!]*\s*$/i,
+  /\b(today|tomorrow|tonight|this morning|this afternoon|this evening)\b/i,
+  /\b明天\b|\b今天\b|\b今晚\b/,
+  /\btest(ing)?\b|\bdebug\b|\boutbox\b|\bmemu\b/i,
+  /测试|调试|联调|修复/,
+];
 
 function isSystemFragment(text: string): boolean {
   const lower = text.trimStart().toLowerCase();
@@ -26,6 +33,12 @@ function isSystemFragment(text: string): boolean {
 
 function isInjectedMemory(text: string): boolean {
   return text.includes("<relevant-memories>") || text.includes("</relevant-memories>");
+}
+
+function isLowSignalUserText(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed) return true;
+  return LOW_SIGNAL_PATTERNS.some((pattern) => pattern.test(trimmed));
 }
 
 function asRecord(v: unknown): Record<string, unknown> | null {
@@ -125,8 +138,16 @@ export function createCaptureHook(
         continue;
       }
 
+      // Filter obvious short-term / low-signal chatter from auto-capture.
+      // These can still be stored explicitly via memory_store when needed.
+      if (isLowSignalUserText(text)) {
+        localFiltered++;
+        metrics.captureFiltered++;
+        continue;
+      }
+
       // Dedup: check if this text is too similar to something already cached
-      const isDupe = checkDedup(text, cache, config.capture.dedupeThreshold);
+      const isDupe = checkDedup(text, scope, cache, config.capture.dedupeThreshold);
       if (isDupe) {
         localDeduped++;
         metrics.captureDeduped++;
@@ -173,11 +194,14 @@ export function createCaptureHook(
 }
 
 // Track recently captured texts for dedup (module-level, survives across hook invocations)
-const recentCaptures: string[] = [];
+const recentCapturesByScope = new Map<string, string[]>();
 const MAX_RECENT_CAPTURES = 50;
 
-function checkDedup(text: string, cache: LRUCache<MemuMemoryRecord[]>, threshold: number): boolean {
+function checkDedup(text: string, scope: { userId: string; agentId: string }, cache: LRUCache<MemuMemoryRecord[]>, threshold: number): boolean {
   if (threshold >= 1.0) return false; // dedup disabled
+
+  const scopeKey = `${scope.userId}::${scope.agentId}`;
+  const recentCaptures = recentCapturesByScope.get(scopeKey) ?? [];
 
   // Check against recently captured texts
   for (const recent of recentCaptures) {
@@ -195,6 +219,7 @@ function checkDedup(text: string, cache: LRUCache<MemuMemoryRecord[]>, threshold
   if (recentCaptures.length > MAX_RECENT_CAPTURES) {
     recentCaptures.splice(0, recentCaptures.length - MAX_RECENT_CAPTURES);
   }
+  recentCapturesByScope.set(scopeKey, recentCaptures);
 
   return false;
 }
