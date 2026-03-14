@@ -3,7 +3,7 @@
 // Run with: npx tsx tests/core-proposals.test.ts
 // ============================================================================
 
-import { extractCoreProposal } from "../core-proposals.js";
+import { CoreProposalQueue, extractCoreProposal } from "../core-proposals.js";
 import type { MemoryScope } from "../types.js";
 
 type TestResult = { name: string; passed: boolean; error?: string };
@@ -61,6 +61,35 @@ await test("rejects test and debug chatter", async () => {
 await test("rejects generic remember requests", async () => {
   const proposal = extractCoreProposal("Remember that tomorrow I need to buy breakfast.", scope);
   assertEqual(proposal, null, "generic remember request should stay out of core");
+});
+
+await test("extracts Chinese durable profile fact", async () => {
+  const proposal = extractCoreProposal("我的时区是 UTC+8。", scope);
+  assert(!!proposal, "proposal should be extracted");
+  assertEqual(proposal?.category, "identity", "category");
+  assertEqual(proposal?.value, "UTC+8", "value");
+});
+
+await test("extracts Chinese durable preference fact with stable fallback key suffix", async () => {
+  const proposal = extractCoreProposal("我偏好异步沟通。", scope);
+  assert(!!proposal, "proposal should be extracted");
+  assertEqual(proposal?.category, "preferences", "category");
+  assert(proposal?.key.startsWith("preferences."), "key prefix");
+});
+
+await test("scope-guarded proposal approval only reviews matching scope", async () => {
+  const queue = new CoreProposalQueue("", 20, { info: () => {}, warn: () => {} });
+  const foreignScope: MemoryScope = { userId: "other_user", agentId: "other_agent", sessionKey: "agent:other_agent:main" };
+  const proposal = queue.enqueue({
+    category: "identity",
+    text: "我的时区是 UTC+8。",
+    key: "identity.timezone",
+    value: "UTC+8",
+    reason: "user profile statement",
+    scope: foreignScope,
+  });
+  const approved = queue.approveForScope(proposal.id, scope, "tool");
+  assertEqual(approved, null, "foreign-scope proposal should not be approved");
 });
 
 // -- Summary --

@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { dirname } from "node:path";
 import { homedir } from "node:os";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -137,9 +137,41 @@ export class CoreProposalQueue {
     return proposal;
   }
 
+  approveForScope(id: string, scope: MemoryScope, reviewer = "human"): CoreMemoryProposal | null {
+    const proposal = this.proposals.find(
+      (p) =>
+        p.id === id &&
+        p.status === "pending" &&
+        p.scope.userId === scope.userId &&
+        p.scope.agentId === scope.agentId,
+    );
+    if (!proposal) return null;
+    proposal.status = "approved";
+    proposal.reviewedAt = Date.now();
+    proposal.reviewer = reviewer;
+    this.saveToDisk().catch(() => {});
+    return proposal;
+  }
+
   reject(id: string, reviewer = "human"): CoreMemoryProposal | null {
     const proposal = this.proposals.find((p) => p.id === id);
     if (!proposal || proposal.status !== "pending") return null;
+    proposal.status = "rejected";
+    proposal.reviewedAt = Date.now();
+    proposal.reviewer = reviewer;
+    this.saveToDisk().catch(() => {});
+    return proposal;
+  }
+
+  rejectForScope(id: string, scope: MemoryScope, reviewer = "human"): CoreMemoryProposal | null {
+    const proposal = this.proposals.find(
+      (p) =>
+        p.id === id &&
+        p.status === "pending" &&
+        p.scope.userId === scope.userId &&
+        p.scope.agentId === scope.agentId,
+    );
+    if (!proposal) return null;
     proposal.status = "rejected";
     proposal.reviewedAt = Date.now();
     proposal.reviewer = reviewer;
@@ -156,6 +188,23 @@ function sanitizeKeyPart(raw: string): string {
     .replace(/[\s-]+/g, "_")
     .replace(/^_+|_+$/g, "")
     .slice(0, 60);
+}
+
+function stableKeySuffix(raw: string): string {
+  const ascii = sanitizeKeyPart(raw);
+  if (ascii) return ascii;
+  return `fact_${createHash("sha1").update(raw).digest("hex").slice(0, 10)}`;
+}
+
+function isMeaningfulCoreValue(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed) return false;
+  const wordCount = trimmed.split(/\s+/).filter(Boolean).length;
+  if (wordCount >= 2) return true;
+  const cjkCount = (trimmed.match(/[\u4e00-\u9fff]/g) ?? []).length;
+  if (cjkCount >= 4) return true;
+  if (/^[a-z0-9_:+./-]{4,}$/i.test(trimmed)) return true;
+  return trimmed.length >= 6;
 }
 
 export function extractCoreProposal(text: string, scope: MemoryScope): ProposalDraft | null {
@@ -194,15 +243,35 @@ export function extractCoreProposal(text: string, scope: MemoryScope): ProposalD
     { rx: /^i never want (.+)$/i, category: "preferences", keyPrefix: "preferences.avoid", reason: "stable user preference statement" },
     { rx: /^my long-term goal is (.+)$/i, category: "goals", keyPrefix: "goals.primary", reason: "user long-term goal statement" },
     { rx: /^one of my goals is (.+)$/i, category: "goals", keyPrefix: "goals.secondary", reason: "user long-term goal statement" },
+    { rx: /^我叫(.+)$/i, category: "identity", keyPrefix: "identity.name", reason: "user identity statement" },
+    { rx: /^我的名字是(.+)$/i, category: "identity", keyPrefix: "identity.name", reason: "user identity statement" },
+    { rx: /^我的时区是(.+)$/i, category: "identity", keyPrefix: "identity.timezone", reason: "user profile statement" },
+    { rx: /^我在(.+)工作$/i, category: "identity", keyPrefix: "identity.workplace", reason: "user profile statement" },
+    { rx: /^我目前的职业是(.+)$/i, category: "identity", keyPrefix: "identity.current_role", reason: "user profile statement" },
+    { rx: /^我现在的职业是(.+)$/i, category: "identity", keyPrefix: "identity.current_role", reason: "user profile statement" },
+    { rx: /^我(更)?喜欢(.+)$/i, category: "preferences", keyPrefix: "preferences", reason: "user preference statement" },
+    { rx: /^我偏好(.+)$/i, category: "preferences", keyPrefix: "preferences", reason: "user preference statement" },
+    { rx: /^我不喜欢(.+)$/i, category: "preferences", keyPrefix: "preferences.avoid", reason: "stable user preference statement" },
+    { rx: /^我讨厌(.+)$/i, category: "preferences", keyPrefix: "preferences.avoid", reason: "stable user preference statement" },
+    { rx: /^我的长期目标是(.+)$/i, category: "goals", keyPrefix: "goals.primary", reason: "user long-term goal statement" },
+    { rx: /^我的目标是(.+)$/i, category: "goals", keyPrefix: "goals.primary", reason: "user long-term goal statement" },
+    { rx: /^我的主目标是(.+)$/i, category: "goals", keyPrefix: "goals.primary", reason: "user long-term goal statement" },
+    { rx: /^我通常在(.+)最高效$/i, category: "preferences", keyPrefix: "preferences.peak_hours", reason: "stable user preference statement" },
+    { rx: /^我偏好(.+)沟通$/i, category: "preferences", keyPrefix: "preferences.communication_mode", reason: "stable user preference statement" },
+    { rx: /^我们(一直)?使用(.+)$/i, category: "constraints", keyPrefix: "constraints.standard", reason: "team/project persistent detail" },
+    { rx: /^我们不用(.+)$/i, category: "constraints", keyPrefix: "constraints.avoid", reason: "team/project persistent constraint" },
+    { rx: /^我们的标准是(.+)$/i, category: "constraints", keyPrefix: "constraints.standard", reason: "team/project persistent standard" },
   ];
 
   for (const p of patterns) {
     const m = msg.match(p.rx);
-    if (!m?.[1]) continue;
-    const value = m[1].trim().replace(/[.。!?]+$/, "").slice(0, 220);
+    if (!m) continue;
+    const rawValue = (m[2] ?? m[1] ?? "").trim();
+    if (!rawValue) continue;
+    const value = rawValue.replace(/[.。!?]+$/, "").slice(0, 220);
     if (!value) continue;
-    if (value.split(/\s+/).length < 2) continue;
-    const suffix = sanitizeKeyPart(value.split(/[,:;]/)[0] ?? "fact");
+    if (!isMeaningfulCoreValue(value)) continue;
+    const suffix = stableKeySuffix(value.split(/[,:;，：；。]/)[0] ?? "fact");
     const key = `${p.keyPrefix}${suffix ? `.${suffix}` : ""}`.slice(0, 80);
     return {
       category: p.category,

@@ -32,7 +32,7 @@ export function createCoreProposalTool(
 
       if (!args.proposalId) return { text: "proposalId is required for approve/reject." };
       if (action === "approve") {
-        const proposal = queue.approve(args.proposalId, "tool");
+        const proposal = scope ? queue.approveForScope(args.proposalId, scope, "tool") : queue.approve(args.proposalId, "tool");
         if (!proposal) return { text: "Proposal not found or already reviewed." };
         const ok = await repo.upsert(proposal.scope, {
           category: proposal.category,
@@ -44,7 +44,7 @@ export function createCoreProposalTool(
         return { text: ok ? `Proposal approved and upserted: ${proposal.id}` : `Proposal approved but upsert failed: ${proposal.id}` };
       }
 
-      const rejected = queue.reject(args.proposalId, "tool");
+      const rejected = scope ? queue.rejectForScope(args.proposalId, scope, "tool") : queue.reject(args.proposalId, "tool");
       return { text: rejected ? `Proposal rejected: ${rejected.id}` : "Proposal not found or already reviewed." };
     },
   };

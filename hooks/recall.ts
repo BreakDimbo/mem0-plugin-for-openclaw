@@ -180,6 +180,26 @@ function dedupeMemories(items: MemuMemoryRecord[]): MemuMemoryRecord[] {
   return output;
 }
 
+function selectRelevantCoreMemories<T extends { score?: number }>(items: T[]): T[] {
+  if (items.length <= 1) return items;
+  const topScore = items[0]?.score ?? 0;
+  if (topScore <= 0) return items;
+  const threshold = Math.max(0.18, topScore * 0.35);
+  const filtered = items.filter((item, index) => index === 0 || (item.score ?? 0) >= threshold);
+  return filtered.length > 0 ? filtered : items;
+}
+
+function dedupeCoreMemories<T extends { id: string; score?: number }>(items: T[]): T[] {
+  const byId = new Map<string, T>();
+  for (const item of items) {
+    const existing = byId.get(item.id);
+    if (!existing || (item.score ?? 0) > (existing.score ?? 0)) {
+      byId.set(item.id, item);
+    }
+  }
+  return Array.from(byId.values()).sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+}
+
 export function sanitizePromptQuery(raw: string): string {
   const s = stripInjectedBlocks(raw.trim());
   if (!s) return "";
@@ -342,10 +362,17 @@ export function createRecallHook(
       let coreContext = "";
       let coreMemoriesForTouch: Array<{ id: string; category?: string; key: string; value: string }> = [];
       if (config.core.enabled) {
-        const coreMemories = await coreRepo.list(scope, {
-          query,
-          limit: config.core.topK,
-        });
+        const coreCandidates = await Promise.all(
+          searchQueries.map((searchQuery) =>
+            coreRepo.list(scope, {
+              query: searchQuery,
+              limit: config.core.topK,
+            }),
+          ),
+        );
+        const coreMemories = selectRelevantCoreMemories(
+          dedupeCoreMemories(coreCandidates.flat()).slice(0, Math.max(config.core.topK * 2, config.core.topK)),
+        );
         logger.info(`recall-hook: scope user=${scope.userId} agent=${scope.agentId} core=${coreMemories.length}`);
         coreMemoriesForTouch = coreMemories.map((m) => ({ id: m.id, category: m.category, key: m.key, value: m.value }));
         coreContext = formatCoreMemoriesContext(coreMemories);
