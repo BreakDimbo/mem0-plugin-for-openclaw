@@ -15,6 +15,7 @@ import { applyInjectionBudget, escapeForInjection, formatCoreMemoriesContext, fo
 import type { FreeTextBackend } from "../backends/free-text/base.js";
 import { compareMemorySets } from "../backends/free-text/compare.js";
 import { rerankMemoryResults } from "../metadata.js";
+import { resolveWorkspaceDir, searchWorkspaceFacts } from "../workspace-facts.js";
 
 type Logger = { info(msg: string): void; warn(msg: string): void };
 
@@ -51,7 +52,17 @@ function isLikelyQuery(text: string): boolean {
   if (s.length < 3 || s.length > 2000) return false;
   if (/^\[reacted with\b/i.test(s)) return false;
   if (/^(sender|sender_id|message_id|chat_id|user_id)$/i.test(s)) return false;
+  if (isOpaqueIdentifier(s)) return false;
   return /[\u4e00-\u9fffA-Za-z]/.test(s);
+}
+
+function isOpaqueIdentifier(text: string): boolean {
+  const s = text.trim();
+  if (!s) return false;
+  if (/^(om|ou|on|oc|chat|msg|thread)_[a-z0-9]{8,}$/i.test(s)) return true;
+  if (/^[a-f0-9]{16,}$/i.test(s)) return true;
+  if (/^[A-Za-z0-9_-]{20,}$/.test(s) && !/[\u4e00-\u9fff]/.test(s)) return true;
+  return false;
 }
 
 function extractFromObject(root: unknown, depth = 0): string {
@@ -106,9 +117,27 @@ function extractSenderId(raw: string): string {
   return "";
 }
 
-function sanitizePromptQuery(raw: string): string {
-  const s = raw.trim();
+function stripInjectedBlocks(raw: string): string {
+  return raw
+    .replace(/<core-memory>[\s\S]*?<\/core-memory>/gi, " ")
+    .replace(/<relevant-memories>[\s\S]*?<\/relevant-memories>/gi, " ")
+    .replace(/\[truncated by injection budget\]/gi, " ")
+    .trim();
+}
+
+function extractLikelyQuestionLine(raw: string): string {
+  const lines = raw
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => isLikelyQuery(line));
+  return lines.slice(-1)[0] ?? "";
+}
+
+export function sanitizePromptQuery(raw: string): string {
+  const s = stripInjectedBlocks(raw.trim());
   if (!s) return "";
+  if (isOpaqueIdentifier(s)) return "";
   if (s.startsWith("Read HEARTBEAT.md")) return "";
   if (/^\[reacted with\b/i.test(s)) return "";
 
@@ -119,7 +148,7 @@ function sanitizePromptQuery(raw: string): string {
   }
 
   const marker = "Conversation info (untrusted metadata):";
-  if (!s.includes(marker)) return s;
+  if (!s.includes(marker)) return extractLikelyQuestionLine(s) || s;
 
   const stripped = s
     .split("\n")
@@ -146,7 +175,7 @@ function sanitizePromptQuery(raw: string): string {
     if (extracted) return extracted;
   }
 
-  return stripped;
+  return extractLikelyQuestionLine(stripped) || stripped;
 }
 
 export function createRecallHook(
@@ -171,17 +200,19 @@ export function createRecallHook(
     const promptRaw = event.prompt ?? "";
     let query = "";
 
-    const senderId = extractSenderId(promptRaw);
-    if (ctx.channelId && senderId) {
-      query = (await inbound.getBySender(ctx.channelId, senderId)) ?? "";
-    }
-
-    if (!query && event.messages) {
+    if (event.messages) {
       const lastUser = event.messages.filter((m) => m.role === "user").slice(-1)[0];
       query = extractTextBlocks(lastUser?.content);
     }
 
     query = sanitizePromptQuery(query);
+
+    const senderId = extractSenderId(promptRaw);
+    if (!query && ctx.channelId && senderId) {
+      query = (await inbound.getBySender(ctx.channelId, senderId)) ?? "";
+      query = sanitizePromptQuery(query);
+    }
+
     if (!query) query = sanitizePromptQuery(promptRaw);
     if (!query || query.length < 3) return;
 
@@ -238,8 +269,23 @@ export function createRecallHook(
           logger.info(`recall-hook: fetched ${memories.length} memories via ${primaryBackend.provider}${fallbackUsed ? " (fallback)" : ""} for query="${query.slice(0, 60)}..."`);
         }
 
-        const filtered = memories.filter((m) => m.score === undefined || m.score >= config.recall.scoreThreshold);
-        memoryContext = filtered.length > 0 ? formatMemoriesContext(filtered) : "";
+        let filtered = memories.filter((m) => m.score === undefined || m.score >= config.recall.scoreThreshold);
+        const workspaceDir = config.recall.workspaceFallback ? resolveWorkspaceDir(scope.agentId, ctx.workspaceDir) : "";
+        if (workspaceDir && config.recall.workspaceFallback) {
+          const workspaceFacts = await searchWorkspaceFacts(query, scope, workspaceDir, {
+            maxItems: config.recall.workspaceFallbackMaxItems,
+            maxFiles: config.recall.workspaceFallbackMaxFiles,
+          });
+          if (workspaceFacts.length > 0) {
+            logger.info(`recall-hook: fetched ${workspaceFacts.length} workspace facts for query="${query.slice(0, 60)}..."`);
+            filtered = rerankMemoryResults(query, [...filtered, ...workspaceFacts]).slice(0, config.recall.topK);
+          }
+        }
+        const memorySections: string[] = [];
+        if (filtered.length > 0) {
+          memorySections.push(formatMemoriesContext(filtered));
+        }
+        memoryContext = memorySections.join("\n\n");
       }
 
       let coreContext = "";

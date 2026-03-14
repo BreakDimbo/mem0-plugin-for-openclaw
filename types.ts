@@ -194,6 +194,9 @@ export type MemuPluginConfig = {
     injectionBudgetChars: number;
     cacheTtlMs: number;
     cacheMaxSize: number;
+    workspaceFallback: boolean;
+    workspaceFallbackMaxItems: number;
+    workspaceFallbackMaxFiles: number;
   };
   core: {
     enabled: boolean;
@@ -276,6 +279,9 @@ export const DEFAULT_CONFIG: MemuPluginConfig = {
     injectionBudgetChars: 1600,
     cacheTtlMs: 60_000,
     cacheMaxSize: 100,
+    workspaceFallback: true,
+    workspaceFallbackMaxItems: 2,
+    workspaceFallbackMaxFiles: 6,
   },
   core: {
     enabled: true,
@@ -490,6 +496,19 @@ export function loadConfig(raw?: Record<string, unknown>): MemuPluginConfig {
       injectionBudgetChars: numInRange(r.injectionBudgetChars, DEFAULT_CONFIG.recall.injectionBudgetChars, 300, 20_000),
       cacheTtlMs: num(r.cacheTtlMs, DEFAULT_CONFIG.recall.cacheTtlMs),
       cacheMaxSize: num(r.cacheMaxSize, DEFAULT_CONFIG.recall.cacheMaxSize),
+      workspaceFallback: bool(r.workspaceFallback, DEFAULT_CONFIG.recall.workspaceFallback),
+      workspaceFallbackMaxItems: numInRange(
+        r.workspaceFallbackMaxItems,
+        DEFAULT_CONFIG.recall.workspaceFallbackMaxItems,
+        1,
+        5,
+      ),
+      workspaceFallbackMaxFiles: numInRange(
+        r.workspaceFallbackMaxFiles,
+        DEFAULT_CONFIG.recall.workspaceFallbackMaxFiles,
+        1,
+        20,
+      ),
     },
     core: {
       enabled: bool(co.enabled, DEFAULT_CONFIG.core.enabled),

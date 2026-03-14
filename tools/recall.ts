@@ -12,6 +12,7 @@ import { formatMemoriesContext } from "../security.js";
 import type { FreeTextBackend } from "../backends/free-text/base.js";
 import { compareMemorySets } from "../backends/free-text/compare.js";
 import { rerankMemoryResults } from "../metadata.js";
+import { resolveWorkspaceDir, searchWorkspaceFacts } from "../workspace-facts.js";
 
 export function createRecallTool(
   primaryBackend: FreeTextBackend,
@@ -86,11 +87,27 @@ export function createRecallTool(
 
         metrics.recordRecallLatency(Date.now() - start);
 
-        if (memories.length === 0) {
+        const workspaceDir = config.recall.workspaceFallback ? resolveWorkspaceDir(scope.agentId, toolCtx?.workspaceDir) : "";
+        if (workspaceDir && config.recall.workspaceFallback) {
+          const workspaceFacts = await searchWorkspaceFacts(args.query, scope, workspaceDir, {
+            maxItems: Math.min(config.recall.workspaceFallbackMaxItems, limit),
+            maxFiles: config.recall.workspaceFallbackMaxFiles,
+          });
+          if (workspaceFacts.length > 0) {
+            memories = rerankMemoryResults(args.query, [...memories, ...workspaceFacts]).slice(0, limit);
+          }
+        }
+
+        const memorySections: string[] = [];
+        if (memories.length > 0) {
+          memorySections.push(formatMemoriesContext(memories));
+        }
+
+        if (memorySections.length === 0) {
           return { text: "No relevant memories found." };
         }
 
-        return { text: formatMemoriesContext(memories) };
+        return { text: memorySections.join("\n\n") };
       } catch (err) {
         metrics.recallErrors++;
         metrics.recordRecallLatency(Date.now() - start);
