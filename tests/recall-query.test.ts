@@ -55,6 +55,24 @@ await test("sanitizePromptQuery strips injected memory blocks and keeps the trai
   );
 });
 
+await test("sanitizePromptQuery strips leading timestamp and system wrappers", () => {
+  const raw = "[Sat 2026-03-14 18:40 GMT+8] 请只用一句中文回答：用户的时区是什么？";
+  assertEqual(
+    sanitizePromptQuery(raw),
+    "请只用一句中文回答：用户的时区是什么？",
+    "should remove leading timestamp wrapper",
+  );
+});
+
+await test("sanitizePromptQuery strips system prefixes from delivery wrappers", () => {
+  const raw = "System: Feishu[turning_zero] DM | DD\n请只用一句中文回答：用户主要深耕什么技术领域？";
+  assertEqual(
+    sanitizePromptQuery(raw),
+    "请只用一句中文回答：用户主要深耕什么技术领域？",
+    "should keep only the actual question",
+  );
+});
+
 await test("splitRecallQueries keeps multi-part Chinese memory questions", () => {
   const raw = "请用三行中文回答，不要解释：1. 用户叫什么名字？2. memU embedding 现在用什么？3. 记忆系统一共有几层？";
   const parts = splitRecallQueries(raw);
@@ -166,7 +184,7 @@ await test("createRecallHook keeps only strongly relevant core memories for a fo
       prompt: "请只用一句中文回答：用户的时区是什么？",
       messages: [{ role: "user", content: "用户的时区是什么？" }],
     },
-    { agentId: "a", workspaceDir: "/tmp" } as any,
+    { agentId: "a", workspaceDir: "/tmp", sessionId: "s-suppress-core" } as any,
   );
   prepend = String((out as any)?.prependContext ?? "");
   if (!prepend.includes("identity/identity.timezone")) throw new Error("timezone core fact should remain");
@@ -281,6 +299,71 @@ await test("createRecallHook suppresses lower-priority relevant memories when co
   const prepend = String((out as any)?.prependContext ?? "");
   if (!prepend.includes("<core-memory>")) throw new Error("core memory should remain");
   if (prepend.includes("<relevant-memories>")) throw new Error("relevant memories should be suppressed when core strongly covers the answer");
+});
+
+await test("createRecallHook skips duplicate injection inside the same session", async () => {
+  const hook = createRecallHook(
+    { provider: "mem0", search: async () => [] } as any,
+    null,
+    { resolveRuntimeScope: () => ({ userId: "u", agentId: "a", sessionKey: "agent:a:main" }) } as any,
+    {
+      list: async () => [
+        { id: "1", category: "identity", key: "identity.timezone", value: "用户的时区是 UTC+8。", score: 0.8 },
+      ],
+    } as any,
+    { get: () => null, set: () => {} } as any,
+    { getBySender: async () => "" } as any,
+    {
+      scope: { userId: "u", agentId: "a", requireUserId: false, requireAgentId: false },
+      recall: {
+        enabled: true,
+        method: "rag",
+        hybrid: { enabled: false, alpha: 0.5, fallbackToRag: false },
+        topK: 2,
+        scoreThreshold: 0.3,
+        maxContextChars: 1200,
+        injectionBudgetChars: 1200,
+        cacheTtlMs: 1000,
+        cacheMaxSize: 10,
+        workspaceFallback: false,
+        workspaceFallbackMaxItems: 0,
+        workspaceFallbackMaxFiles: 0,
+      },
+      core: { enabled: true, topK: 5, maxItemChars: 240, autoExtractProposals: false, humanReviewRequired: false, touchOnRecall: false, proposalQueueMax: 10 },
+      backend: { freeText: { provider: "mem0", dualWrite: false, readFallback: "none", compareRecall: false } },
+      memu: { baseUrl: "", timeoutMs: 1000, cbResetMs: 1000, healthCheckPath: "/debug" },
+      mem0: { mode: "open-source", enableGraph: false, searchThreshold: 0.3, topK: 5 },
+      capture: { enabled: false, maxItemsPerRun: 0, minChars: 0, maxChars: 0, dedupeThreshold: 0.8 },
+      outbox: { enabled: false, concurrency: 1, batchSize: 1, maxRetries: 1, drainTimeoutMs: 1000, persistPath: "", flushIntervalMs: 1000 },
+      sync: { flushToMarkdown: false, flushIntervalSec: 300, memoryFilePath: "MEMORY.md" },
+    } as any,
+    { info: () => {}, warn: () => {} },
+    { recallTotal: 0, recallHits: 0, recallMisses: 0, recallErrors: 0, recordRecallLatency: () => {}, recordRecallCompare: () => {}, recordRecallFallback: () => {} } as any,
+    { registerAgent: () => {} } as any,
+  );
+
+  const ctx = { agentId: "a", workspaceDir: "/tmp", sessionId: "s1" } as any;
+  const first = await hook(
+    {
+      prompt: "请只用一句中文回答：用户的时区是什么？",
+      messages: [{ role: "user", content: "用户的时区是什么？" }],
+    },
+    ctx,
+  );
+  const second = await hook(
+    {
+      prompt: "请只用一句中文回答：用户的时区是什么？",
+      messages: [{ role: "user", content: "用户的时区是什么？" }],
+    },
+    ctx,
+  );
+
+  if (!String((first as any)?.prependContext ?? "").includes("UTC+8")) {
+    throw new Error("first call should inject core memory");
+  }
+  if (second !== undefined) {
+    throw new Error("second call in same session should skip duplicate injection");
+  }
 });
 
 const passed = results.filter((r) => r.passed).length;

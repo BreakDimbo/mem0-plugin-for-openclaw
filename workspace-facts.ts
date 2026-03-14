@@ -8,6 +8,23 @@ const TOP_LEVEL_FILES = ["USER.md", "MEMORY.md", "IDENTITY.md", "TOOLS.md", "HEA
 const NESTED_DIRS = ["memory", "notes", ".learnings"];
 const MAX_SNIPPET_CHARS = 220;
 
+function normalizeSemanticText(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/^(请只用一句中文回答[:：]?|请用一句中文回答[:：]?|请用三行中文回答，不要解释[:：]?|请回答[:：]?)/, "")
+    .replace(/\s+/g, "")
+    .replace(/[，。、“”"'`·:：；;（）()【】\[\]\-?!？]/g, "");
+}
+
+function isQueryMirrorSnippet(query: string, snippet: string): boolean {
+  const q = normalizeSemanticText(query);
+  const s = normalizeSemanticText(snippet);
+  if (!q || !s) return false;
+  if (q === s) return true;
+  if (s.includes(q)) return true;
+  return false;
+}
+
 function scoreSnippet(query: string, text: string): number {
   const normalized = text.toLowerCase();
   const tokens = tokenizeSemanticQuery(query);
@@ -105,6 +122,7 @@ export async function searchWorkspaceFacts(
 
     for (const snippet of extractSnippets(content)) {
       if (seen.has(snippet)) continue;
+      if (isQueryMirrorSnippet(query, snippet)) continue;
       const score = scoreSnippet(query, snippet);
       if (score <= 0) continue;
       seen.add(snippet);

@@ -19,6 +19,14 @@ import { resolveWorkspaceDir, searchWorkspaceFacts } from "../workspace-facts.js
 
 type Logger = { info(msg: string): void; warn(msg: string): void };
 
+type SessionInjectionSnapshot = {
+  signature: string;
+  timestamp: number;
+};
+
+const SESSION_INJECTION_CACHE = new Map<string, SessionInjectionSnapshot>();
+const SESSION_INJECTION_CACHE_LIMIT = 200;
+
 const PREFERRED_KEYS = ["text", "content", "query", "question", "input", "message"];
 
 function extractTextBlocks(content: string | Array<{ type: string; text?: string }> | undefined): string {
@@ -134,6 +142,16 @@ function extractLikelyQuestionLine(raw: string): string {
   return lines.slice(-1)[0] ?? "";
 }
 
+function stripPromptLead(raw: string): string {
+  return raw
+    .replace(/^\[[^\]\n]{6,120}\]\s*/g, "")
+    .replace(/^system:\s*/i, "")
+    .replace(/^sender:\s*/i, "")
+    .replace(/^(feishu|slack|telegram|discord|whatsapp|imessage|signal)[^\n]*\|\s*/i, "")
+    .replace(/^current time:[^\n]*\n?/i, "")
+    .trim();
+}
+
 export function splitRecallQueries(raw: string): string[] {
   const cleaned = sanitizePromptQuery(raw);
   if (!cleaned) return [];
@@ -211,8 +229,27 @@ function shouldSuppressRelevantMemories(
   return coreMemories.length >= queryPartCount;
 }
 
+function buildSessionInjectionKey(scope: MemoryScope, ctx: PluginHookContext): string {
+  const sessionId = typeof ctx.sessionId === "string" && ctx.sessionId.trim() ? ctx.sessionId.trim() : "";
+  return `${scope.sessionKey}::${sessionId || "session-unknown"}`;
+}
+
+function rememberSessionInjection(key: string, signature: string): void {
+  SESSION_INJECTION_CACHE.delete(key);
+  SESSION_INJECTION_CACHE.set(key, { signature, timestamp: Date.now() });
+  if (SESSION_INJECTION_CACHE.size <= SESSION_INJECTION_CACHE_LIMIT) return;
+  const oldestKey = SESSION_INJECTION_CACHE.keys().next().value;
+  if (oldestKey) SESSION_INJECTION_CACHE.delete(oldestKey);
+}
+
+function shouldSkipDuplicateSessionInjection(key: string, signature: string): boolean {
+  const snapshot = SESSION_INJECTION_CACHE.get(key);
+  if (!snapshot) return false;
+  return snapshot.signature === signature;
+}
+
 export function sanitizePromptQuery(raw: string): string {
-  const s = stripInjectedBlocks(raw.trim());
+  const s = stripPromptLead(stripInjectedBlocks(raw.trim()));
   if (!s) return "";
   if (isOpaqueIdentifier(s)) return "";
   if (s.startsWith("Read HEARTBEAT.md")) return "";
@@ -243,6 +280,8 @@ export function sanitizePromptQuery(raw: string): string {
         low.startsWith("you are")
       );
     })
+    .map((line) => stripPromptLead(line))
+    .filter(Boolean)
     .join("\n")
     .trim();
 
@@ -393,6 +432,12 @@ export function createRecallHook(
       metrics.recordRecallLatency(Date.now() - start);
       const injected = applyInjectionBudget([coreContext, memoryContext], config.recall.injectionBudgetChars);
       if (!injected) return;
+      const injectionKey = buildSessionInjectionKey(scope, ctx);
+      if (shouldSkipDuplicateSessionInjection(injectionKey, injected)) {
+        logger.info(`recall-hook: skip duplicate injection session=${scope.sessionKey}`);
+        return;
+      }
+      rememberSessionInjection(injectionKey, injected);
       if (config.core.enabled && config.core.touchOnRecall && coreMemoriesForTouch.length > 0) {
         const injectedIds = coreMemoriesForTouch
           .filter((m) => {
