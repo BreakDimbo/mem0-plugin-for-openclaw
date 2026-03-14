@@ -131,7 +131,7 @@ test("formats memories with xml tags", () => {
   ]);
   assert(result.includes("<relevant-memories>"), "should have opening tag");
   assert(result.includes("</relevant-memories>"), "should have closing tag");
-  assert(result.includes("untrusted historical data"), "should include warning");
+  assert(result.includes("Historical context only"), "should include warning");
   assert(result.includes("preference"), "should include category");
   assert(result.includes("0.85"), "should include score");
 });
