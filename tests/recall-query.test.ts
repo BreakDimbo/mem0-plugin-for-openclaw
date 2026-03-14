@@ -232,6 +232,162 @@ await test("createRecallHook keeps only strongly relevant core memories for a fo
   prepend = String((out as any)?.prependContext ?? "");
   if (!prepend.includes("identity/identity.timezone")) throw new Error("timezone core fact should remain");
   if (prepend.includes("goals/goals.primary")) throw new Error("unrelated core fact should be filtered out");
+  if ((prepend.match(/候选答案/g) ?? []).length !== 1) throw new Error("single-fact query should inject only one core answer hint");
+});
+
+await test("createRecallHook prefers the stronger lexical core match for a focused query", async () => {
+  const hook = createRecallHook(
+    { provider: "mem0", search: async () => [] } as any,
+    { resolveRuntimeScope: () => ({ userId: "u", agentId: "a", sessionKey: "agent:a:main" }) } as any,
+    {
+      list: async () => [
+        { id: "a", category: "preferences", key: "preferences.preference_a", value: "沟通风格偏好平静、专业、直击要害。", score: 0.2 },
+        { id: "b", category: "preferences", key: "preferences.preference_b", value: "用户偏好异步沟通。", score: 0.2 },
+        { id: "c", category: "preferences", key: "preferences.preference_c", value: "表达方式偏好金字塔结构。", score: 0.2 },
+      ],
+    } as any,
+    { get: () => null, set: () => {} } as any,
+    { getBySender: async () => "" } as any,
+    {
+      scope: { userId: "u", agentId: "a", requireUserId: false, requireAgentId: false },
+      recall: {
+        enabled: true,
+        method: "rag",
+        hybrid: { enabled: false, alpha: 0.5, fallbackToRag: false },
+        topK: 2,
+        scoreThreshold: 0.3,
+        maxContextChars: 1200,
+        injectionBudgetChars: 1200,
+        cacheTtlMs: 1000,
+        cacheMaxSize: 10,
+        workspaceFallback: false,
+        workspaceFallbackMaxItems: 0,
+        workspaceFallbackMaxFiles: 0,
+      },
+      core: { enabled: true, topK: 5, maxItemChars: 240, autoExtractProposals: false, humanReviewRequired: false, touchOnRecall: false, proposalQueueMax: 10 },
+      backend: { freeText: { provider: "mem0" } },
+      mem0: { mode: "open-source", enableGraph: false, searchThreshold: 0.3, topK: 5 },
+      capture: { enabled: false, maxItemsPerRun: 0, minChars: 0, maxChars: 0, dedupeThreshold: 0.8 },
+      outbox: { enabled: false, concurrency: 1, batchSize: 1, maxRetries: 1, drainTimeoutMs: 1000, persistPath: "", flushIntervalMs: 1000 },
+      sync: { flushToMarkdown: false, flushIntervalSec: 300, memoryFilePath: "MEMORY.md" },
+    } as any,
+    { info: () => {}, warn: () => {} },
+    { recallTotal: 0, recallMisses: 0, recallErrors: 0, recordRecallLatency: () => {}, recordRecallCompare: () => {} } as any,
+    { registerAgent: () => {} } as any,
+  );
+
+  const out = await hook(
+    {
+      prompt: "请只用一句中文回答：用户偏好什么沟通方式？",
+      messages: [{ role: "user", content: "用户偏好什么沟通方式？" }],
+    },
+    { agentId: "a", workspaceDir: "/tmp", sessionId: "s-comm-mode" } as any,
+  );
+
+  const prepend = String((out as any)?.prependContext ?? "");
+  if (!prepend.includes("用户偏好异步沟通")) throw new Error("the more directly matching core fact should be injected");
+});
+
+await test("createRecallHook prefers the more directly matching fact over a generic neighbor", async () => {
+  const hook = createRecallHook(
+    { provider: "mem0", search: async () => [] } as any,
+    { resolveRuntimeScope: () => ({ userId: "u", agentId: "a", sessionKey: "agent:a:main" }) } as any,
+    {
+      list: async () => [
+        { id: "neighbor", category: "goals", key: "goals.generic", value: "用户有一个长期目标。", score: 0.2 },
+        { id: "direct", category: "identity", key: "identity.fact", value: "用户的时区是 UTC+8。", score: 0.2 },
+      ],
+    } as any,
+    { get: () => null, set: () => {} } as any,
+    { getBySender: async () => "" } as any,
+    {
+      scope: { userId: "u", agentId: "a", requireUserId: false, requireAgentId: false },
+      recall: {
+        enabled: true,
+        method: "rag",
+        hybrid: { enabled: false, alpha: 0.5, fallbackToRag: false },
+        topK: 2,
+        scoreThreshold: 0.3,
+        maxContextChars: 1200,
+        injectionBudgetChars: 1200,
+        cacheTtlMs: 1000,
+        cacheMaxSize: 10,
+        workspaceFallback: false,
+        workspaceFallbackMaxItems: 0,
+        workspaceFallbackMaxFiles: 0,
+      },
+      core: { enabled: true, topK: 5, maxItemChars: 240, autoExtractProposals: false, humanReviewRequired: false, touchOnRecall: false, proposalQueueMax: 10 },
+      backend: { freeText: { provider: "mem0" } },
+      mem0: { mode: "open-source", enableGraph: false, searchThreshold: 0.3, topK: 5 },
+      capture: { enabled: false, maxItemsPerRun: 0, minChars: 0, maxChars: 0, dedupeThreshold: 0.8 },
+      outbox: { enabled: false, concurrency: 1, batchSize: 1, maxRetries: 1, drainTimeoutMs: 1000, persistPath: "", flushIntervalMs: 1000 },
+      sync: { flushToMarkdown: false, flushIntervalSec: 300, memoryFilePath: "MEMORY.md" },
+    } as any,
+    { info: () => {}, warn: () => {} },
+    { recallTotal: 0, recallMisses: 0, recallErrors: 0, recordRecallLatency: () => {}, recordRecallCompare: () => {} } as any,
+    { registerAgent: () => {} } as any,
+  );
+  const out = await hook(
+    {
+      prompt: "请只用一句中文回答：用户的时区是什么？",
+      messages: [{ role: "user", content: "用户的时区是什么？" }],
+    },
+    { agentId: "a", workspaceDir: "/tmp", sessionId: "s-timezone" } as any,
+  );
+  const prepend = String((out as any)?.prependContext ?? "");
+  if (!prepend.includes("用户的时区是 UTC+8")) throw new Error("direct lexical fact should be selected");
+  if (prepend.includes("用户有一个长期目标")) throw new Error("generic neighbor fact should not be selected");
+});
+
+await test("createRecallHook prefers the exact answer phrase over weaker background facts", async () => {
+  const hook = createRecallHook(
+    { provider: "mem0", search: async () => [] } as any,
+    { resolveRuntimeScope: () => ({ userId: "u", agentId: "a", sessionKey: "agent:a:main" }) } as any,
+    {
+      list: async () => [
+        { id: "background", category: "goals", key: "goals.health", value: "用户的健康目标是保持健康体重。", score: 0.2 },
+        { id: "answer", category: "identity", key: "identity.fact", value: "用户当前的全职工作是某互联网公司程序员。", score: 0.2 },
+      ],
+    } as any,
+    { get: () => null, set: () => {} } as any,
+    { getBySender: async () => "" } as any,
+    {
+      scope: { userId: "u", agentId: "a", requireUserId: false, requireAgentId: false },
+      recall: {
+        enabled: true,
+        method: "rag",
+        hybrid: { enabled: false, alpha: 0.5, fallbackToRag: false },
+        topK: 2,
+        scoreThreshold: 0.3,
+        maxContextChars: 1200,
+        injectionBudgetChars: 1200,
+        cacheTtlMs: 1000,
+        cacheMaxSize: 10,
+        workspaceFallback: false,
+        workspaceFallbackMaxItems: 0,
+        workspaceFallbackMaxFiles: 0,
+      },
+      core: { enabled: true, topK: 5, maxItemChars: 240, autoExtractProposals: false, humanReviewRequired: false, touchOnRecall: false, proposalQueueMax: 10 },
+      backend: { freeText: { provider: "mem0" } },
+      mem0: { mode: "open-source", enableGraph: false, searchThreshold: 0.3, topK: 5 },
+      capture: { enabled: false, maxItemsPerRun: 0, minChars: 0, maxChars: 0, dedupeThreshold: 0.8 },
+      outbox: { enabled: false, concurrency: 1, batchSize: 1, maxRetries: 1, drainTimeoutMs: 1000, persistPath: "", flushIntervalMs: 1000 },
+      sync: { flushToMarkdown: false, flushIntervalSec: 300, memoryFilePath: "MEMORY.md" },
+    } as any,
+    { info: () => {}, warn: () => {} },
+    { recallTotal: 0, recallMisses: 0, recallErrors: 0, recordRecallLatency: () => {}, recordRecallCompare: () => {} } as any,
+    { registerAgent: () => {} } as any,
+  );
+  const out = await hook(
+    {
+      prompt: "请只用一句中文回答：用户当前的全职工作是什么？",
+      messages: [{ role: "user", content: "用户当前的全职工作是什么？" }],
+    },
+    { agentId: "a", workspaceDir: "/tmp", sessionId: "s-job" } as any,
+  );
+  const prepend = String((out as any)?.prependContext ?? "");
+  if (!prepend.includes("用户当前的全职工作是某互联网公司程序员")) throw new Error("exact answer phrase should be selected");
+  if (prepend.includes("用户的健康目标是保持健康体重")) throw new Error("background fact should not be selected");
 });
 
 await test("createRecallHook caches core memory per session and reranks locally", async () => {

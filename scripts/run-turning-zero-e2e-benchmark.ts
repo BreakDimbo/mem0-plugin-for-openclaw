@@ -5,6 +5,8 @@ import { TURNING_ZERO_E2E_CASES } from "./turning-zero-e2e-fixtures.js";
 import { includesExpected } from "./layered-benchmark.js";
 
 const execFileAsync = promisify(execFile);
+const AGENT_ID = "turning_zero";
+const SESSION_KEY = `agent:${AGENT_ID}:main`;
 
 type E2EResult = {
   id: string;
@@ -24,9 +26,10 @@ async function main() {
   const results: E2EResult[] = [];
 
   console.log(`Running ${cases.length} live end-to-end recall cases...`);
+  await resetAgentSession("reset");
   for (const [index, item] of cases.entries()) {
     if (resetPerCase) {
-      await resetAgentSession();
+      await resetAgentSession("new");
     }
     const message = `请只用一句中文回答：${item.query}`;
     const started = Date.now();
@@ -73,14 +76,27 @@ async function runAgentQuery(message: string): Promise<string> {
   return String(parsed?.result?.payloads?.[0]?.text ?? "").trim();
 }
 
-async function resetAgentSession(): Promise<void> {
-  await runAgentCommand("/new");
+async function resetAgentSession(reason: "new" | "reset"): Promise<void> {
+  await execFileAsync(
+    "openclaw",
+    [
+      "gateway",
+      "call",
+      "sessions.reset",
+      "--json",
+      "--timeout",
+      "20000",
+      "--params",
+      JSON.stringify({ key: SESSION_KEY, reason }),
+    ],
+    { cwd: "~/.openclaw", maxBuffer: 2 * 1024 * 1024 },
+  );
 }
 
 async function runAgentCommand(message: string): Promise<any> {
   const { stdout } = await execFileAsync(
     "openclaw",
-    ["agent", "--agent", "turning_zero", "--message", message, "--timeout", "45", "--json"],
+    ["agent", "--agent", AGENT_ID, "--message", message, "--timeout", "45", "--json"],
     { cwd: "~/.openclaw", maxBuffer: 4 * 1024 * 1024 },
   );
   const payload = extractTrailingJson(stdout);

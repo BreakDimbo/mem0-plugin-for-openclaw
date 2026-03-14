@@ -14,7 +14,7 @@ export const TURNING_ZERO_CORE_BACKFILL_ITEMS: CoreBackfillItem[] = [
   { category: "identity", key: "identity.personality", value: "用户的人格倾向是 INTJ。", importance: 8, provenance: "benchmark-core-backfill" },
   { category: "goals", key: "goals.primary", value: "用户的主目标是成为一人公司创业者。", importance: 10, provenance: "benchmark-core-backfill" },
   { category: "goals", key: "goals.health", value: "用户的健康目标是保持健康体重。", importance: 9, provenance: "benchmark-core-backfill" },
-  { category: "identity", key: "identity.full_time_job", value: "用户当前的全职工作是某互联网公司程序员。", importance: 8, provenance: "benchmark-core-backfill" },
+  { category: "identity", key: "identity.full_time_job", value: "用户当前的全职工作是某互联网公司高级后端工程师。", importance: 8, provenance: "benchmark-core-backfill" },
   { category: "goals", key: "goals.exploration.media", value: "用户正在探索的媒体方向是自媒体。", importance: 8, provenance: "benchmark-core-backfill" },
   { category: "goals", key: "goals.exploration.mobile", value: "用户正在探索的移动端开发方向是iOS开发。", importance: 8, provenance: "benchmark-core-backfill" },
   { category: "goals", key: "goals.exploration.game", value: "用户正在探索的游戏相关方向是游戏开发。", importance: 8, provenance: "benchmark-core-backfill" },

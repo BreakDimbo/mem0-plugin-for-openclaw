@@ -12,7 +12,7 @@ const CASES: E2ECase[] = [
   { id: "e2e-05", query: "用户的人格倾向是什么？", expected: "INTJ" },
   { id: "e2e-06", query: "用户的主目标是什么？", expected: "一人公司创业者" },
   { id: "e2e-07", query: "用户的健康目标是什么？", expected: "保持健康体重" },
-  { id: "e2e-08", query: "用户当前的全职工作是什么？", expected: "某互联网公司程序员" },
+  { id: "e2e-08", query: "用户当前的全职工作是什么？", expected: "某互联网公司高级后端工程师" },
   { id: "e2e-09", query: "用户正在探索哪个媒体方向？", expected: "自媒体" },
   { id: "e2e-10", query: "用户正在探索哪种移动端开发？", expected: "iOS开发" },
   { id: "e2e-11", query: "用户正在探索哪种游戏相关方向？", expected: "游戏开发" },

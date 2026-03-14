@@ -33,6 +33,12 @@ type SessionRelevantCacheEntry = {
   storedAt: number;
 };
 
+type QueryIntent = {
+  singleFact: boolean;
+  configLike: boolean;
+  categoryHints: string[];
+};
+
 const SESSION_INJECTION_CACHE = new Map<string, SessionInjectionSnapshot>();
 const SESSION_INJECTION_CACHE_LIMIT = 200;
 const SESSION_CORE_CACHE = new Map<string, SessionCoreCacheEntry>();
@@ -234,6 +240,139 @@ function selectRelevantCoreMemories<T extends { score?: number }>(items: T[], qu
   return filtered.length > 0 ? filtered : items;
 }
 
+function inferQueryIntent(query: string, queryPartCount: number): QueryIntent {
+  const normalized = query.trim().toLowerCase();
+  const singleFact = queryPartCount <= 1
+    && !/[；;\n]/.test(query)
+    && !/(\d+[.、])/.test(query);
+  const configLike = /\b(timeout|p95|classifier|route|router|embedding|dim|dimension|cost|cbreset|retrieve|search)\b|层数|架构|参数|配置|超时|维度|费用|分类器|路由/.test(normalized);
+  const compact = normalized.replace(/\s+/g, "");
+  const categoryHints = new Set<string>();
+  if (/(名字|姓名|时区|职业|工作|人格|性格|mbti|身份|来自|timezone|name|role|job|personality|profile)/.test(compact)) {
+    categoryHints.add("identity");
+  }
+  if (/(偏好|喜欢|更喜欢|讨厌|表达方式|沟通方式|沟通风格|口味|drink|prefer|preference|style|expression)/.test(compact)) {
+    categoryHints.add("preferences");
+  }
+  if (/(目标|探索|方向|计划|想做|goal|exploration|roadmap)/.test(compact)) {
+    categoryHints.add("goals");
+  }
+  if (/(原则|规则|约束|默认要求|确认|隐私|禁止|必须|constraint|privacy|rule|approval)/.test(compact)) {
+    categoryHints.add("constraints");
+  }
+  if (/(爱人|伴侣|朋友|同事|关系|partner|wife|husband|relationship)/.test(compact)) {
+    categoryHints.add("relationships");
+  }
+  if (categoryHints.size === 0) categoryHints.add("general");
+  return { singleFact, configLike, categoryHints: Array.from(categoryHints) };
+}
+
+function normalizeForMatch(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/\s+/g, "")
+    .replace(/[?？!！。，、；;:："'`·()\[\]【】\-_/]/g, "");
+}
+
+function stripQueryBoilerplate(query: string): string {
+  return query
+    .replace(/^(请只用一句中文回答|请用一句中文回答|请用三行中文回答，不要解释|请用三行中文回答不要解释|请回答|请问)[:：]?\s*/g, "")
+    .trim();
+}
+
+const QUERY_STOP_TERMS = [
+  "用户",
+  "什么",
+  "多少",
+  "如何",
+  "怎么",
+  "请问",
+  "请",
+  "只用",
+  "一句",
+  "中文",
+  "回答",
+  "谁",
+  "哪里",
+  "哪个",
+  "哪种",
+  "哪类",
+  "当前",
+  "现在",
+  "主要",
+  "一下",
+  "一下子",
+  "的是",
+  "是什么",
+  "是不是",
+  "是否",
+];
+
+function stripQueryStopTerms(query: string): string {
+  let text = stripQueryBoilerplate(query);
+  for (const term of QUERY_STOP_TERMS) {
+    text = text.replaceAll(term, " ");
+  }
+  return text.trim();
+}
+
+function buildSearchTerms(text: string): string[] {
+  const normalized = normalizeForMatch(stripQueryStopTerms(text));
+  if (!normalized) return [];
+  const tokens = new Set<string>();
+
+  for (const word of normalized.match(/[a-z0-9+_-]{2,}/g) ?? []) {
+    tokens.add(word);
+  }
+  for (const chunk of normalized.match(/[\u4e00-\u9fff]{2,}/g) ?? []) {
+    tokens.add(chunk);
+    for (let size = 2; size <= Math.min(3, chunk.length); size += 1) {
+      for (let i = 0; i <= chunk.length - size; i += 1) {
+        tokens.add(chunk.slice(i, i + size));
+      }
+    }
+  }
+
+  return Array.from(tokens);
+}
+
+function tokenizeDocument(text: string): string[] {
+  const normalized = normalizeForMatch(text);
+  if (!normalized) return [];
+  const tokens: string[] = [];
+  for (const word of normalized.match(/[a-z0-9+_-]{2,}/g) ?? []) {
+    tokens.push(word);
+  }
+  for (const chunk of normalized.match(/[\u4e00-\u9fff]{2,}/g) ?? []) {
+    for (let size = 2; size <= Math.min(3, chunk.length); size += 1) {
+      for (let i = 0; i <= chunk.length - size; i += 1) {
+        tokens.push(chunk.slice(i, i + size));
+      }
+    }
+  }
+  return tokens;
+}
+
+function scoreTokenOverlap(queryTerms: string[], documentTokens: string[]): number {
+  if (queryTerms.length === 0 || documentTokens.length === 0) return 0;
+  const tf = new Map<string, number>();
+  for (const token of documentTokens) {
+    tf.set(token, (tf.get(token) ?? 0) + 1);
+  }
+  const docLen = documentTokens.length;
+  let score = 0;
+  let hits = 0;
+  for (const term of queryTerms) {
+    const freq = tf.get(term) ?? 0;
+    if (freq <= 0) continue;
+    hits += 1;
+    const tfNorm = freq / (freq + 1.2 + 0.15 * (docLen / 20));
+    score += 1.3 * tfNorm;
+  }
+  score += (hits / queryTerms.length) * 0.35;
+  return score;
+}
+
 function dedupeCoreMemories<T extends { id: string; score?: number }>(items: T[]): T[] {
   const byId = new Map<string, T>();
   for (const item of items) {
@@ -248,10 +387,13 @@ function dedupeCoreMemories<T extends { id: string; score?: number }>(items: T[]
 function shouldSuppressRelevantMemories(
   coreMemories: Array<{ score?: number }>,
   queryPartCount: number,
+  intent: QueryIntent,
 ): boolean {
   if (coreMemories.length === 0) return false;
   const topScore = coreMemories[0]?.score ?? 0;
+  if (intent.singleFact && topScore >= 0.58) return true;
   if (topScore < 0.6) return false;
+  if (intent.configLike && topScore >= 0.48) return true;
   if (queryPartCount <= 1) return true;
   return coreMemories.length >= queryPartCount;
 }
@@ -323,32 +465,51 @@ function shouldSkipDuplicateSessionInjection(key: string, signature: string): bo
 
 function scoreCoreCandidate(
   searchQueries: string[],
-  item: { key: string; value: string; score?: number },
+  item: { category?: string; key: string; value: string; score?: number },
+  intent: QueryIntent,
 ): number {
   if (searchQueries.length === 0) return item.score ?? 0;
+  const documentText = `${item.key} ${item.value}`;
+  const documentTokens = tokenizeDocument(documentText);
   return Math.max(
     ...searchQueries.map((searchQuery) => {
-      const q = searchQuery
-        .trim()
-        .toLowerCase()
-        .replace(/[?？!！。，、；;:："'`·()\[\]【】\s]+/g, "")
-        .replace(/用户|什么|多少|如何|怎么|请问|请|只用|一句|中文|回答|谁|哪里|哪个|当前|主要|现在/gi, "");
-      if (!q) return 0;
-      const keyValue = `${item.key} ${item.value}`.toLowerCase();
-      const compact = keyValue.replace(/\s+/g, "");
-      if (compact.includes(q)) return 1;
-      const tokens = tokenizeSemanticQuery(q).filter((token) => token.trim().length >= 2);
+      const compactQuery = normalizeForMatch(stripQueryBoilerplate(searchQuery));
+      const compactFocusQuery = normalizeForMatch(stripQueryStopTerms(searchQuery));
+      if (!compactQuery) return 0;
+      const compactDocument = normalizeForMatch(documentText);
+      if (compactFocusQuery && compactDocument.includes(compactFocusQuery)) return 1.2;
+      if (compactDocument.includes(compactQuery)) return 1;
+      const terms = buildSearchTerms(searchQuery);
       const conceptBoost = genericConceptBoost(searchQuery, item.value);
-      if (tokens.length === 0) return conceptBoost;
-      let hits = 0;
-      for (const token of tokens) {
-        if (keyValue.includes(token.toLowerCase())) hits++;
-      }
-      const lexical = hits / tokens.length;
-      if (lexical === 0 && conceptBoost < 0.8) return 0;
-      return lexical + conceptBoost * 0.35;
+      const overlapScore = scoreTokenOverlap(terms, documentTokens);
+      const normalizedValue = normalizeForMatch(item.value);
+      const compactnessBoost = normalizedValue.length > 0
+        ? Math.max(0, 0.12 - Math.min(0.12, normalizedValue.length / 400))
+        : 0;
+      const categoryBoost = intent.categoryHints.includes((item.category ?? "general").toLowerCase()) ? 0.22 : 0;
+      if (overlapScore === 0 && conceptBoost < 0.8) return 0;
+      return overlapScore + conceptBoost * 0.25 + compactnessBoost + categoryBoost;
     }),
   );
+}
+
+function trimCoreForInjection<T extends { score?: number }>(items: T[], intent: QueryIntent, queryPartCount: number, topK: number): T[] {
+  if (items.length === 0) return items;
+  const topScore = items[0]?.score ?? 0;
+  const secondScore = items[1]?.score ?? 0;
+  const maxItems = intent.singleFact
+    ? ((topScore >= 1.2 && topScore - secondScore >= 0.5) ? 1 : 2)
+    : Math.min(2, Math.max(1, topK));
+  if (queryPartCount > 1) return items.slice(0, Math.min(maxItems + 1, items.length));
+  return items.slice(0, maxItems);
+}
+
+function trimRelevantForInjection(items: MemuMemoryRecord[], intent: QueryIntent, queryPartCount: number, topK: number): MemuMemoryRecord[] {
+  if (items.length === 0) return items;
+  const maxItems = intent.singleFact ? 1 : Math.min(2, Math.max(1, topK));
+  if (intent.configLike) return items.slice(0, 1);
+  if (queryPartCount > 1) return items.slice(0, Math.min(maxItems + 1, items.length));
+  return items.slice(0, maxItems);
 }
 
 export function sanitizePromptQuery(raw: string): string {
@@ -432,9 +593,10 @@ export function createRecallHook(
     }
 
   if (!query) query = sanitizePromptQuery(promptRaw);
-  if (!query || query.length < 3) return;
+    if (!query || query.length < 3) return;
     const recallQueries = splitRecallQueries(query);
     const searchQueries = recallQueries.length > 0 ? recallQueries : [query];
+    const queryIntent = inferQueryIntent(query, searchQueries.length);
 
     metrics.recallTotal++;
     const start = Date.now();
@@ -489,6 +651,7 @@ export function createRecallHook(
         if (filteredMemories.length > 0) {
           setSessionRelevantCache(relevantClusterKey, filteredMemories);
         }
+        filteredMemories = trimRelevantForInjection(filteredMemories, queryIntent, searchQueries.length, config.recall.topK);
       }
 
       let coreContext = "";
@@ -499,7 +662,7 @@ export function createRecallHook(
         if (cachedCore) {
           corePool = cachedCore.items.map((item) => ({
             ...item,
-            score: scoreCoreCandidate(searchQueries, item),
+            score: scoreCoreCandidate(searchQueries, item, queryIntent),
           }));
         } else {
           const coreCandidates = await coreRepo.list(scope, {
@@ -511,18 +674,18 @@ export function createRecallHook(
             category: item.category,
             key: item.key,
             value: item.value,
-            score: scoreCoreCandidate(searchQueries, item),
+            score: scoreCoreCandidate(searchQueries, item, queryIntent),
           }));
         }
-        coreMemories = selectRelevantCoreMemories(
+        coreMemories = trimCoreForInjection(selectRelevantCoreMemories(
           dedupeCoreMemories(corePool).slice(0, Math.max(config.core.topK * 2, config.core.topK)),
           searchQueries.length,
-        );
+        ), queryIntent, searchQueries.length, config.core.topK);
         logger.info(`recall-hook: scope user=${scope.userId} agent=${scope.agentId} core=${coreMemories.length}`);
         coreContext = formatCoreMemoriesContext(coreMemories);
       }
 
-      if (filteredMemories.length > 0 && !shouldSuppressRelevantMemories(coreMemories, searchQueries.length)) {
+      if (filteredMemories.length > 0 && !shouldSuppressRelevantMemories(coreMemories, searchQueries.length, queryIntent)) {
         memoryContext = formatMemoriesContext(filteredMemories);
       }
 
