@@ -102,6 +102,31 @@ await test("rerankMemoryResults boosts Chinese preference match over generic dur
   assertEqual(ranked[0]?.id, "pref", "preference should rank first");
 });
 
+await test("rerankMemoryResults boosts Chinese editor concept over generic tooling fact", () => {
+  const scope = { userId: "alice", agentId: "researcher", sessionKey: "agent:researcher:main" };
+  const ranked = rerankMemoryResults("用户主要用什么编辑器？", [
+    {
+      id: "db",
+      text: "用户主要使用 PostgreSQL 作为数据库。",
+      category: "general",
+      source: "memu_item" as const,
+      scope,
+      score: 0.9,
+      metadata: { quality: "durable", memory_kind: "tooling", capture_kind: "explicit" },
+    },
+    {
+      id: "editor",
+      text: "用户主要使用 Neovim 作为编辑器。",
+      category: "general",
+      source: "memu_item" as const,
+      scope,
+      score: 0.8,
+      metadata: { quality: "durable", memory_kind: "tooling", capture_kind: "explicit" },
+    },
+  ]);
+  assertEqual(ranked[0]?.id, "editor", "editor fact should rank first");
+});
+
 const passed = results.filter((r) => r.passed).length;
 const failed = results.filter((r) => !r.passed).length;
 console.log(`\n${"═".repeat(40)}`);

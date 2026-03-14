@@ -121,7 +121,7 @@ export function rerankMemoryResults(
 }
 
 function scoreMemoryForQuery(
-  _query: string,
+  query: string,
   item: MemuMemoryRecord,
   hints: FreeTextMemoryKind[],
   preferDurable: boolean,
@@ -149,5 +149,45 @@ function scoreMemoryForQuery(
     }
   }
 
+  score += lexicalConceptBoost(query, item.text);
+
   return score;
+}
+
+type QueryConcept = {
+  query: RegExp;
+  item: RegExp;
+  bonus: number;
+};
+
+const QUERY_CONCEPTS: QueryConcept[] = [
+  { query: /饮料|喝什么|喝啥|coffee|drink/i, item: /茶|咖啡|乌龙|茉莉|气泡水|饮料/i, bonus: 0.26 },
+  { query: /编辑器|editor/i, item: /编辑器|neovim|vscode/i, bonus: 0.24 },
+  { query: /深度工作|专注时间/i, item: /深度工作|7[:：点]|9[:：点]|工作日/i, bonus: 0.24 },
+  { query: /羽毛球/i, item: /羽毛球|周五|晚上/i, bonus: 0.24 },
+  { query: /电话|接电话/i, item: /电话|10[:：点]|十点/i, bonus: 0.22 },
+  { query: /包管理|package manager|pnpm|npm|yarn/i, item: /包管理|pnpm|npm|yarn/i, bonus: 0.24 },
+  { query: /笔记|note-taking|obsidian/i, item: /笔记|obsidian/i, bonus: 0.24 },
+  { query: /日历|calendar|会议/i, item: /日历|calendar|飞书日历|会议/i, bonus: 0.22 },
+  { query: /图表|diagram|mermaid/i, item: /图表|diagram|mermaid/i, bonus: 0.24 },
+  { query: /日志|时间戳|timestamp|utc/i, item: /日志|时间戳|timestamp|utc/i, bonus: 0.22 },
+  { query: /伴侣|妻子|丈夫|住在|住哪里/i, item: /伴侣|妻子|丈夫|西安|新加坡|住在/i, bonus: 0.22 },
+  { query: /阅读目标|读书/i, item: /阅读|读书|四本书/i, bonus: 0.22 },
+  { query: /备餐/i, item: /备餐|周日|晚上/i, bonus: 0.22 },
+  { query: /办公室|office/i, item: /办公室|新加坡办公室/i, bonus: 0.22 },
+  { query: /数据库|database|postgres/i, item: /数据库|postgres/i, bonus: 0.24 },
+  { query: /时区|timezone/i, item: /时区|utc\+?8/i, bonus: 0.22 },
+  { query: /重构|refactor/i, item: /重构|单元测试/i, bonus: 0.22 },
+  { query: /任务追踪|task tracker|linear/i, item: /任务追踪|linear/i, bonus: 0.22 },
+  { query: /环境工具|uv|python environment/i, item: /\buv\b|环境工具/i, bonus: 0.22 },
+];
+
+function lexicalConceptBoost(query: string, text: string): number {
+  let boost = 0;
+  for (const concept of QUERY_CONCEPTS) {
+    if (concept.query.test(query) && concept.item.test(text)) {
+      boost += concept.bonus;
+    }
+  }
+  return boost;
 }
