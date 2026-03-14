@@ -9,9 +9,17 @@ const NESTED_DIRS = ["memory", "notes", ".learnings"];
 const MAX_SNIPPET_CHARS = 220;
 
 function normalizeSemanticText(text: string): string {
-  return text
-    .toLowerCase()
-    .replace(/^(请只用一句中文回答[:：]?|请用一句中文回答[:：]?|请用三行中文回答，不要解释[:：]?|请回答[:：]?)/, "")
+  let current = text.trim().toLowerCase();
+  for (let i = 0; i < 4; i += 1) {
+    const next = current
+      .replace(/^(user|assistant|system)\s*:\s*/i, "")
+      .replace(/^\[[^\]\n]{6,120}\]\s*/g, "")
+      .replace(/^(请只用一句中文回答[:：]?|请用一句中文回答[:：]?|请用三行中文回答，不要解释[:：]?|请回答[:：]?)/, "")
+      .trim();
+    if (next === current) break;
+    current = next;
+  }
+  return current
     .replace(/\s+/g, "")
     .replace(/[，。、“”"'`·:：；;（）()【】\[\]\-?!？]/g, "");
 }
@@ -47,6 +55,7 @@ function isCandidateLine(line: string): boolean {
   if (/^[a-f0-9]{16,}$/i.test(trimmed)) return false;
   if (/^(om|ou|on|oc|chat|msg|thread)_[a-z0-9]{8,}$/i.test(trimmed)) return false;
   if (/^(message_id|sender_id|timestamp|sender|label|id)\s*:/i.test(trimmed)) return false;
+  if (/^(user|assistant|system)\s*:\s*\[[^\]\n]{6,120}\]\s*(请只用一句中文回答|请用一句中文回答|请用三行中文回答)/i.test(trimmed)) return false;
   return /[\u4e00-\u9fffA-Za-z]/.test(trimmed);
 }
 

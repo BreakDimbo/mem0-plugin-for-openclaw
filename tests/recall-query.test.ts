@@ -73,6 +73,42 @@ await test("sanitizePromptQuery strips system prefixes from delivery wrappers", 
   );
 });
 
+await test("sanitizePromptQuery strips stacked system and timestamp wrappers", () => {
+  const raw = "System: [Sat 2026-03-14 18:48 GMT+8] 请只用一句中文回答：用户的时区是什么？";
+  assertEqual(
+    sanitizePromptQuery(raw),
+    "请只用一句中文回答：用户的时区是什么？",
+    "should strip nested wrappers before the actual question",
+  );
+});
+
+await test("sanitizePromptQuery reduces timestamped low-information text to its bare content", () => {
+  const raw = "[Sat 2026-03-14 19:22 GMT+8] 你好";
+  assertEqual(
+    sanitizePromptQuery(raw),
+    "你好",
+    "should strip the leading timestamp from low-information text",
+  );
+});
+
+await test("sanitizePromptQuery strips user-prefixed timestamped low-information text", () => {
+  const raw = "user: [Sat 2026-03-14 19:22 GMT+8] 你好";
+  assertEqual(
+    sanitizePromptQuery(raw),
+    "你好",
+    "should strip user prefix and timestamp wrapper",
+  );
+});
+
+await test("sanitizePromptQuery strips current-time wrappers before low-information text", () => {
+  const raw = "Current time: Saturday, March 14th, 2026 — 7:22 PM (Asia/Singapore) / 2026-03-14 11:22 UTC\n[Sat 2026-03-14 19:22 GMT+8] 你好";
+  assertEqual(
+    sanitizePromptQuery(raw),
+    "你好",
+    "should strip current-time envelope before low-information text",
+  );
+});
+
 await test("splitRecallQueries keeps multi-part Chinese memory questions", () => {
   const raw = "请用三行中文回答，不要解释：1. 用户叫什么名字？2. memU embedding 现在用什么？3. 记忆系统一共有几层？";
   const parts = splitRecallQueries(raw);
@@ -81,16 +117,19 @@ await test("splitRecallQueries keeps multi-part Chinese memory questions", () =>
   assertEqual(parts[2], "记忆系统一共有几层？", "question 3 extracted");
 });
 
-await test("createRecallHook passes the current query into core recall", async () => {
-  let seenQuery = "";
+await test("createRecallHook loads session core cache once and reranks against current query", async () => {
+  let listCalls = 0;
   const hook = createRecallHook(
     { provider: "mem0", search: async () => [] } as any,
     null,
     { resolveRuntimeScope: () => ({ userId: "u", agentId: "a", sessionKey: "agent:a:main" }) } as any,
     {
-      list: async (_scope: any, opts?: { query?: string }) => {
-        seenQuery = opts?.query ?? "";
-        return [];
+      list: async () => {
+        listCalls += 1;
+        return [
+          { id: "core-tz", category: "identity", key: "identity.timezone", value: "用户的时区是 UTC+8。", score: 0.2 },
+          { id: "core-goal", category: "goals", key: "goals.primary", value: "用户的主目标是成为一人公司创业者。", score: 0.2 },
+        ];
       },
     } as any,
     { get: () => null, set: () => {} } as any,
@@ -129,10 +168,18 @@ await test("createRecallHook passes the current query into core recall", async (
       prompt: "请只用一句中文回答：用户的时区是什么？",
       messages: [{ role: "user", content: "用户的时区是什么？" }],
     },
-    { agentId: "a", workspaceDir: "/tmp" } as any,
+    { agentId: "a", workspaceDir: "/tmp", sessionId: "s-core-query" } as any,
   );
 
-  assertEqual(seenQuery, "用户的时区是什么？", "core recall query");
+  await hook(
+    {
+      prompt: "请只用一句中文回答：用户的主目标是什么？",
+      messages: [{ role: "user", content: "用户的主目标是什么？" }],
+    },
+    { agentId: "a", workspaceDir: "/tmp", sessionId: "s-core-query" } as any,
+  );
+
+  assertEqual(listCalls, 1, "core repo should be loaded once for the session");
 });
 
 await test("createRecallHook keeps only strongly relevant core memories for a focused query", async () => {
@@ -191,16 +238,20 @@ await test("createRecallHook keeps only strongly relevant core memories for a fo
   if (prepend.includes("goals/goals.primary")) throw new Error("unrelated core fact should be filtered out");
 });
 
-await test("createRecallHook queries core memory per split subquery", async () => {
-  const seenQueries: string[] = [];
+await test("createRecallHook caches core memory per session and reranks locally", async () => {
+  let listCalls = 0;
   const hook = createRecallHook(
     { provider: "mem0", search: async () => [] } as any,
     null,
     { resolveRuntimeScope: () => ({ userId: "u", agentId: "a", sessionKey: "agent:a:main" }) } as any,
     {
-      list: async (_scope: any, opts?: { query?: string }) => {
-        seenQueries.push(opts?.query ?? "");
-        return [];
+      list: async () => {
+        listCalls += 1;
+        return [
+          { id: "core-name", category: "identity", key: "identity.name", value: "用户叫小明。", score: 0.2 },
+          { id: "core-embed", category: "tooling", key: "general.embedding", value: "memU embedding 现在用 nomic-embed-text。", score: 0.2 },
+          { id: "core-arch", category: "general", key: "general.layers", value: "记忆系统一共有三层。", score: 0.2 },
+        ];
       },
     } as any,
     { get: () => null, set: () => {} } as any,
@@ -239,12 +290,18 @@ await test("createRecallHook queries core memory per split subquery", async () =
       prompt: "请用三行中文回答，不要解释：1. 用户叫什么名字？2. memU embedding 现在用什么？3. 记忆系统一共有几层？",
       messages: [{ role: "user", content: "请用三行中文回答，不要解释：1. 用户叫什么名字？2. memU embedding 现在用什么？3. 记忆系统一共有几层？" }],
     },
-    { agentId: "a", workspaceDir: "/tmp" } as any,
+    { agentId: "a", workspaceDir: "/tmp", sessionId: "s-core-cache" } as any,
   );
 
-  assertEqual(seenQueries[0], "用户叫什么名字？", "core query 1");
-  assertEqual(seenQueries[1], "memU embedding 现在用什么？", "core query 2");
-  assertEqual(seenQueries[2], "记忆系统一共有几层？", "core query 3");
+  await hook(
+    {
+      prompt: "请只用一句中文回答：用户叫什么名字？",
+      messages: [{ role: "user", content: "用户叫什么名字？" }],
+    },
+    { agentId: "a", workspaceDir: "/tmp", sessionId: "s-core-cache" } as any,
+  );
+
+  assertEqual(listCalls, 1, "core list should be fetched once per session cache window");
 });
 
 await test("createRecallHook suppresses lower-priority relevant memories when core strongly covers a single-fact query", async () => {
@@ -293,7 +350,7 @@ await test("createRecallHook suppresses lower-priority relevant memories when co
       prompt: "请只用一句中文回答：用户的时区是什么？",
       messages: [{ role: "user", content: "用户的时区是什么？" }],
     },
-    { agentId: "a", workspaceDir: "/tmp" } as any,
+    { agentId: "a", workspaceDir: "/tmp", sessionId: "s-relevant-suppress" } as any,
   );
 
   const prepend = String((out as any)?.prependContext ?? "");
@@ -364,6 +421,140 @@ await test("createRecallHook skips duplicate injection inside the same session",
   if (second !== undefined) {
     throw new Error("second call in same session should skip duplicate injection");
   }
+});
+
+await test("createRecallHook avoids re-injecting the same stable core facts across turns in one session", async () => {
+  const hook = createRecallHook(
+    { provider: "mem0", search: async () => [] } as any,
+    null,
+    { resolveRuntimeScope: () => ({ userId: "u", agentId: "a", sessionKey: "agent:a:main" }) } as any,
+    {
+      list: async () => {
+        return [
+          { id: "core-timezone", category: "identity", key: "identity.timezone", value: "用户的时区是 UTC+8。", score: 0.8 },
+          { id: "core-role", category: "relationships", key: "relationships.primary", value: "用户最重要的关系对象是伴侣。", score: 0.7 },
+        ];
+      },
+    } as any,
+    { get: () => null, set: () => {} } as any,
+    { getBySender: async () => "" } as any,
+    {
+      scope: { userId: "u", agentId: "a", requireUserId: false, requireAgentId: false },
+      recall: {
+        enabled: true,
+        method: "rag",
+        hybrid: { enabled: false, alpha: 0.5, fallbackToRag: false },
+        topK: 2,
+        scoreThreshold: 0.3,
+        maxContextChars: 1200,
+        injectionBudgetChars: 1200,
+        cacheTtlMs: 1000,
+        cacheMaxSize: 10,
+        workspaceFallback: false,
+        workspaceFallbackMaxItems: 0,
+        workspaceFallbackMaxFiles: 0,
+      },
+      core: { enabled: true, topK: 5, maxItemChars: 240, autoExtractProposals: false, humanReviewRequired: false, touchOnRecall: false, proposalQueueMax: 10 },
+      backend: { freeText: { provider: "mem0", dualWrite: false, readFallback: "none", compareRecall: false } },
+      memu: { baseUrl: "", timeoutMs: 1000, cbResetMs: 1000, healthCheckPath: "/debug" },
+      mem0: { mode: "open-source", enableGraph: false, searchThreshold: 0.3, topK: 5 },
+      capture: { enabled: false, maxItemsPerRun: 0, minChars: 0, maxChars: 0, dedupeThreshold: 0.8 },
+      outbox: { enabled: false, concurrency: 1, batchSize: 1, maxRetries: 1, drainTimeoutMs: 1000, persistPath: "", flushIntervalMs: 1000 },
+      sync: { flushToMarkdown: false, flushIntervalSec: 300, memoryFilePath: "MEMORY.md" },
+    } as any,
+    { info: () => {}, warn: () => {} },
+    { recallTotal: 0, recallHits: 0, recallMisses: 0, recallErrors: 0, recordRecallLatency: () => {}, recordRecallCompare: () => {}, recordRecallFallback: () => {} } as any,
+    { registerAgent: () => {} } as any,
+  );
+
+  const ctx = { agentId: "a", workspaceDir: "/tmp", sessionId: "s2" } as any;
+  const first = await hook(
+    {
+      prompt: "请只用一句中文回答：用户的时区是什么？",
+      messages: [{ role: "user", content: "用户的时区是什么？" }],
+    },
+    ctx,
+  );
+  const second = await hook(
+    {
+      prompt: "请只用一句中文回答：用户的爱人是谁？",
+      messages: [{ role: "user", content: "用户的爱人是谁？" }],
+    },
+    ctx,
+  );
+
+  const firstText = String((first as any)?.prependContext ?? "");
+  const secondText = String((second as any)?.prependContext ?? "");
+  if (!firstText.includes("identity/identity.timezone")) {
+    throw new Error("first turn should inject the timezone core fact");
+  }
+  if (!secondText.includes("relationships/relationships.primary")) {
+    throw new Error("second turn should still inject a new unrepeated core fact");
+  }
+});
+
+await test("createRecallHook reuses relevant selections for similar session queries", async () => {
+  let searchCalls = 0;
+  const hook = createRecallHook(
+    {
+      provider: "mem0",
+      search: async () => {
+        searchCalls += 1;
+        return [
+          { id: "m1", text: "用户喜欢茉莉花茶胜过咖啡。", category: "mem0", score: 0.9, source: "memu_item", scope: { userId: "u", agentId: "a", sessionKey: "s" } },
+        ];
+      },
+    } as any,
+    null,
+    { resolveRuntimeScope: () => ({ userId: "u", agentId: "a", sessionKey: "agent:a:main" }) } as any,
+    { list: async () => [] } as any,
+    { get: () => null, set: () => {} } as any,
+    { getBySender: async () => "" } as any,
+    {
+      scope: { userId: "u", agentId: "a", requireUserId: false, requireAgentId: false },
+      recall: {
+        enabled: true,
+        method: "rag",
+        hybrid: { enabled: false, alpha: 0.5, fallbackToRag: false },
+        topK: 2,
+        scoreThreshold: 0.3,
+        maxContextChars: 1200,
+        injectionBudgetChars: 1200,
+        cacheTtlMs: 1000,
+        cacheMaxSize: 10,
+        workspaceFallback: false,
+        workspaceFallbackMaxItems: 0,
+        workspaceFallbackMaxFiles: 0,
+      },
+      core: { enabled: false, topK: 5, maxItemChars: 240, autoExtractProposals: false, humanReviewRequired: false, touchOnRecall: false, proposalQueueMax: 10 },
+      backend: { freeText: { provider: "mem0", dualWrite: false, readFallback: "none", compareRecall: false } },
+      memu: { baseUrl: "", timeoutMs: 1000, cbResetMs: 1000, healthCheckPath: "/debug" },
+      mem0: { mode: "open-source", enableGraph: false, searchThreshold: 0.3, topK: 5 },
+      capture: { enabled: false, maxItemsPerRun: 0, minChars: 0, maxChars: 0, dedupeThreshold: 0.8 },
+      outbox: { enabled: false, concurrency: 1, batchSize: 1, maxRetries: 1, drainTimeoutMs: 1000, persistPath: "", flushIntervalMs: 1000 },
+      sync: { flushToMarkdown: false, flushIntervalSec: 300, memoryFilePath: "MEMORY.md" },
+    } as any,
+    { info: () => {}, warn: () => {} },
+    { recallTotal: 0, recallHits: 0, recallMisses: 0, recallErrors: 0, recordRecallLatency: () => {}, recordRecallCompare: () => {}, recordRecallFallback: () => {} } as any,
+    { registerAgent: () => {} } as any,
+  );
+
+  await hook(
+    {
+      prompt: "用户喜欢喝什么饮料？",
+      messages: [{ role: "user", content: "用户喜欢喝什么饮料？" }],
+    },
+    { agentId: "a", workspaceDir: "/tmp", sessionId: "s-relevant-cache" } as any,
+  );
+  await hook(
+    {
+      prompt: "用户偏好喝什么饮料？",
+      messages: [{ role: "user", content: "用户偏好喝什么饮料？" }],
+    },
+    { agentId: "a", workspaceDir: "/tmp", sessionId: "s-relevant-cache" } as any,
+  );
+
+  assertEqual(searchCalls, 1, "similar session queries should reuse relevant recall selection");
 });
 
 const passed = results.filter((r) => r.passed).length;

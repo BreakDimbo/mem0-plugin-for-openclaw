@@ -106,6 +106,31 @@ await test("searchWorkspaceFacts filters snippets that only mirror the current q
   }
 });
 
+await test("searchWorkspaceFacts drops user-prefixed timestamped prompt echoes", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "workspace-facts-"));
+  try {
+    await writeFile(
+      path.join(dir, "MEMORY.md"),
+      [
+        "user: [Sat 2026-03-14 18:47 GMT+8] 请只用一句中文回答：用户正在探索哪个媒体方向？",
+        "用户正在探索的媒体方向是自媒体。",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const hits = await searchWorkspaceFacts("用户正在探索哪个媒体方向？", scope, dir, {
+      maxItems: 3,
+      maxFiles: 2,
+    });
+
+    assert(hits.length > 0, "expected factual workspace hit");
+    assert(hits.every((hit) => !/^user:\s*\[sat /i.test(hit.text)), "should drop timestamped prompt echo");
+    assert(hits.some((hit) => hit.text.includes("自媒体")), "should keep the factual media direction");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 await test("resolveWorkspaceDir falls back to standard OpenClaw workspace paths", () => {
   const resolved = resolveWorkspaceDir("turning_zero");
   assert(/workspace-turning_zero$/.test(resolved), "expected agent workspace suffix");

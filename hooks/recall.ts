@@ -14,7 +14,7 @@ import type { CoreMemoryRepository } from "../core-repository.js";
 import { applyInjectionBudget, escapeForInjection, formatCoreMemoriesContext, formatMemoriesContext } from "../security.js";
 import type { FreeTextBackend } from "../backends/free-text/base.js";
 import { compareMemorySets } from "../backends/free-text/compare.js";
-import { rerankMemoryResults } from "../metadata.js";
+import { genericConceptBoost, rerankMemoryResults, tokenizeSemanticQuery } from "../metadata.js";
 import { resolveWorkspaceDir, searchWorkspaceFacts } from "../workspace-facts.js";
 
 type Logger = { info(msg: string): void; warn(msg: string): void };
@@ -24,8 +24,29 @@ type SessionInjectionSnapshot = {
   timestamp: number;
 };
 
+type SessionInjectedItems = {
+  core: Map<string, number>;
+  relevant: Map<string, number>;
+};
+
+type SessionCoreCacheEntry = {
+  items: Array<{ id: string; category?: string; key: string; value: string; score?: number }>;
+  fetchedAt: number;
+};
+
+type SessionRelevantCacheEntry = {
+  items: MemuMemoryRecord[];
+  storedAt: number;
+};
+
 const SESSION_INJECTION_CACHE = new Map<string, SessionInjectionSnapshot>();
 const SESSION_INJECTION_CACHE_LIMIT = 200;
+const SESSION_INJECTED_ITEMS = new Map<string, SessionInjectedItems>();
+const SESSION_ITEM_RECENCY_MS = 10 * 60 * 1000;
+const SESSION_CORE_CACHE = new Map<string, SessionCoreCacheEntry>();
+const SESSION_CORE_CACHE_TTL_MS = 5 * 60 * 1000;
+const SESSION_RELEVANT_CACHE = new Map<string, SessionRelevantCacheEntry>();
+const SESSION_RELEVANT_CACHE_TTL_MS = 90 * 1000;
 
 const PREFERRED_KEYS = ["text", "content", "query", "question", "input", "message"];
 
@@ -56,10 +77,13 @@ function maybeJson(raw: string): unknown | undefined {
 }
 
 function isLikelyQuery(text: string): boolean {
-  const s = text.trim();
+  const s = stripPromptLead(text.trim());
   if (s.length < 3 || s.length > 2000) return false;
   if (/^\[reacted with\b/i.test(s)) return false;
   if (/^(sender|sender_id|message_id|chat_id|user_id)$/i.test(s)) return false;
+  if (/^system:\s*\[[^\]]+\]/i.test(s)) return false;
+  if (/^current time:/i.test(s)) return false;
+  if (/^(feishu|slack|telegram|discord|whatsapp|imessage|signal)\[[^\]]*\]\s*(dm|group|channel|\|)/i.test(s)) return false;
   if (isOpaqueIdentifier(s)) return false;
   return /[\u4e00-\u9fffA-Za-z]/.test(s);
 }
@@ -136,20 +160,29 @@ function stripInjectedBlocks(raw: string): string {
 function extractLikelyQuestionLine(raw: string): string {
   const lines = raw
     .split("\n")
-    .map((line) => line.trim())
+    .map((line) => stripPromptLead(line.trim()))
     .filter(Boolean)
     .filter((line) => isLikelyQuery(line));
   return lines.slice(-1)[0] ?? "";
 }
 
 function stripPromptLead(raw: string): string {
-  return raw
-    .replace(/^\[[^\]\n]{6,120}\]\s*/g, "")
-    .replace(/^system:\s*/i, "")
-    .replace(/^sender:\s*/i, "")
-    .replace(/^(feishu|slack|telegram|discord|whatsapp|imessage|signal)[^\n]*\|\s*/i, "")
-    .replace(/^current time:[^\n]*\n?/i, "")
-    .trim();
+  let current = raw.trim();
+  for (let i = 0; i < 4; i += 1) {
+    const next = current
+      .replace(/^(user|assistant|system)\s*:\s*/i, "")
+      .replace(/^system:\s*/i, "")
+      .replace(/^sender:\s*/i, "")
+      .replace(/^\[[^\]\n]{6,120}\]\s*/g, "")
+      .replace(/^(mon|tue|wed|thu|fri|sat|sun)\b[^,\n]{0,40},?\s+\d{4}-\d{2}-\d{2}[^,\n]{0,40}\s*/i, "")
+      .replace(/^(mon|tue|wed|thu|fri|sat|sun)\b[^\n]{0,80}gmt[+-]\d+\]?\s*/i, "")
+      .replace(/^(feishu|slack|telegram|discord|whatsapp|imessage|signal)[^\n]*\|\s*/i, "")
+      .replace(/^current time:[^\n]*\n?/i, "")
+      .trim();
+    if (next === current) break;
+    current = next;
+  }
+  return current;
 }
 
 export function splitRecallQueries(raw: string): string[] {
@@ -198,11 +231,13 @@ function dedupeMemories(items: MemuMemoryRecord[]): MemuMemoryRecord[] {
   return output;
 }
 
-function selectRelevantCoreMemories<T extends { score?: number }>(items: T[]): T[] {
+function selectRelevantCoreMemories<T extends { score?: number }>(items: T[], queryPartCount: number): T[] {
   if (items.length <= 1) return items;
   const topScore = items[0]?.score ?? 0;
   if (topScore <= 0) return items;
-  const threshold = Math.max(0.18, topScore * 0.35);
+  const threshold = queryPartCount <= 1
+    ? Math.max(0.45, topScore * 0.55)
+    : Math.max(0.18, topScore * 0.35);
   const filtered = items.filter((item, index) => index === 0 || (item.score ?? 0) >= threshold);
   return filtered.length > 0 ? filtered : items;
 }
@@ -234,6 +269,52 @@ function buildSessionInjectionKey(scope: MemoryScope, ctx: PluginHookContext): s
   return `${scope.sessionKey}::${sessionId || "session-unknown"}`;
 }
 
+function buildRelevantClusterKey(sessionKey: string, query: string): string {
+  const normalized = query
+    .toLowerCase()
+    .replace(/^(请只用一句中文回答[:：]?|请用一句中文回答[:：]?|请回答[:：]?|请问[:：]?)/, "")
+    .replace(/[?？!！。，、；;:："'`·()\[\]【】\s]+/g, "")
+    .replace(/用户|什么|多少|如何|怎么|请问|请|只用|一句|中文|回答|偏好|喜欢|爱好|主要|当前|现在|the|what|which|user|prefer|preference/gi, "");
+  const cluster = tokenizeSemanticQuery(normalized || query)
+    .map((token) => token.trim().toLowerCase())
+    .filter((token) => token.length >= 2)
+    .slice(0, 8)
+    .sort()
+    .join("|");
+  return `${sessionKey}::${cluster || normalized || query.trim().toLowerCase()}`;
+}
+
+function getSessionCoreCache(sessionKey: string): SessionCoreCacheEntry | null {
+  const entry = SESSION_CORE_CACHE.get(sessionKey);
+  if (!entry) return null;
+  if (Date.now() - entry.fetchedAt > SESSION_CORE_CACHE_TTL_MS) {
+    SESSION_CORE_CACHE.delete(sessionKey);
+    return null;
+  }
+  return entry;
+}
+
+function setSessionCoreCache(
+  sessionKey: string,
+  items: Array<{ id: string; category?: string; key: string; value: string; score?: number }>,
+): void {
+  SESSION_CORE_CACHE.set(sessionKey, { items, fetchedAt: Date.now() });
+}
+
+function getSessionRelevantCache(cacheKey: string): MemuMemoryRecord[] | null {
+  const entry = SESSION_RELEVANT_CACHE.get(cacheKey);
+  if (!entry) return null;
+  if (Date.now() - entry.storedAt > SESSION_RELEVANT_CACHE_TTL_MS) {
+    SESSION_RELEVANT_CACHE.delete(cacheKey);
+    return null;
+  }
+  return entry.items;
+}
+
+function setSessionRelevantCache(cacheKey: string, items: MemuMemoryRecord[]): void {
+  SESSION_RELEVANT_CACHE.set(cacheKey, { items, storedAt: Date.now() });
+}
+
 function rememberSessionInjection(key: string, signature: string): void {
   SESSION_INJECTION_CACHE.delete(key);
   SESSION_INJECTION_CACHE.set(key, { signature, timestamp: Date.now() });
@@ -246,6 +327,95 @@ function shouldSkipDuplicateSessionInjection(key: string, signature: string): bo
   const snapshot = SESSION_INJECTION_CACHE.get(key);
   if (!snapshot) return false;
   return snapshot.signature === signature;
+}
+
+function getSessionInjectedItems(key: string): SessionInjectedItems {
+  let entry = SESSION_INJECTED_ITEMS.get(key);
+  if (!entry) {
+    entry = { core: new Map<string, number>(), relevant: new Map<string, number>() };
+    SESSION_INJECTED_ITEMS.set(key, entry);
+  }
+  return entry;
+}
+
+function pruneExpiredInjectedItems(items: Map<string, number>, now: number): void {
+  for (const [itemKey, ts] of items) {
+    if (now - ts > SESSION_ITEM_RECENCY_MS) {
+      items.delete(itemKey);
+    }
+  }
+}
+
+function filterRecentlyInjectedCore<T extends { id: string }>(sessionKey: string, items: T[]): T[] {
+  const now = Date.now();
+  const state = getSessionInjectedItems(sessionKey);
+  pruneExpiredInjectedItems(state.core, now);
+  return items.filter((item) => !state.core.has(item.id));
+}
+
+function filterRecentlyInjectedRelevant(sessionKey: string, items: MemuMemoryRecord[]): MemuMemoryRecord[] {
+  const now = Date.now();
+  const state = getSessionInjectedItems(sessionKey);
+  pruneExpiredInjectedItems(state.relevant, now);
+  return items.filter((item) => {
+    const itemKey = item.id || item.text.trim();
+    return itemKey ? !state.relevant.has(itemKey) : true;
+  });
+}
+
+function rememberInjectedCore(sessionKey: string, items: Array<{ id: string }>): void {
+  const now = Date.now();
+  const state = getSessionInjectedItems(sessionKey);
+  for (const item of items) {
+    state.core.set(item.id, now);
+  }
+}
+
+function rememberInjectedRelevant(sessionKey: string, items: MemuMemoryRecord[]): void {
+  const now = Date.now();
+  const state = getSessionInjectedItems(sessionKey);
+  for (const item of items) {
+    const itemKey = item.id || item.text.trim();
+    if (itemKey) state.relevant.set(itemKey, now);
+  }
+}
+
+function buildCoreSnapshotSignature(
+  items: Array<{ id: string; category?: string; key: string; value: string }>,
+): string {
+  return items
+    .map((item) => `${item.id}|${item.category ?? ""}|${item.key}|${item.value}`)
+    .join("\n");
+}
+
+function scoreCoreCandidate(
+  searchQueries: string[],
+  item: { key: string; value: string; score?: number },
+): number {
+  if (searchQueries.length === 0) return item.score ?? 0;
+  return Math.max(
+    ...searchQueries.map((searchQuery) => {
+      const q = searchQuery
+        .trim()
+        .toLowerCase()
+        .replace(/[?？!！。，、；;:："'`·()\[\]【】\s]+/g, "")
+        .replace(/用户|什么|多少|如何|怎么|请问|请|只用|一句|中文|回答|谁|哪里|哪个|当前|主要|现在/gi, "");
+      if (!q) return 0;
+      const keyValue = `${item.key} ${item.value}`.toLowerCase();
+      const compact = keyValue.replace(/\s+/g, "");
+      if (compact.includes(q)) return 1;
+      const tokens = tokenizeSemanticQuery(q).filter((token) => token.trim().length >= 2);
+      const conceptBoost = genericConceptBoost(searchQuery, item.value);
+      if (tokens.length === 0) return conceptBoost;
+      let hits = 0;
+      for (const token of tokens) {
+        if (keyValue.includes(token.toLowerCase())) hits++;
+      }
+      const lexical = hits / tokens.length;
+      if (lexical === 0 && conceptBoost < 0.8) return 0;
+      return lexical + conceptBoost * 0.35;
+    }),
+  );
 }
 
 export function sanitizePromptQuery(raw: string): string {
@@ -329,8 +499,8 @@ export function createRecallHook(
       query = sanitizePromptQuery(query);
     }
 
-    if (!query) query = sanitizePromptQuery(promptRaw);
-    if (!query || query.length < 3) return;
+  if (!query) query = sanitizePromptQuery(promptRaw);
+  if (!query || query.length < 3) return;
     const recallQueries = splitRecallQueries(query);
     const searchQueries = recallQueries.length > 0 ? recallQueries : [query];
 
@@ -339,15 +509,22 @@ export function createRecallHook(
 
     try {
       const scope = buildDynamicScope(config.scope, ctx);
+      const injectionKey = buildSessionInjectionKey(scope, ctx);
       let memoryContext = "";
       let filteredMemories: MemuMemoryRecord[] = [];
       if (config.recall.enabled) {
         const cacheKey = LRUCache.buildCacheKey(`${primaryBackend.provider}\0${searchQueries.join("\u241f")}`, scope.sessionKey, config.recall.topK);
         const cached = cache.get(cacheKey);
+        const relevantClusterKey = buildRelevantClusterKey(injectionKey, query);
+        const cachedRelevantSelection = getSessionRelevantCache(relevantClusterKey);
 
         let memories: MemuMemoryRecord[];
         const searchLimit = Math.min(Math.max(config.recall.topK * 3, config.recall.topK + 2), 12);
-        if (cached) {
+        if (cachedRelevantSelection) {
+          memories = cachedRelevantSelection;
+          metrics.recallHits++;
+          logger.info(`recall-hook: relevant session-cache hit key=${relevantClusterKey} count=${memories.length}`);
+        } else if (cached) {
           memories = cached;
           metrics.recallHits++;
           logger.info(`recall-hook: cache hit key=${cacheKey} count=${memories.length}`);
@@ -393,7 +570,8 @@ export function createRecallHook(
 
         filteredMemories = memories.filter((m) => m.score === undefined || m.score >= config.recall.scoreThreshold);
         const workspaceDir = config.recall.workspaceFallback ? resolveWorkspaceDir(scope.agentId, ctx.workspaceDir) : "";
-        if (workspaceDir && config.recall.workspaceFallback) {
+        const needsWorkspaceFallback = filteredMemories.length < Math.min(config.recall.topK, 2);
+        if (workspaceDir && config.recall.workspaceFallback && needsWorkspaceFallback) {
           const workspaceFacts = await searchWorkspaceFacts(query, scope, workspaceDir, {
             maxItems: config.recall.workspaceFallbackMaxItems,
             maxFiles: config.recall.workspaceFallbackMaxFiles,
@@ -403,41 +581,62 @@ export function createRecallHook(
             filteredMemories = rerankMemoryResults(query, [...filteredMemories, ...workspaceFacts]).slice(0, config.recall.topK);
           }
         }
+        if (filteredMemories.length > 0) {
+          setSessionRelevantCache(relevantClusterKey, filteredMemories);
+        }
       }
 
       let coreContext = "";
       let coreMemories: Array<{ id: string; category?: string; key: string; value: string; score?: number }> = [];
       let coreMemoriesForTouch: Array<{ id: string; category?: string; key: string; value: string }> = [];
       if (config.core.enabled) {
-        const coreCandidates = await Promise.all(
-          searchQueries.map((searchQuery) =>
-            coreRepo.list(scope, {
-              query: searchQuery,
-              limit: config.core.topK,
-            }),
-          ),
-        );
+        const cachedCore = getSessionCoreCache(injectionKey);
+        let corePool: Array<{ id: string; category?: string; key: string; value: string; score?: number }>;
+        if (cachedCore) {
+          corePool = cachedCore.items.map((item) => ({
+            ...item,
+            score: scoreCoreCandidate(searchQueries, item),
+          }));
+        } else {
+          const coreCandidates = await coreRepo.list(scope, {
+            limit: Math.max(config.core.topK * 5, 50),
+          });
+          setSessionCoreCache(injectionKey, coreCandidates);
+          corePool = coreCandidates.map((item) => ({
+            id: item.id,
+            category: item.category,
+            key: item.key,
+            value: item.value,
+            score: scoreCoreCandidate(searchQueries, item),
+          }));
+        }
         coreMemories = selectRelevantCoreMemories(
-          dedupeCoreMemories(coreCandidates.flat()).slice(0, Math.max(config.core.topK * 2, config.core.topK)),
+          dedupeCoreMemories(corePool).slice(0, Math.max(config.core.topK * 2, config.core.topK)),
+          searchQueries.length,
         );
+        coreMemories = filterRecentlyInjectedCore(injectionKey, coreMemories);
         logger.info(`recall-hook: scope user=${scope.userId} agent=${scope.agentId} core=${coreMemories.length}`);
         coreMemoriesForTouch = coreMemories.map((m) => ({ id: m.id, category: m.category, key: m.key, value: m.value }));
         coreContext = formatCoreMemoriesContext(coreMemories);
       }
 
       if (filteredMemories.length > 0 && !shouldSuppressRelevantMemories(coreMemories, searchQueries.length)) {
+        filteredMemories = filterRecentlyInjectedRelevant(injectionKey, filteredMemories);
         memoryContext = formatMemoriesContext(filteredMemories);
       }
 
       metrics.recordRecallLatency(Date.now() - start);
       const injected = applyInjectionBudget([coreContext, memoryContext], config.recall.injectionBudgetChars);
       if (!injected) return;
-      const injectionKey = buildSessionInjectionKey(scope, ctx);
-      if (shouldSkipDuplicateSessionInjection(injectionKey, injected)) {
+      const coreSignature = buildCoreSnapshotSignature(coreMemoriesForTouch);
+      const shouldSkipByBlock = !memoryContext && shouldSkipDuplicateSessionInjection(injectionKey, coreSignature);
+      if (shouldSkipByBlock) {
         logger.info(`recall-hook: skip duplicate injection session=${scope.sessionKey}`);
         return;
       }
-      rememberSessionInjection(injectionKey, injected);
+      rememberSessionInjection(injectionKey, coreSignature || injected);
+      if (coreMemories.length > 0) rememberInjectedCore(injectionKey, coreMemories);
+      if (filteredMemories.length > 0) rememberInjectedRelevant(injectionKey, filteredMemories);
       if (config.core.enabled && config.core.touchOnRecall && coreMemoriesForTouch.length > 0) {
         const injectedIds = coreMemoriesForTouch
           .filter((m) => {
