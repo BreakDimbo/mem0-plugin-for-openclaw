@@ -248,20 +248,45 @@ function inferQueryIntent(query: string, queryPartCount: number): QueryIntent {
   const configLike = /\b(timeout|p95|classifier|route|router|embedding|dim|dimension|cost|cbreset|retrieve|search)\b|层数|架构|参数|配置|超时|维度|费用|分类器|路由/.test(normalized);
   const compact = normalized.replace(/\s+/g, "");
   const categoryHints = new Set<string>();
-  if (/(名字|姓名|时区|职业|工作|人格|性格|mbti|身份|来自|timezone|name|role|job|personality|profile)/.test(compact)) {
+  if (/(名字|姓名|时区|人格|性格|mbti|身份|来自|timezone|name|personality|profile)/.test(compact)) {
+    // both legacy "identity" and FreeTextMemoryKind "profile" may appear as stored categories
     categoryHints.add("identity");
+    categoryHints.add("profile");
+  }
+  if (/(工作内容|职业背景|全职工作|岗位|公司角色|job|career|employer|fulltime)/.test(compact)) {
+    categoryHints.add("work");
   }
   if (/(偏好|喜欢|更喜欢|讨厌|表达方式|沟通方式|沟通风格|口味|drink|prefer|preference|style|expression)/.test(compact)) {
+    // both legacy "preferences" and FreeTextMemoryKind "preference"
     categoryHints.add("preferences");
+    categoryHints.add("preference");
   }
-  if (/(目标|探索|方向|计划|想做|goal|exploration|roadmap)/.test(compact)) {
+  if (/(目标|探索|方向|计划|想做|项目|goal|exploration|roadmap|project)/.test(compact)) {
     categoryHints.add("goals");
+    categoryHints.add("project");
   }
   if (/(原则|规则|约束|默认要求|确认|隐私|禁止|必须|constraint|privacy|rule|approval)/.test(compact)) {
     categoryHints.add("constraints");
+    categoryHints.add("constraint");
   }
   if (/(爱人|伴侣|朋友|同事|关系|partner|wife|husband|relationship)/.test(compact)) {
     categoryHints.add("relationships");
+    categoryHints.add("relationship");
+  }
+  if (/(配置|参数|模型|embedding|检索|路由|分类器|延迟|成本|超时|维度|config|setting|model|router|classifier|latency|cost|timeout|dimension)/.test(compact)) {
+    categoryHints.add("technical");
+  }
+  if (/(决策|取舍|为什么采用|为什么关闭|为什么开启|decision|tradeoff)/.test(compact)) {
+    categoryHints.add("decision");
+  }
+  if (/(架构|分层|管线|存储模型|记忆架构|architecture|layer|pipeline)/.test(compact)) {
+    categoryHints.add("architecture");
+  }
+  if (/(经验|教训|复盘|启发|lesson|takeaway|retrospective)/.test(compact)) {
+    categoryHints.add("lesson");
+  }
+  if (/(基准|延迟|吞吐|成本|费用|benchmark|p95|latency|throughput|pricing)/.test(compact)) {
+    categoryHints.add("benchmark");
   }
   if (categoryHints.size === 0) categoryHints.add("general");
   return { singleFact, configLike, categoryHints: Array.from(categoryHints) };
@@ -326,10 +351,8 @@ function buildSearchTerms(text: string): string[] {
   }
   for (const chunk of normalized.match(/[\u4e00-\u9fff]{2,}/g) ?? []) {
     tokens.add(chunk);
-    for (let size = 2; size <= Math.min(3, chunk.length); size += 1) {
-      for (let i = 0; i <= chunk.length - size; i += 1) {
-        tokens.add(chunk.slice(i, i + size));
-      }
+    for (let i = 0; i <= chunk.length - 2; i += 1) {
+      tokens.add(chunk.slice(i, i + 2));
     }
   }
 
@@ -391,9 +414,11 @@ function shouldSuppressRelevantMemories(
 ): boolean {
   if (coreMemories.length === 0) return false;
   const topScore = coreMemories[0]?.score ?? 0;
-  if (intent.singleFact && topScore >= 0.58) return true;
+  // configLike queries benefit most from precise core data; suppress at a lower threshold
+  if (intent.configLike && topScore >= 0.55) return true;
   if (topScore < 0.6) return false;
-  if (intent.configLike && topScore >= 0.48) return true;
+  // singleFact: require higher confidence before discarding semantic recall results
+  if (intent.singleFact && topScore >= 0.70) return true;
   if (queryPartCount <= 1) return true;
   return coreMemories.length >= queryPartCount;
 }
@@ -498,16 +523,16 @@ function trimCoreForInjection<T extends { score?: number }>(items: T[], intent: 
   const topScore = items[0]?.score ?? 0;
   const secondScore = items[1]?.score ?? 0;
   const maxItems = intent.singleFact
-    ? ((topScore >= 1.2 && topScore - secondScore >= 0.5) ? 1 : 2)
-    : Math.min(2, Math.max(1, topK));
+    ? ((topScore >= 1.2 && topScore - secondScore >= 0.5) ? 1 : Math.min(2, topK))
+    : Math.min(topK, 4);
   if (queryPartCount > 1) return items.slice(0, Math.min(maxItems + 1, items.length));
   return items.slice(0, maxItems);
 }
 
 function trimRelevantForInjection(items: MemuMemoryRecord[], intent: QueryIntent, queryPartCount: number, topK: number): MemuMemoryRecord[] {
   if (items.length === 0) return items;
-  const maxItems = intent.singleFact ? 1 : Math.min(2, Math.max(1, topK));
   if (intent.configLike) return items.slice(0, 1);
+  const maxItems = Math.min(2, Math.max(1, topK));
   if (queryPartCount > 1) return items.slice(0, Math.min(maxItems + 1, items.length));
   return items.slice(0, maxItems);
 }
@@ -702,7 +727,7 @@ export function createRecallHook(
         const injectedIds = coreMemories
           .filter((m) => {
             const tag = m.category ? `${escapeForInjection(m.category)}/${escapeForInjection(m.key)}` : escapeForInjection(m.key);
-            return injected.includes(`[${tag}] ${escapeForInjection(m.value)}`);
+            return injected.includes(`候选答案 [${tag}]：${escapeForInjection(m.value)}`);
           })
           .map((m) => m.id);
         if (injectedIds.length > 0) {

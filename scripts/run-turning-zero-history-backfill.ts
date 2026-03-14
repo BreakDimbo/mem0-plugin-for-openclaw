@@ -46,7 +46,7 @@ async function main() {
     });
     const ok = await withTimeout(
       backend.store(fact.text, scope, { metadata }),
-      25_000,
+      60_000,
       `store timeout for ${fact.id}`,
     );
     seedResults.push({ id: fact.id, ok });
