@@ -4,15 +4,16 @@
 // Aligned with §10.1, §13 scope-aware cache keys
 // ============================================================================
 
-import type { MemUAdapter } from "../adapter.js";
 import { LRUCache } from "../cache.js";
 import type { Metrics } from "../metrics.js";
 import type { MemuPluginConfig, MemuMemoryRecord, PluginHookContext } from "../types.js";
 import { buildDynamicScope } from "../types.js";
 import { formatMemoriesContext } from "../security.js";
+import type { FreeTextBackend } from "../backends/free-text/base.js";
 
 export function createRecallTool(
-  adapter: MemUAdapter,
+  primaryBackend: FreeTextBackend,
+  fallbackBackend: FreeTextBackend | null,
   cache: LRUCache<MemuMemoryRecord[]>,
   config: MemuPluginConfig,
   metrics: Metrics,
@@ -38,7 +39,7 @@ export function createRecallTool(
         const scope = buildDynamicScope(config.scope, toolCtx);
         const limit = args.limit ?? config.recall.topK;
         const cacheKey = LRUCache.buildCacheKey(
-          args.query + (args.category ? `\0${args.category}` : ""),
+          `${primaryBackend.provider}\0${args.query}${args.category ? `\0${args.category}` : ""}`,
           scope.sessionKey,
           limit,
         );
@@ -47,11 +48,19 @@ export function createRecallTool(
         if (memories) {
           metrics.recallHits++;
         } else {
-          memories = await adapter.recall(args.query, scope, {
+          memories = await primaryBackend.search(args.query, scope, {
             maxItems: limit,
             maxContextChars: config.recall.maxContextChars,
             category: args.category,
+            includeSessionScope: config.backend.freeText.provider === "mem0",
           });
+          if (memories.length === 0 && fallbackBackend) {
+            memories = await fallbackBackend.search(args.query, scope, {
+              maxItems: limit,
+              maxContextChars: config.recall.maxContextChars,
+              category: args.category,
+            });
+          }
           metrics.recallMisses++;
           if (memories.length > 0) {
             cache.set(cacheKey, memories);

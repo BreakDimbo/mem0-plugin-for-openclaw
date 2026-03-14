@@ -3,12 +3,12 @@
 // Run with: npx tsx tests/outbox.test.ts
 // ============================================================================
 
-import type { MemUAdapter } from "../adapter.js";
 import { OutboxWorker } from "../outbox.js";
 import type { MemoryScope } from "../types.js";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import type { FreeTextBackend } from "../backends/free-text/base.js";
 
 type TestResult = { name: string; passed: boolean; error?: string };
 const results: TestResult[] = [];
@@ -32,15 +32,16 @@ function assertEqual(a: unknown, b: unknown, msg: string): void {
   if (a !== b) throw new Error(`${msg}: expected ${JSON.stringify(b)}, got ${JSON.stringify(a)}`);
 }
 
-// Mock adapter
-function createMockAdapter(shouldSucceed = true): MemUAdapter {
+// Mock backend
+function createMockBackend(shouldSucceed = true): FreeTextBackend {
   return {
-    memorize: async () => shouldSucceed,
-    recall: async () => [],
+    provider: "mock",
+    healthCheck: async () => ({ provider: "mock", healthy: true }),
+    store: async () => shouldSucceed,
+    search: async () => [],
     forget: async () => null,
-    listCategories: async () => [],
-    getDefaultScope: () => ({ userId: "test", agentId: "test", sessionKey: "test" }),
-  } as unknown as MemUAdapter;
+    list: async () => [],
+  };
 }
 
 const testLogger = {
@@ -57,7 +58,7 @@ const testScope: MemoryScope = {
 console.log("\nOutbox Worker Tests\n");
 
 await test("enqueue adds items", async () => {
-  const outbox = new OutboxWorker(createMockAdapter(), testLogger, {
+  const outbox = new OutboxWorker(createMockBackend(), testLogger, {
     concurrency: 2,
     batchSize: 10,
     maxRetries: 3,
@@ -69,7 +70,7 @@ await test("enqueue adds items", async () => {
 });
 
 await test("dedup prevents duplicate enqueue", async () => {
-  const outbox = new OutboxWorker(createMockAdapter(), testLogger, {
+  const outbox = new OutboxWorker(createMockBackend(), testLogger, {
     concurrency: 2,
     batchSize: 10,
     maxRetries: 3,
@@ -82,7 +83,7 @@ await test("dedup prevents duplicate enqueue", async () => {
 });
 
 await test("flush sends items successfully", async () => {
-  const outbox = new OutboxWorker(createMockAdapter(true), testLogger, {
+  const outbox = new OutboxWorker(createMockBackend(true), testLogger, {
     concurrency: 2,
     batchSize: 10,
     maxRetries: 3,
@@ -96,7 +97,7 @@ await test("flush sends items successfully", async () => {
 });
 
 await test("flush retries on failure", async () => {
-  const outbox = new OutboxWorker(createMockAdapter(false), testLogger, {
+  const outbox = new OutboxWorker(createMockBackend(false), testLogger, {
     concurrency: 2,
     batchSize: 10,
     maxRetries: 3,
@@ -110,7 +111,7 @@ await test("flush retries on failure", async () => {
 });
 
 await test("items move to dead-letter after max retries", async () => {
-  const outbox = new OutboxWorker(createMockAdapter(false), testLogger, {
+  const outbox = new OutboxWorker(createMockBackend(false), testLogger, {
     concurrency: 2,
     batchSize: 10,
     maxRetries: 1,
@@ -125,7 +126,7 @@ await test("items move to dead-letter after max retries", async () => {
 });
 
 await test("drain processes all items", async () => {
-  const outbox = new OutboxWorker(createMockAdapter(true), testLogger, {
+  const outbox = new OutboxWorker(createMockBackend(true), testLogger, {
     concurrency: 2,
     batchSize: 10,
     maxRetries: 3,
@@ -137,6 +138,48 @@ await test("drain processes all items", async () => {
   await outbox.drain(5000);
   assertEqual(outbox.pending, 0, "all drained");
   assertEqual(outbox.sent, 2, "both sent");
+});
+
+await test("secondary backend failure does not block primary success", async () => {
+  let primaryCalls = 0;
+  let secondaryCalls = 0;
+  const primary: FreeTextBackend = {
+    provider: "primary",
+    healthCheck: async () => ({ provider: "primary", healthy: true }),
+    store: async () => {
+      primaryCalls++;
+      return true;
+    },
+    search: async () => [],
+    forget: async () => null,
+    list: async () => [],
+  };
+  const secondary: FreeTextBackend = {
+    provider: "secondary",
+    healthCheck: async () => ({ provider: "secondary", healthy: false }),
+    store: async () => {
+      secondaryCalls++;
+      return false;
+    },
+    search: async () => [],
+    forget: async () => null,
+    list: async () => [],
+  };
+
+  const outbox = new OutboxWorker(primary, testLogger, {
+    concurrency: 2,
+    batchSize: 10,
+    maxRetries: 3,
+    persistPath: "",
+    secondaryBackend: secondary,
+  });
+
+  outbox.enqueue("dual write test", testScope);
+  await outbox.flush();
+  assertEqual(outbox.pending, 0, "primary success should clear queue");
+  assertEqual(outbox.sent, 1, "primary success should count as sent");
+  assertEqual(primaryCalls, 1, "primary store calls");
+  assertEqual(secondaryCalls, 1, "secondary store calls");
 });
 
 await test("start loads pending items from disk and flushes them", async () => {
@@ -157,7 +200,7 @@ await test("start loads pending items from disk and flushes them", async () => {
     "utf-8",
   );
 
-  const outbox = new OutboxWorker(createMockAdapter(true), testLogger, {
+  const outbox = new OutboxWorker(createMockBackend(true), testLogger, {
     concurrency: 2,
     batchSize: 10,
     maxRetries: 3,
@@ -192,7 +235,7 @@ await test("load merges legacy shard queue files", async () => {
     "utf-8",
   );
 
-  const outbox = new OutboxWorker(createMockAdapter(true), testLogger, {
+  const outbox = new OutboxWorker(createMockBackend(true), testLogger, {
     concurrency: 2,
     batchSize: 10,
     maxRetries: 3,

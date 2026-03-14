@@ -3,12 +3,12 @@
 // Aligned with §10.3: supports memoryId or query-based deletion
 // ============================================================================
 
-import type { MemUAdapter } from "../adapter.js";
 import type { MemuPluginConfig, PluginHookContext } from "../types.js";
 import { buildDynamicScope } from "../types.js";
 import { audit } from "../security.js";
+import type { FreeTextBackend } from "../backends/free-text/base.js";
 
-export function createForgetTool(adapter: MemUAdapter, config: MemuPluginConfig, toolCtx?: PluginHookContext) {
+export function createForgetTool(backend: FreeTextBackend, config: MemuPluginConfig, toolCtx?: PluginHookContext) {
   return {
     name: "memory_forget",
     description:
@@ -49,10 +49,7 @@ export function createForgetTool(adapter: MemUAdapter, config: MemuPluginConfig,
         };
       }
 
-      const result = await adapter.forget({
-        userId: scope.userId,
-        agentId: scope.agentId,
-      });
+      const result = await backend.forget(scope, { query: args.query });
 
       if (!result) {
         return { text: "Failed to clear memories. The memU server may be unavailable." };

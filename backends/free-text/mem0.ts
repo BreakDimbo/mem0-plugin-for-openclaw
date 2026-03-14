@@ -1,0 +1,280 @@
+import { pathToFileURL } from "node:url";
+import type { MemoryScope, MemuMemoryRecord, MemuPluginConfig } from "../../types.js";
+import type { FreeTextBackend, FreeTextBackendStatus, FreeTextForgetOptions, FreeTextSearchOptions, FreeTextStoreOptions } from "./base.js";
+
+type Logger = { info(msg: string): void; warn(msg: string): void };
+
+type Mem0SearchItem = {
+  id?: string;
+  memory?: string;
+  score?: number;
+  categories?: string[];
+  metadata?: Record<string, unknown>;
+  created_at?: string;
+  updated_at?: string;
+};
+
+type Mem0Provider = {
+  add(messages: Array<{ role: string; content: string }>, options: Record<string, unknown>): Promise<{ results?: Array<{ id?: string; event?: string }> }>;
+  search(query: string, options: Record<string, unknown>): Promise<Mem0SearchItem[] | { results?: Mem0SearchItem[] }>;
+  getAll(options: Record<string, unknown>): Promise<Mem0SearchItem[] | { results?: Mem0SearchItem[] }>;
+  delete(memoryId: string): Promise<void>;
+};
+
+type Mem0ProviderFactory = () => Promise<Mem0Provider>;
+
+function toPathHref(path: string): string {
+  return pathToFileURL(path).href;
+}
+
+function normalizeArray<T>(value: T[] | { results?: T[] } | null | undefined): T[] {
+  if (Array.isArray(value)) return value;
+  if (Array.isArray(value?.results)) return value.results;
+  return [];
+}
+
+export function effectiveUserId(scope: MemoryScope): string {
+  if (!scope.agentId || scope.agentId === "main") return scope.userId;
+  return `${scope.userId}:agent:${scope.agentId}`;
+}
+
+export class Mem0FreeTextBackend implements FreeTextBackend {
+  readonly provider = "mem0";
+  private loadedProvider: Mem0Provider | null = null;
+  private initPromise: Promise<Mem0Provider> | null = null;
+
+  constructor(
+    private readonly config: MemuPluginConfig,
+    private readonly logger: Logger,
+    private readonly providerFactory?: Mem0ProviderFactory,
+  ) {}
+
+  private async createProvider(): Promise<Mem0Provider> {
+    const cfg = this.config.mem0;
+    if (cfg.mode === "platform") {
+      const imported = await import("mem0ai");
+      const ClientCtor = (imported as Record<string, unknown>).default as new (opts: Record<string, unknown>) => any;
+      const client = new ClientCtor({
+        apiKey: cfg.apiKey,
+        ...(cfg.orgId ? { org_id: cfg.orgId } : {}),
+        ...(cfg.projectId ? { project_id: cfg.projectId } : {}),
+      });
+      return {
+        add: (messages, options) => client.add(messages, options),
+        search: async (query, options) => normalizeArray(await client.search(query, options)),
+        getAll: async (options) => normalizeArray(await client.getAll(options)),
+        delete: (memoryId) => client.delete(memoryId),
+      };
+    }
+
+    try {
+      const imported = await import("mem0ai/oss");
+      const MemoryCtor = (imported as Record<string, unknown>).Memory as new (cfg: Record<string, unknown>) => any;
+      const memory = new MemoryCtor({
+        version: "v1.1",
+        ...(cfg.oss?.embedder ? { embedder: cfg.oss.embedder } : {}),
+        ...(cfg.oss?.vectorStore ? { vectorStore: cfg.oss.vectorStore } : {}),
+        ...(cfg.oss?.llm ? { llm: cfg.oss.llm } : {}),
+        ...(cfg.oss?.historyDbPath ? { historyDbPath: cfg.oss.historyDbPath } : {}),
+        ...(cfg.customPrompt ? { customPrompt: cfg.customPrompt } : {}),
+      });
+      return {
+        add: (messages, options) => memory.add(messages, options),
+        search: async (query, options) => normalizeArray(await memory.search(query, options)),
+        getAll: async (options) => normalizeArray(await memory.getAll(options)),
+        delete: (memoryId) => memory.delete(memoryId),
+      };
+    } catch (err) {
+      // Helpful fallback for local-source setups when mem0ai isn't installed as a package.
+      const localOssEntry = "~/Project/github/mem0ai/mem0/mem0-ts/src/oss/src/index.ts";
+      const imported = await import(toPathHref(localOssEntry));
+      const MemoryCtor = (imported as Record<string, unknown>).Memory as new (cfg: Record<string, unknown>) => any;
+      const memory = new MemoryCtor({
+        version: "v1.1",
+        ...(cfg.oss?.embedder ? { embedder: cfg.oss.embedder } : {}),
+        ...(cfg.oss?.vectorStore ? { vectorStore: cfg.oss.vectorStore } : {}),
+        ...(cfg.oss?.llm ? { llm: cfg.oss.llm } : {}),
+        ...(cfg.oss?.historyDbPath ? { historyDbPath: cfg.oss.historyDbPath } : {}),
+        ...(cfg.customPrompt ? { customPrompt: cfg.customPrompt } : {}),
+      });
+      this.logger.info(`mem0-backend: loaded OSS Memory from local source after package import failed: ${String(err)}`);
+      return {
+        add: (messages, options) => memory.add(messages, options),
+        search: async (query, options) => normalizeArray(await memory.search(query, options)),
+        getAll: async (options) => normalizeArray(await memory.getAll(options)),
+        delete: (memoryId) => memory.delete(memoryId),
+      };
+    }
+  }
+
+  private async providerInstance(): Promise<Mem0Provider> {
+    if (this.loadedProvider) return this.loadedProvider;
+    if (!this.initPromise) {
+      this.initPromise = (this.providerFactory ? this.providerFactory() : this.createProvider()).then((provider) => {
+        this.loadedProvider = provider;
+        return provider;
+      });
+    }
+    return this.initPromise;
+  }
+
+  private buildBaseMetadata(scope: MemoryScope, captureKind?: string, extra?: Record<string, unknown>): Record<string, unknown> {
+    return {
+      scope_user_id: scope.userId,
+      scope_agent_id: scope.agentId,
+      scope_session_key: scope.sessionKey,
+      source: "memory-memu",
+      content_kind: "free-text",
+      ...(captureKind ? { capture_kind: captureKind } : {}),
+      ...(extra ?? {}),
+    };
+  }
+
+  private normalizeSearchResults(items: Mem0SearchItem[], scope: MemoryScope): MemuMemoryRecord[] {
+    return items
+      .map((item) => ({
+        id: item.id,
+        text: item.memory ?? "",
+        category: Array.isArray(item.categories) && item.categories[0] ? item.categories[0] : "mem0",
+        score: item.score,
+        source: "memu_item" as const,
+        scope,
+        metadata: item.metadata,
+        createdAt: item.created_at ? Date.parse(item.created_at) : undefined,
+      }))
+      .filter((item) => item.text.trim().length > 0);
+  }
+
+  async healthCheck(): Promise<FreeTextBackendStatus> {
+    try {
+      await this.providerInstance();
+      return {
+        provider: this.provider,
+        mode: this.config.mem0.mode,
+        healthy: true,
+        detail: "mem0 backend initialized",
+      };
+    } catch (err) {
+      return {
+        provider: this.provider,
+        mode: this.config.mem0.mode,
+        healthy: false,
+        detail: String(err),
+      };
+    }
+  }
+
+  async store(text: string, scope: MemoryScope, options?: FreeTextStoreOptions): Promise<boolean> {
+    try {
+      const provider = await this.providerInstance();
+      const effectiveUid = effectiveUserId(scope);
+      const messages = [{ role: "user", content: text }];
+      const metadata = this.buildBaseMetadata(scope, String(options?.metadata?.capture_kind ?? ""), options?.metadata);
+      const addOptions: Record<string, unknown> = this.config.mem0.mode === "open-source"
+        ? {
+            userId: effectiveUid,
+            ...(options?.sessionScoped ? { runId: scope.sessionKey } : {}),
+            metadata,
+          }
+        : {
+            user_id: effectiveUid,
+            ...(options?.sessionScoped ? { run_id: scope.sessionKey } : {}),
+            metadata,
+            ...(this.config.mem0.customInstructions ? { custom_instructions: this.config.mem0.customInstructions } : {}),
+            ...(this.config.mem0.enableGraph ? { enable_graph: true } : {}),
+            output_format: "v1.1",
+          };
+      const result = await provider.add(messages, addOptions);
+      return Array.isArray(result?.results) ? result.results.length >= 0 : true;
+    } catch (err) {
+      this.logger.warn(`mem0-backend: store failed: ${String(err)}`);
+      return false;
+    }
+  }
+
+  async search(query: string, scope: MemoryScope, options?: FreeTextSearchOptions): Promise<MemuMemoryRecord[]> {
+    try {
+      const provider = await this.providerInstance();
+      const effectiveUid = effectiveUserId(scope);
+      const longTermOptions: Record<string, unknown> = this.config.mem0.mode === "open-source"
+        ? {
+            userId: effectiveUid,
+            limit: options?.maxItems ?? this.config.mem0.topK,
+            threshold: this.config.mem0.searchThreshold,
+          }
+        : {
+            api_version: "v2",
+            filters: { user_id: effectiveUid },
+            top_k: options?.maxItems ?? this.config.mem0.topK,
+            threshold: this.config.mem0.searchThreshold,
+            keyword_search: true,
+            rerank: true,
+          };
+      const sessionOptions: Record<string, unknown> = this.config.mem0.mode === "open-source"
+        ? {
+            userId: effectiveUid,
+            runId: scope.sessionKey,
+            limit: options?.maxItems ?? this.config.mem0.topK,
+            threshold: this.config.mem0.searchThreshold,
+          }
+        : {
+            api_version: "v2",
+            filters: { user_id: effectiveUid, run_id: scope.sessionKey },
+            top_k: options?.maxItems ?? this.config.mem0.topK,
+            threshold: this.config.mem0.searchThreshold,
+            keyword_search: true,
+            rerank: true,
+          };
+
+      const longTerm = this.normalizeSearchResults(normalizeArray(await provider.search(query, longTermOptions)), scope);
+      if (!options?.includeSessionScope) {
+        return longTerm.slice(0, options?.maxItems ?? longTerm.length);
+      }
+      const session = this.normalizeSearchResults(normalizeArray(await provider.search(query, sessionOptions)), scope);
+      const seen = new Set(longTerm.map((item) => item.id ?? item.text));
+      const combined = [...longTerm, ...session.filter((item) => !seen.has(item.id ?? item.text))];
+      return combined.slice(0, options?.maxItems ?? combined.length);
+    } catch (err) {
+      this.logger.warn(`mem0-backend: search failed: ${String(err)}`);
+      return [];
+    }
+  }
+
+  async list(scope: MemoryScope, options?: { limit?: number; includeSessionScope?: boolean }): Promise<MemuMemoryRecord[]> {
+    try {
+      const provider = await this.providerInstance();
+      const effectiveUid = effectiveUserId(scope);
+      const longTermOptions: Record<string, unknown> = this.config.mem0.mode === "open-source"
+        ? { userId: effectiveUid }
+        : { user_id: effectiveUid, page_size: options?.limit ?? 50 };
+      const sessionOptions: Record<string, unknown> = this.config.mem0.mode === "open-source"
+        ? { userId: effectiveUid, runId: scope.sessionKey }
+        : { user_id: effectiveUid, run_id: scope.sessionKey, page_size: options?.limit ?? 50 };
+      const longTerm = this.normalizeSearchResults(normalizeArray(await provider.getAll(longTermOptions)), scope);
+      if (!options?.includeSessionScope) {
+        return longTerm.slice(0, options?.limit ?? longTerm.length);
+      }
+      const session = this.normalizeSearchResults(normalizeArray(await provider.getAll(sessionOptions)), scope);
+      const seen = new Set(longTerm.map((item) => item.id ?? item.text));
+      return [...longTerm, ...session.filter((item) => !seen.has(item.id ?? item.text))].slice(0, options?.limit ?? Number.MAX_SAFE_INTEGER);
+    } catch (err) {
+      this.logger.warn(`mem0-backend: list failed: ${String(err)}`);
+      return [];
+    }
+  }
+
+  async forget(scope: MemoryScope, options?: FreeTextForgetOptions) {
+    try {
+      const provider = await this.providerInstance();
+      if (options?.memoryId) {
+        await provider.delete(options.memoryId);
+        return { purged_categories: 0, purged_items: 1, purged_resources: 0 };
+      }
+      // OSS/platform delete_all semantics differ; keep Phase 1 conservative.
+      return null;
+    } catch (err) {
+      this.logger.warn(`mem0-backend: forget failed: ${String(err)}`);
+      return null;
+    }
+  }
+}

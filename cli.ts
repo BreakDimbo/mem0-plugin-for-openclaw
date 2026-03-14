@@ -4,7 +4,6 @@
 // ============================================================================
 
 import type { MemUClient } from "./client.js";
-import type { MemUAdapter } from "./adapter.js";
 import type { LRUCache } from "./cache.js";
 import type { OutboxWorker } from "./outbox.js";
 import type { Metrics } from "./metrics.js";
@@ -14,6 +13,7 @@ import type { CoreProposalQueue } from "./core-proposals.js";
 import type { MemuPluginConfig, MemuMemoryRecord, PluginHookContext } from "./types.js";
 import { buildDynamicScope } from "./types.js";
 import { formatMemoriesContext, getAuditLog } from "./security.js";
+import type { FreeTextBackend } from "./backends/free-text/base.js";
 
 function inferPeerKindFromId(id: string): "direct" | "group" | "channel" {
   const raw = id.trim().toLowerCase();
@@ -75,7 +75,8 @@ function parseCoreRef(raw: string | undefined): { id?: string; key?: string } {
 
 export function createMemuCommand(
   client: MemUClient,
-  adapter: MemUAdapter,
+  primaryBackend: FreeTextBackend,
+  fallbackBackend: FreeTextBackend | null,
   coreRepo: CoreMemoryRepository,
   proposalQueue: CoreProposalQueue,
   cache: LRUCache<MemuMemoryRecord[]>,
@@ -122,6 +123,8 @@ export function createMemuCommand(
 
       if (action === "status") {
         const healthy = await client.healthCheck();
+        const backendStatus = await primaryBackend.healthCheck();
+        const fallbackStatus = fallbackBackend ? await fallbackBackend.healthCheck() : null;
         const recentOutbox = outbox.recent
           .slice(-5)
           .map((event) => {
@@ -142,6 +145,13 @@ export function createMemuCommand(
           `  Server:          ${config.memu.baseUrl}`,
           `  Status:          ${healthy ? "Online" : "OFFLINE"}`,
           `  Circuit Breaker: ${client.circuitState} (failures: ${client.failCount})`,
+          "",
+          "Free-text Backend:",
+          `  Primary:         ${backendStatus.provider} (${backendStatus.healthy ? "Online" : "OFFLINE"})`,
+          `  Dual Write:      ${config.backend.freeText.dualWrite ? "enabled" : "disabled"}`,
+          `  Read Fallback:   ${config.backend.freeText.readFallback}`,
+          `  Compare Recall:  ${config.backend.freeText.compareRecall ? "enabled" : "disabled"}`,
+          ...(fallbackStatus ? [`  Fallback:        ${fallbackStatus.provider} (${fallbackStatus.healthy ? "Online" : "OFFLINE"})`] : []),
           "",
           "Scope:",
           `  User ID:  ${runtimeScope.userId}`,
@@ -189,10 +199,17 @@ export function createMemuCommand(
           return { text: "Usage: /memu search <query>" };
         }
 
-        const memories = await adapter.recall(query, runtimeScope, {
+        let memories = await primaryBackend.search(query, runtimeScope, {
           maxItems: 10,
           maxContextChars: config.recall.maxContextChars,
+          includeSessionScope: config.backend.freeText.provider === "mem0",
         });
+        if (memories.length === 0 && fallbackBackend) {
+          memories = await fallbackBackend.search(query, runtimeScope, {
+            maxItems: 10,
+            maxContextChars: config.recall.maxContextChars,
+          });
+        }
         if (memories.length === 0) {
           return { text: "No memories found." };
         }

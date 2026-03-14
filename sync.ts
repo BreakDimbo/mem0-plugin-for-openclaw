@@ -10,6 +10,7 @@ import type { MemUAdapter } from "./adapter.js";
 import type { CoreMemoryRepository } from "./core-repository.js";
 import type { CoreMemoryRecord, MemuPluginConfig, MemoryScope } from "./types.js";
 import { audit } from "./security.js";
+import type { FreeTextBackend } from "./backends/free-text/base.js";
 
 type Logger = { info(msg: string): void; warn(msg: string): void };
 
@@ -38,6 +39,8 @@ const NOISY_RECALL_PATTERNS = [
 ];
 
 export class MarkdownSync {
+  private primaryBackend: FreeTextBackend;
+  private fallbackBackend: FreeTextBackend | null;
   private adapter: MemUAdapter;
   private coreRepo: CoreMemoryRepository;
   private config: MemuPluginConfig;
@@ -55,7 +58,16 @@ export class MarkdownSync {
    */
   private agentWorkspaces = new Map<string, string>();
 
-  constructor(adapter: MemUAdapter, coreRepo: CoreMemoryRepository, config: MemuPluginConfig, logger: Logger) {
+  constructor(
+    primaryBackend: FreeTextBackend,
+    fallbackBackend: FreeTextBackend | null,
+    adapter: MemUAdapter,
+    coreRepo: CoreMemoryRepository,
+    config: MemuPluginConfig,
+    logger: Logger,
+  ) {
+    this.primaryBackend = primaryBackend;
+    this.fallbackBackend = fallbackBackend;
     this.adapter = adapter;
     this.coreRepo = coreRepo;
     this.config = config;
@@ -345,13 +357,21 @@ export class MarkdownSync {
         limit: this.config.core.topK,
       });
 
-      const recallItems =
+      let recallItems =
         this.config.recall.enabled && coreMemories.length > 0
-          ? await this.adapter.recall("long-term memory summary", scope, {
+          ? await this.primaryBackend.search("long-term memory summary", scope, {
               maxItems: Math.min(8, this.config.recall.topK),
               maxContextChars: this.config.recall.maxContextChars,
+              includeSessionScope: false,
             })
           : [];
+      if (recallItems.length === 0 && this.fallbackBackend) {
+        recallItems = await this.fallbackBackend.search("long-term memory summary", scope, {
+          maxItems: Math.min(8, this.config.recall.topK),
+          maxContextChars: this.config.recall.maxContextChars,
+          includeSessionScope: false,
+        });
+      }
 
       const markdown = this.buildMarkdown(scope, coreMemories, recallItems);
       let existing = "";
@@ -371,7 +391,7 @@ export class MarkdownSync {
       audit("store", scope.userId, agentId, `markdown-sync: wrote ${coreMemories.length} core + ${selectedRecallItems.length} recall items to ${filePath}`);
 
       this.logger.info(
-        `markdown-sync: [${agentId}] wrote core=${coreMemories.length} recall=${selectedRecallItems.length} -> ${filePath}`,
+        `markdown-sync: [${agentId}] wrote core=${coreMemories.length} recall=${selectedRecallItems.length} provider=${this.primaryBackend.provider} -> ${filePath}`,
       );
     } catch (err) {
       this.logger.warn(`markdown-sync: [${agentId}] error: ${String(err)}`);

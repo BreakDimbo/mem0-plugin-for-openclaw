@@ -1,0 +1,5 @@
+node_modules/
+memory.db
+vector_store.db
+*.sqlite
+*.sqlite3

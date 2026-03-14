@@ -16,6 +16,7 @@ import { MarkdownSync } from "./sync.js";
 import { Metrics } from "./metrics.js";
 import { CoreMemoryRepository } from "./core-repository.js";
 import { CoreProposalQueue } from "./core-proposals.js";
+import { createMemuFallbackBackend, createPrimaryFreeTextBackend } from "./backends/free-text/factory.js";
 
 import { createRecallHook } from "./hooks/recall.js";
 import { createCaptureHook } from "./hooks/capture.js";
@@ -63,18 +64,29 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
     const metrics = new Metrics();
     const proposalQueue = new CoreProposalQueue(config.outbox.persistPath, config.core.proposalQueueMax, api.logger);
 
-    const outbox = new OutboxWorker(adapter, api.logger, {
+    const primaryFreeTextBackend = createPrimaryFreeTextBackend(config, { adapter, client, logger: api.logger });
+    const fallbackFreeTextBackend =
+      config.backend.freeText.provider === "mem0" && config.backend.freeText.readFallback === "memu"
+        ? createMemuFallbackBackend({ adapter, client })
+        : null;
+    const secondaryFreeTextBackend =
+      config.backend.freeText.provider === "mem0" && config.backend.freeText.dualWrite
+        ? createMemuFallbackBackend({ adapter, client })
+        : null;
+
+    const outbox = new OutboxWorker(primaryFreeTextBackend, api.logger, {
       concurrency: config.outbox.concurrency,
       batchSize: config.outbox.batchSize,
       maxRetries: config.outbox.maxRetries,
       persistPath: config.outbox.persistPath,
       flushIntervalMs: config.outbox.flushIntervalMs,
+      secondaryBackend: secondaryFreeTextBackend,
     });
 
-    const sync = new MarkdownSync(adapter, coreRepo, config, api.logger);
+    const sync = new MarkdownSync(primaryFreeTextBackend, fallbackFreeTextBackend, adapter, coreRepo, config, api.logger);
 
     api.logger.info(
-      `memory-memu: registered (baseUrl: ${config.memu.baseUrl}, userId: ${config.scope.userId}, agentId: ${config.scope.agentId}, recall: ${config.recall.enabled}, capture: ${config.capture.enabled})`,
+      `memory-memu: registered (baseUrl: ${config.memu.baseUrl}, userId: ${config.scope.userId}, agentId: ${config.scope.agentId}, freeText=${config.backend.freeText.provider}, recall: ${config.recall.enabled}, capture: ${config.capture.enabled})`,
     );
 
     // ========================================================================
@@ -82,7 +94,7 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
     // ========================================================================
 
     if (config.recall.enabled || config.core.enabled) {
-      api.on("before_prompt_build", createRecallHook(adapter, coreRepo, cache, inbound, config, api.logger, metrics, sync), {
+      api.on("before_prompt_build", createRecallHook(primaryFreeTextBackend, fallbackFreeTextBackend, adapter, coreRepo, cache, inbound, config, api.logger, metrics, sync), {
         priority: HOOK_PRIORITY.recall,
       });
     }
@@ -101,10 +113,10 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
     // Tools (factory pattern to capture runtime context)
     // ========================================================================
 
-    api.registerTool((ctx: any) => createRecallTool(adapter, cache, config, metrics, ctx));
+    api.registerTool((ctx: any) => createRecallTool(primaryFreeTextBackend, fallbackFreeTextBackend, cache, config, metrics, ctx));
     api.registerTool((ctx: any) => createStoreTool(outbox, config, ctx));
-    api.registerTool((ctx: any) => createForgetTool(adapter, config, ctx));
-    api.registerTool((ctx: any) => createStatsTool(client, cache, outbox, metrics, ctx));
+    api.registerTool((ctx: any) => createForgetTool(primaryFreeTextBackend, config, ctx));
+    api.registerTool((ctx: any) => createStatsTool(client, primaryFreeTextBackend, fallbackFreeTextBackend, cache, outbox, metrics, ctx));
     api.registerTool((ctx: any) => createCoreListTool(coreRepo, config, ctx));
     api.registerTool((ctx: any) => createCoreUpsertTool(coreRepo, config, ctx));
     api.registerTool((ctx: any) => createCoreDeleteTool(coreRepo, config, ctx));
@@ -115,7 +127,21 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
     // Commands
     // ========================================================================
 
-    api.registerCommand(createMemuCommand(client, adapter, coreRepo, proposalQueue, cache, outbox, metrics, sync, config, api.runtime));
+    api.registerCommand(
+      createMemuCommand(
+        client,
+        primaryFreeTextBackend,
+        fallbackFreeTextBackend,
+        coreRepo,
+        proposalQueue,
+        cache,
+        outbox,
+        metrics,
+        sync,
+        config,
+        api.runtime,
+      ),
+    );
 
     // ========================================================================
     // Service lifecycle

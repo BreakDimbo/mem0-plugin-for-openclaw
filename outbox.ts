@@ -7,8 +7,8 @@ import { createHash } from "node:crypto";
 import { readFile, writeFile, mkdir, readdir } from "node:fs/promises";
 import { dirname, basename } from "node:path";
 import { homedir } from "node:os";
-import type { MemUAdapter } from "./adapter.js";
 import type { OutboxItem, DeadLetterItem, MemoryScope } from "./types.js";
+import type { FreeTextBackend } from "./backends/free-text/base.js";
 
 type Logger = { info(msg: string): void; warn(msg: string): void };
 
@@ -27,10 +27,12 @@ export class OutboxWorker {
   private queue: OutboxItem[] = [];
   private deadLetters: DeadLetterItem[] = [];
   private loaded = false;
-  private adapter: MemUAdapter;
+  private primaryBackend: FreeTextBackend;
+  private secondaryBackend: FreeTextBackend | null;
   private logger: Logger;
   private timer: ReturnType<typeof setInterval> | null = null;
   private flushing = false;
+  private flushPromise: Promise<void> | null = null;
 
   private readonly concurrency: number;
   private readonly batchSize: number;
@@ -47,7 +49,7 @@ export class OutboxWorker {
   private recentEvents: OutboxRecentEvent[] = [];
 
   constructor(
-    adapter: MemUAdapter,
+    primaryBackend: FreeTextBackend,
     logger: Logger,
     opts: {
       concurrency: number;
@@ -55,9 +57,11 @@ export class OutboxWorker {
       maxRetries: number;
       persistPath: string;
       flushIntervalMs?: number;
+      secondaryBackend?: FreeTextBackend | null;
     },
   ) {
-    this.adapter = adapter;
+    this.primaryBackend = primaryBackend;
+    this.secondaryBackend = opts.secondaryBackend ?? null;
     this.logger = logger;
     this.concurrency = opts.concurrency;
     this.batchSize = opts.batchSize;
@@ -224,10 +228,10 @@ export class OutboxWorker {
   // -- Flush --
 
   async flush(): Promise<void> {
-    if (this.flushing) return;
+    if (this.flushing && this.flushPromise) return this.flushPromise;
     this.flushing = true;
-
-    try {
+    this.flushPromise = (async () => {
+      try {
       const now = Date.now();
       const ready = this.queue.filter((item) => item.nextRetryAt <= now);
       if (ready.length === 0) return;
@@ -242,8 +246,20 @@ export class OutboxWorker {
 
         const results = await Promise.allSettled(
           chunk.map(async (item) => {
-            const ok = await this.adapter.memorize(item.payload.text, item.scope, item.payload.metadata);
+            const ok = await this.primaryBackend.store(item.payload.text, item.scope, {
+              metadata: item.payload.metadata,
+              sessionScoped: false,
+            });
             if (!ok) throw new Error("memorize returned false");
+            if (this.secondaryBackend) {
+              const secondaryOk = await this.secondaryBackend.store(item.payload.text, item.scope, {
+                metadata: item.payload.metadata,
+                sessionScoped: false,
+              });
+              if (!secondaryOk) {
+                this.logger.warn(`outbox: secondary backend store failed id=${item.id} provider=${this.secondaryBackend.provider}`);
+              }
+            }
             return item.id;
           }),
         );
@@ -276,7 +292,7 @@ export class OutboxWorker {
                 lastError: result.status === "rejected" ? String(result.reason) : "unknown",
               };
               this.deadLetters.push(dlItem);
-              this.saveDeadLetters().catch(() => {});
+              await this.saveDeadLetters();
               this.pushRecentEvent({
                 type: "dead-letter",
                 id: item.id,
@@ -305,11 +321,14 @@ export class OutboxWorker {
       }
 
       if (changed) {
-        this.saveToDisk().catch(() => {});
+        await this.saveToDisk();
       }
-    } finally {
-      this.flushing = false;
-    }
+      } finally {
+        this.flushing = false;
+        this.flushPromise = null;
+      }
+    })();
+    return this.flushPromise;
   }
 
   // -- Lifecycle --

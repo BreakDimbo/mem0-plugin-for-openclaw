@@ -124,11 +124,36 @@ export type ScopeConfig = {
 };
 
 export type MemuPluginConfig = {
+  backend: {
+    freeText: {
+      provider: "memu" | "mem0";
+      dualWrite: boolean;
+      readFallback: "none" | "memu";
+      compareRecall: boolean;
+    };
+  };
   memu: {
     baseUrl: string;
     timeoutMs: number;
     cbResetMs: number;
     healthCheckPath: string;
+  };
+  mem0: {
+    mode: "platform" | "open-source";
+    apiKey?: string;
+    orgId?: string;
+    projectId?: string;
+    enableGraph: boolean;
+    searchThreshold: number;
+    topK: number;
+    customInstructions?: string;
+    customPrompt?: string;
+    oss?: {
+      embedder?: { provider: string; config: Record<string, unknown> };
+      vectorStore?: { provider: string; config: Record<string, unknown> };
+      llm?: { provider: string; config: Record<string, unknown> };
+      historyDbPath?: string;
+    };
   };
   scope: ScopeConfig;
   recall: {
@@ -179,11 +204,31 @@ export type MemuPluginConfig = {
 };
 
 export const DEFAULT_CONFIG: MemuPluginConfig = {
+  backend: {
+    freeText: {
+      provider: "memu",
+      dualWrite: false,
+      readFallback: "memu",
+      compareRecall: false,
+    },
+  },
   memu: {
     baseUrl: "http://127.0.0.1:8000",
     timeoutMs: 12000,
     cbResetMs: 10_000,
     healthCheckPath: "/debug",
+  },
+  mem0: {
+    mode: "open-source",
+    apiKey: undefined,
+    orgId: undefined,
+    projectId: undefined,
+    enableGraph: false,
+    searchThreshold: 0.3,
+    topK: 5,
+    customInstructions: undefined,
+    customPrompt: undefined,
+    oss: undefined,
   },
   scope: {
     userId: "default_user",
@@ -336,6 +381,9 @@ export function loadConfig(raw?: Record<string, unknown>): MemuPluginConfig {
   if (!raw) return { ...DEFAULT_CONFIG };
 
   const m = (raw.memu ?? {}) as Record<string, unknown>;
+  const b = (raw.backend ?? {}) as Record<string, unknown>;
+  const ft = (b.freeText ?? {}) as Record<string, unknown>;
+  const mem0 = (raw.mem0 ?? {}) as Record<string, unknown>;
   const sc = (raw.scope ?? {}) as Record<string, unknown>;
   const r = (raw.recall ?? {}) as Record<string, unknown>;
   const co = (raw.core ?? {}) as Record<string, unknown>;
@@ -349,6 +397,49 @@ export function loadConfig(raw?: Record<string, unknown>): MemuPluginConfig {
       timeoutMs: numInRange(m.timeoutMs, DEFAULT_CONFIG.memu.timeoutMs, 500, 30_000),
       cbResetMs: numInRange(m.cbResetMs, DEFAULT_CONFIG.memu.cbResetMs, 1_000, 120_000),
       healthCheckPath: str(m.healthCheckPath, DEFAULT_CONFIG.memu.healthCheckPath),
+    },
+    backend: {
+      freeText: {
+        provider: ft.provider === "mem0" ? "mem0" : DEFAULT_CONFIG.backend.freeText.provider,
+        dualWrite: bool(ft.dualWrite, DEFAULT_CONFIG.backend.freeText.dualWrite),
+        readFallback: ft.readFallback === "none" ? "none" : DEFAULT_CONFIG.backend.freeText.readFallback,
+        compareRecall: bool(ft.compareRecall, DEFAULT_CONFIG.backend.freeText.compareRecall),
+      },
+    },
+    mem0: {
+      mode: mem0.mode === "platform" ? "platform" : DEFAULT_CONFIG.mem0.mode,
+      apiKey: optStr(mem0.apiKey),
+      orgId: optStr(mem0.orgId),
+      projectId: optStr(mem0.projectId),
+      enableGraph: bool(mem0.enableGraph, DEFAULT_CONFIG.mem0.enableGraph),
+      searchThreshold:
+        typeof mem0.searchThreshold === "number" ? mem0.searchThreshold : DEFAULT_CONFIG.mem0.searchThreshold,
+      topK: numInRange(mem0.topK, DEFAULT_CONFIG.mem0.topK, 1, 50),
+      customInstructions: optStr(mem0.customInstructions),
+      customPrompt: optStr(mem0.customPrompt),
+      oss: mem0.oss && typeof mem0.oss === "object"
+        ? {
+            embedder:
+              (mem0.oss as Record<string, unknown>).embedder &&
+              typeof (mem0.oss as Record<string, unknown>).embedder === "object"
+                ? ((mem0.oss as Record<string, unknown>).embedder as { provider: string; config: Record<string, unknown> })
+                : undefined,
+            vectorStore:
+              (mem0.oss as Record<string, unknown>).vectorStore &&
+              typeof (mem0.oss as Record<string, unknown>).vectorStore === "object"
+                ? ((mem0.oss as Record<string, unknown>).vectorStore as { provider: string; config: Record<string, unknown> })
+                : undefined,
+            llm:
+              (mem0.oss as Record<string, unknown>).llm &&
+              typeof (mem0.oss as Record<string, unknown>).llm === "object"
+                ? ((mem0.oss as Record<string, unknown>).llm as { provider: string; config: Record<string, unknown> })
+                : undefined,
+            historyDbPath:
+              typeof (mem0.oss as Record<string, unknown>).historyDbPath === "string"
+                ? ((mem0.oss as Record<string, unknown>).historyDbPath as string)
+                : undefined,
+          }
+        : undefined,
     },
     scope: {
       userId: str(sc.userId, DEFAULT_CONFIG.scope.userId),

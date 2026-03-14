@@ -8,9 +8,12 @@ import type { LRUCache } from "../cache.js";
 import type { OutboxWorker } from "../outbox.js";
 import type { Metrics } from "../metrics.js";
 import type { MemuMemoryRecord, PluginHookContext } from "../types.js";
+import type { FreeTextBackend } from "../backends/free-text/base.js";
 
 export function createStatsTool(
   client: MemUClient,
+  primaryBackend: FreeTextBackend,
+  fallbackBackend: FreeTextBackend | null,
   cache: LRUCache<MemuMemoryRecord[]>,
   outbox: OutboxWorker,
   metrics: Metrics,
@@ -25,6 +28,8 @@ export function createStatsTool(
     },
     execute: async (_id: string) => {
       const healthy = await client.healthCheck();
+      const primaryStatus = await primaryBackend.healthCheck();
+      const fallbackStatus = fallbackBackend ? await fallbackBackend.healthCheck() : null;
       const snap = metrics.snapshot({
         outbox: {
           sent: outbox.sent,
@@ -51,8 +56,12 @@ export function createStatsTool(
 
       const dashboard = metrics.formatDashboard(snap);
       const statusLine = healthy ? "Connection: Online" : "Connection: OFFLINE";
+      const backendLines = [
+        `Free-text backend: ${primaryStatus.provider} (${primaryStatus.healthy ? "Online" : "OFFLINE"})`,
+        ...(fallbackStatus ? [`Fallback backend: ${fallbackStatus.provider} (${fallbackStatus.healthy ? "Online" : "OFFLINE"})`] : []),
+      ];
 
-      return { text: `${statusLine}\n\n${dashboard}` };
+      return { text: `${statusLine}\n${backendLines.join("\n")}\n\n${dashboard}` };
     },
   };
 }

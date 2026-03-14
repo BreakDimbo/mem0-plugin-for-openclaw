@@ -3,5 +3,8 @@
   "version": "1.0.0",
   "type": "module",
   "description": "memU long-term memory integration for OpenClaw",
+  "dependencies": {
+    "mem0ai": "^2.3.0"
+  },
   "openclaw.extensions": ["./index.ts"]
 }

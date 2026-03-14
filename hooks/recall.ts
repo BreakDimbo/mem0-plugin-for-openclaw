@@ -4,15 +4,15 @@
 // narrow fallback. We intentionally avoid "latest in channel" behavior.
 // ============================================================================
 
-import type { MemUAdapter } from "../adapter.js";
 import { LRUCache } from "../cache.js";
 import type { InboundMessageCache } from "../inbound-cache.js";
 import type { Metrics } from "../metrics.js";
 import type { MarkdownSync } from "../sync.js";
-import type { MemuPluginConfig, MemuMemoryRecord, PluginHookContext } from "../types.js";
+import type { MemuPluginConfig, MemuMemoryRecord, MemoryScope, PluginHookContext } from "../types.js";
 import { buildDynamicScope } from "../types.js";
 import type { CoreMemoryRepository } from "../core-repository.js";
 import { applyInjectionBudget, escapeForInjection, formatCoreMemoriesContext, formatMemoriesContext } from "../security.js";
+import type { FreeTextBackend } from "../backends/free-text/base.js";
 
 type Logger = { info(msg: string): void; warn(msg: string): void };
 
@@ -148,7 +148,9 @@ function sanitizePromptQuery(raw: string): string {
 }
 
 export function createRecallHook(
-  adapter: MemUAdapter,
+  primaryBackend: FreeTextBackend,
+  fallbackBackend: FreeTextBackend | null,
+  adapter: { resolveRuntimeScope(ctx?: { agentId?: string; sessionKey?: string; sessionId?: string; workspaceDir?: string }): MemoryScope },
   coreRepo: CoreMemoryRepository,
   cache: LRUCache<MemuMemoryRecord[]>,
   inbound: InboundMessageCache,
@@ -188,7 +190,7 @@ export function createRecallHook(
       const scope = buildDynamicScope(config.scope, ctx);
       let memoryContext = "";
       if (config.recall.enabled) {
-        const cacheKey = LRUCache.buildCacheKey(query, scope.sessionKey, config.recall.topK);
+        const cacheKey = LRUCache.buildCacheKey(`${primaryBackend.provider}\0${query}`, scope.sessionKey, config.recall.topK);
         const cached = cache.get(cacheKey);
 
         let memories: MemuMemoryRecord[];
@@ -197,13 +199,32 @@ export function createRecallHook(
           metrics.recallHits++;
           logger.info(`recall-hook: cache hit key=${cacheKey} count=${memories.length}`);
         } else {
-          memories = await adapter.recall(query, scope, {
+          memories = await primaryBackend.search(query, scope, {
             maxItems: config.recall.topK,
             maxContextChars: config.recall.maxContextChars,
+            includeSessionScope: config.backend.freeText.provider === "mem0",
           });
+          let fallbackUsed = false;
+          if (memories.length === 0 && fallbackBackend) {
+            memories = await fallbackBackend.search(query, scope, {
+              maxItems: config.recall.topK,
+              maxContextChars: config.recall.maxContextChars,
+            });
+            fallbackUsed = memories.length > 0;
+          }
+          if (config.backend.freeText.compareRecall && fallbackBackend) {
+            void fallbackBackend.search(query, scope, {
+              maxItems: config.recall.topK,
+              maxContextChars: config.recall.maxContextChars,
+            }).then((shadow) => {
+              if (shadow.length !== memories.length) {
+                logger.info(`recall-hook: compare primary=${primaryBackend.provider} count=${memories.length} shadow=${fallbackBackend.provider} count=${shadow.length}`);
+              }
+            }).catch(() => {});
+          }
           metrics.recallMisses++;
           if (memories.length > 0) cache.set(cacheKey, memories);
-          logger.info(`recall-hook: fetched ${memories.length} memories for query="${query.slice(0, 60)}..."`);
+          logger.info(`recall-hook: fetched ${memories.length} memories via ${primaryBackend.provider}${fallbackUsed ? " (fallback)" : ""} for query="${query.slice(0, 60)}..."`);
         }
 
         const filtered = memories.filter((m) => m.score === undefined || m.score >= config.recall.scoreThreshold);
