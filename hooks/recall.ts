@@ -8,6 +8,8 @@ import { LRUCache } from "../cache.js";
 import type { InboundMessageCache } from "../inbound-cache.js";
 import type { Metrics } from "../metrics.js";
 import type { MarkdownSync } from "../sync.js";
+import type { CandidateQueue } from "../candidate-queue.js";
+import { shouldCapture } from "../security.js";
 import type { MemuPluginConfig, MemuMemoryRecord, MemoryScope, PluginHookContext } from "../types.js";
 import { buildDynamicScope } from "../types.js";
 import { type CoreMemoryRepository, inferTierFromCategory } from "../core-repository.js";
@@ -617,12 +619,41 @@ export function createRecallHook(
   logger: Logger,
   metrics: Metrics,
   sync: MarkdownSync,
+  candidateQueue?: CandidateQueue,
 ) {
   return async (event: { prompt?: string; messages?: Array<{ role: string; content?: string | Array<{ type: string; text?: string }> }> }, ctx: PluginHookContext) => {
     if (!config.recall.enabled && !config.core.enabled) return;
 
     if (ctx.agentId && ctx.workspaceDir) {
       sync.registerAgent(ctx.agentId, ctx.workspaceDir);
+    }
+
+    // Side-effect: feed user messages to candidateQueue for capture.
+    // This is the only hook that fires on all entry paths including
+    // `openclaw agent --message` (which doesn't emit message_received
+    // or agent_end). CandidateQueue hash-dedup prevents double-processing.
+    if (config.capture.enabled && config.capture.candidateQueue.enabled && event.messages) {
+      if (!candidateQueue) {
+        logger.info("recall-hook: capture side-effect skipped (no candidateQueue ref)");
+      } else {
+        // Only capture the LAST user message (current turn's input).
+        // event.messages contains full session history; enqueuing all of them
+        // would repeatedly hash the same first message and dedup everything.
+        // Use sanitizePromptQuery to strip timestamps, <relevant-memories>,
+        // and other gateway-injected prefixes from the raw message text.
+        const capScope = buildDynamicScope(config.scope, ctx);
+        let lastUserText = "";
+        for (let i = event.messages.length - 1; i >= 0; i--) {
+          const msg = event.messages[i];
+          if (msg.role !== "user") continue;
+          lastUserText = sanitizePromptQuery(extractTextBlocks(msg.content));
+          break;
+        }
+        if (lastUserText && shouldCapture(lastUserText, config.capture.minChars, config.capture.maxChars)) {
+          candidateQueue.enqueue(lastUserText, capScope);
+          logger.info(`recall-hook: enqueued last user message to candidateQueue (${lastUserText.slice(0, 40)}...)`);
+        }
+      }
     }
 
     const promptRaw = event.prompt ?? "";

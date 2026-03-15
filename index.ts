@@ -192,13 +192,13 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
     // ========================================================================
 
     if (config.recall.enabled || config.core.enabled) {
-      api.on("before_prompt_build", createRecallHook(primaryFreeTextBackend, scopeResolver, coreRepo, cache, inbound, config, api.logger, metrics, sync), {
+      api.on("before_prompt_build", createRecallHook(primaryFreeTextBackend, scopeResolver, coreRepo, cache, inbound, config, api.logger, metrics, sync, candidateQueue), {
         priority: HOOK_PRIORITY.recall,
       });
     }
 
     if (config.capture.enabled) {
-      api.on("agent_end", createCaptureHook(outbox, coreRepo, proposalQueue, cache, config, api.logger, metrics, sync), {
+      api.on("agent_end", createCaptureHook(outbox, coreRepo, proposalQueue, cache, config, api.logger, metrics, sync, candidateQueue), {
         priority: HOOK_PRIORITY.capture,
       });
     }

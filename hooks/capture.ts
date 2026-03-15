@@ -14,6 +14,8 @@ import type { CoreMemoryRepository } from "../core-repository.js";
 import { extractCoreProposal } from "../core-proposals.js";
 import type { CoreProposalQueue } from "../core-proposals.js";
 import { buildFreeTextMetadata, trigramSimilarity } from "../metadata.js";
+import type { CandidateQueue } from "../candidate-queue.js";
+import { sanitizePromptQuery } from "./recall.js";
 
 type Logger = { info(msg: string): void; warn(msg: string): void };
 
@@ -76,6 +78,7 @@ export function createCaptureHook(
   logger: Logger,
   metrics: Metrics,
   sync: MarkdownSync,
+  candidateQueue?: CandidateQueue,
 ) {
   return async (event: { messages?: unknown[] }, ctx: PluginHookContext) => {
     if (!config.capture.enabled) return;
@@ -86,10 +89,31 @@ export function createCaptureHook(
       sync.registerAgent(ctx.agentId, ctx.workspaceDir);
     }
 
-    // When CandidateQueue is active, user messages are already captured
-    // per-message via message_received hook. Skip user message scanning here.
-    if (config.capture.candidateQueue.enabled) {
-      logger.info("capture-hook: skipping (candidateQueue active, capture handled per-message)");
+    // When CandidateQueue is active, forward user messages to it as a fallback.
+    // The message_received hook is the primary feeder, but some entry points
+    // (e.g. `openclaw agent --message`) don't emit message_received events.
+    // CandidateQueue's hash-based dedup ensures no double-processing.
+    if (config.capture.candidateQueue.enabled && candidateQueue) {
+      const scope = buildDynamicScope(config.scope, ctx);
+
+      // Only forward the LAST user message (current turn).
+      // event.messages may contain full session history; iterating all
+      // would re-hash old messages that were already captured.
+      let lastUserText = "";
+      for (let i = event.messages.length - 1; i >= 0; i--) {
+        const raw = extractUserTextFromAgentEndMessage(event.messages[i]);
+        if (!raw) continue;
+        const text = sanitizePromptQuery(raw);
+        if (!text) continue;
+        if (isSystemFragment(text) || isInjectedMemory(text)) continue;
+        lastUserText = text;
+        break;
+      }
+
+      if (lastUserText && shouldCapture(lastUserText, config.capture.minChars, config.capture.maxChars) && !isLowSignalUserText(lastUserText)) {
+        candidateQueue.enqueue(lastUserText, scope);
+        logger.info(`capture-hook: forwarded last user message to candidateQueue (fallback)`);
+      }
       return;
     }
 
