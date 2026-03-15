@@ -318,6 +318,18 @@ export function createMemuCommand(
           return { text: proposal ? `Proposal rejected: ${proposal.id}` : "Proposal not found or already reviewed." };
         }
 
+        if (sub === "consolidate") {
+          const dryRun = tokens.includes("--dry-run");
+          const result = await coreRepo.consolidate(runtimeScope, {
+            dryRun,
+            similarityThreshold: config.core.consolidation.similarityThreshold,
+          });
+          const label = dryRun ? " (dry-run)" : "";
+          return {
+            text: `Core consolidation${label}: ${result.deleted} exact-key duplicates removed, ${result.merged} near-duplicate values merged, ${result.unchanged} unchanged.`,
+          };
+        }
+
         return {
           text: [
             "Usage:",
@@ -325,6 +337,7 @@ export function createMemuCommand(
             "  /memu core upsert <key> <value>",
             "  /memu core delete <id|key:...>",
             "  /memu core touch <id|key:...>",
+            "  /memu core consolidate [--dry-run]",
             "  /memu core proposals [limit]",
             "  /memu core approve <proposalId>",
             "  /memu core reject <proposalId>",

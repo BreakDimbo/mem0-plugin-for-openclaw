@@ -134,7 +134,29 @@
           "autoExtractProposals": { "type": "boolean", "default": true },
           "humanReviewRequired": { "type": "boolean", "default": true },
           "touchOnRecall": { "type": "boolean", "default": true },
-          "proposalQueueMax": { "type": "number", "default": 200, "minimum": 10, "maximum": 5000 }
+          "proposalQueueMax": { "type": "number", "default": 200, "minimum": 10, "maximum": 5000 },
+          "alwaysInjectTiers": { "type": "array", "items": { "type": "string", "enum": ["profile", "technical", "general"] }, "default": ["profile", "general"], "description": "Core memory tiers to always inject (no scoring)" },
+          "retrievalOnlyTiers": { "type": "array", "items": { "type": "string", "enum": ["profile", "technical", "general"] }, "default": ["technical"], "description": "Core memory tiers that require scoring for injection" },
+          "maxAlwaysInjectChars": { "type": "number", "default": 600, "minimum": 100, "maximum": 5000, "description": "Safety cap on always-inject block character count" },
+          "consolidation": {
+            "type": "object",
+            "properties": {
+              "enabled": { "type": "boolean", "default": true },
+              "intervalMs": { "type": "number", "default": 3600000, "minimum": 60000, "description": "Minimum interval between consolidation runs in ms (default 1 hour)" },
+              "similarityThreshold": { "type": "number", "default": 0.85, "minimum": 0.5, "maximum": 1, "description": "Trigram similarity threshold for value dedup within a category" }
+            }
+          },
+          "llmGate": {
+            "type": "object",
+            "properties": {
+              "enabled": { "type": "boolean", "default": false },
+              "apiBase": { "type": "string", "default": "https://api.openai.com/v1" },
+              "apiKey": { "type": "string" },
+              "model": { "type": "string", "default": "gpt-4o-mini" },
+              "maxTokensPerBatch": { "type": "number", "default": 2000, "minimum": 500, "maximum": 10000 },
+              "timeoutMs": { "type": "number", "default": 30000, "minimum": 5000, "maximum": 120000 }
+            }
+          }
         }
       },
       "capture": {
@@ -144,7 +166,15 @@
           "maxItemsPerRun": { "type": "number", "default": 2, "minimum": 1, "maximum": 10 },
           "minChars": { "type": "number", "default": 24 },
           "maxChars": { "type": "number", "default": 500 },
-          "dedupeThreshold": { "type": "number", "default": 0.8 }
+          "dedupeThreshold": { "type": "number", "default": 0.8 },
+          "candidateQueue": {
+            "type": "object",
+            "properties": {
+              "enabled": { "type": "boolean", "default": true },
+              "intervalMs": { "type": "number", "default": 600000, "minimum": 10000, "description": "Batch processing interval in ms (default 10min)" },
+              "maxBatchSize": { "type": "number", "default": 50, "minimum": 1, "maximum": 200 }
+            }
+          }
         }
       },
       "outbox": {

@@ -149,7 +149,7 @@ await test("createRecallHook loads session core cache once and reranks against c
         workspaceFallbackMaxItems: 0,
         workspaceFallbackMaxFiles: 0,
       },
-      core: { enabled: true, topK: 5, maxItemChars: 240, autoExtractProposals: false, humanReviewRequired: false, touchOnRecall: false, proposalQueueMax: 10 },
+      core: { enabled: true, topK: 5, maxItemChars: 240, autoExtractProposals: false, humanReviewRequired: false, touchOnRecall: false, proposalQueueMax: 10, alwaysInjectTiers: ["profile", "general"], retrievalOnlyTiers: ["technical"], maxAlwaysInjectChars: 600 },
       backend: { freeText: { provider: "mem0" } },
       mem0: { mode: "open-source", enableGraph: false, searchThreshold: 0.3, topK: 5 },
       capture: { enabled: false, maxItemsPerRun: 0, minChars: 0, maxChars: 0, dedupeThreshold: 0.8 },
@@ -180,7 +180,7 @@ await test("createRecallHook loads session core cache once and reranks against c
   assertEqual(listCalls, 1, "core repo should be loaded once for the session");
 });
 
-await test("createRecallHook keeps only strongly relevant core memories for a focused query", async () => {
+await test("createRecallHook always-injects profile-tier facts and scores technical-tier", async () => {
   let prepend = "";
   const hook = createRecallHook(
     { provider: "mem0", search: async () => [] } as any,
@@ -189,7 +189,7 @@ await test("createRecallHook keeps only strongly relevant core memories for a fo
       list: async () => [
         { id: "1", category: "identity", key: "identity.timezone", value: "用户的时区是 UTC+8。", score: 0.8 },
         { id: "2", category: "goals", key: "goals.primary", value: "用户的主目标是成为一人公司创业者。", score: 0.25 },
-        { id: "3", category: "identity", key: "identity.personality", value: "用户的人格倾向是 INTJ。", score: 0.2 },
+        { id: "3", category: "technical", key: "technical.model", value: "smart-router 分类器现在的模型是 gemini。", score: 0.1 },
       ],
     } as any,
     { get: () => null, set: () => {} } as any,
@@ -210,7 +210,7 @@ await test("createRecallHook keeps only strongly relevant core memories for a fo
         workspaceFallbackMaxItems: 0,
         workspaceFallbackMaxFiles: 0,
       },
-      core: { enabled: true, topK: 5, maxItemChars: 240, autoExtractProposals: false, humanReviewRequired: false, touchOnRecall: false, proposalQueueMax: 10 },
+      core: { enabled: true, topK: 5, maxItemChars: 240, autoExtractProposals: false, humanReviewRequired: false, touchOnRecall: false, proposalQueueMax: 10, alwaysInjectTiers: ["profile", "general"], retrievalOnlyTiers: ["technical"], maxAlwaysInjectChars: 600 },
       backend: { freeText: { provider: "mem0" } },
       mem0: { mode: "open-source", enableGraph: false, searchThreshold: 0.3, topK: 5 },
       capture: { enabled: false, maxItemsPerRun: 0, minChars: 0, maxChars: 0, dedupeThreshold: 0.8 },
@@ -230,9 +230,11 @@ await test("createRecallHook keeps only strongly relevant core memories for a fo
     { agentId: "a", workspaceDir: "/tmp", sessionId: "s-suppress-core" } as any,
   );
   prepend = String((out as any)?.prependContext ?? "");
-  if (!prepend.includes("identity/identity.timezone")) throw new Error("timezone core fact should remain");
-  if (prepend.includes("goals/goals.primary")) throw new Error("unrelated core fact should be filtered out");
-  if ((prepend.match(/候选答案/g) ?? []).length !== 1) throw new Error("single-fact query should inject only one core answer hint");
+  // Profile-tier facts (identity + goals) are always injected
+  if (!prepend.includes("identity/identity.timezone")) throw new Error("timezone core fact should remain (profile tier)");
+  if (!prepend.includes("goals/goals.primary")) throw new Error("goals fact should be always-injected (profile tier)");
+  // Technical-tier fact should NOT appear when irrelevant to timezone query
+  if (prepend.includes("technical/technical.model")) throw new Error("irrelevant technical-tier fact should be filtered out");
 });
 
 await test("createRecallHook prefers the stronger lexical core match for a focused query", async () => {
@@ -264,7 +266,7 @@ await test("createRecallHook prefers the stronger lexical core match for a focus
         workspaceFallbackMaxItems: 0,
         workspaceFallbackMaxFiles: 0,
       },
-      core: { enabled: true, topK: 5, maxItemChars: 240, autoExtractProposals: false, humanReviewRequired: false, touchOnRecall: false, proposalQueueMax: 10 },
+      core: { enabled: true, topK: 5, maxItemChars: 240, autoExtractProposals: false, humanReviewRequired: false, touchOnRecall: false, proposalQueueMax: 10, alwaysInjectTiers: ["profile", "general"], retrievalOnlyTiers: ["technical"], maxAlwaysInjectChars: 600 },
       backend: { freeText: { provider: "mem0" } },
       mem0: { mode: "open-source", enableGraph: false, searchThreshold: 0.3, topK: 5 },
       capture: { enabled: false, maxItemsPerRun: 0, minChars: 0, maxChars: 0, dedupeThreshold: 0.8 },
@@ -288,7 +290,7 @@ await test("createRecallHook prefers the stronger lexical core match for a focus
   if (!prepend.includes("用户偏好异步沟通")) throw new Error("the more directly matching core fact should be injected");
 });
 
-await test("createRecallHook prefers the more directly matching fact over a generic neighbor", async () => {
+await test("createRecallHook always-injects profile tier even when not directly matching query", async () => {
   const hook = createRecallHook(
     { provider: "mem0", search: async () => [] } as any,
     { resolveRuntimeScope: () => ({ userId: "u", agentId: "a", sessionKey: "agent:a:main" }) } as any,
@@ -316,7 +318,7 @@ await test("createRecallHook prefers the more directly matching fact over a gene
         workspaceFallbackMaxItems: 0,
         workspaceFallbackMaxFiles: 0,
       },
-      core: { enabled: true, topK: 5, maxItemChars: 240, autoExtractProposals: false, humanReviewRequired: false, touchOnRecall: false, proposalQueueMax: 10 },
+      core: { enabled: true, topK: 5, maxItemChars: 240, autoExtractProposals: false, humanReviewRequired: false, touchOnRecall: false, proposalQueueMax: 10, alwaysInjectTiers: ["profile", "general"], retrievalOnlyTiers: ["technical"], maxAlwaysInjectChars: 600 },
       backend: { freeText: { provider: "mem0" } },
       mem0: { mode: "open-source", enableGraph: false, searchThreshold: 0.3, topK: 5 },
       capture: { enabled: false, maxItemsPerRun: 0, minChars: 0, maxChars: 0, dedupeThreshold: 0.8 },
@@ -335,11 +337,12 @@ await test("createRecallHook prefers the more directly matching fact over a gene
     { agentId: "a", workspaceDir: "/tmp", sessionId: "s-timezone" } as any,
   );
   const prepend = String((out as any)?.prependContext ?? "");
+  // Both are profile tier → both always-injected
   if (!prepend.includes("用户的时区是 UTC+8")) throw new Error("direct lexical fact should be selected");
-  if (prepend.includes("用户有一个长期目标")) throw new Error("generic neighbor fact should not be selected");
+  if (!prepend.includes("用户有一个长期目标")) throw new Error("goals fact should also be always-injected (profile tier)");
 });
 
-await test("createRecallHook prefers the exact answer phrase over weaker background facts", async () => {
+await test("createRecallHook always-injects all profile-tier facts including background ones", async () => {
   const hook = createRecallHook(
     { provider: "mem0", search: async () => [] } as any,
     { resolveRuntimeScope: () => ({ userId: "u", agentId: "a", sessionKey: "agent:a:main" }) } as any,
@@ -367,7 +370,7 @@ await test("createRecallHook prefers the exact answer phrase over weaker backgro
         workspaceFallbackMaxItems: 0,
         workspaceFallbackMaxFiles: 0,
       },
-      core: { enabled: true, topK: 5, maxItemChars: 240, autoExtractProposals: false, humanReviewRequired: false, touchOnRecall: false, proposalQueueMax: 10 },
+      core: { enabled: true, topK: 5, maxItemChars: 240, autoExtractProposals: false, humanReviewRequired: false, touchOnRecall: false, proposalQueueMax: 10, alwaysInjectTiers: ["profile", "general"], retrievalOnlyTiers: ["technical"], maxAlwaysInjectChars: 600 },
       backend: { freeText: { provider: "mem0" } },
       mem0: { mode: "open-source", enableGraph: false, searchThreshold: 0.3, topK: 5 },
       capture: { enabled: false, maxItemsPerRun: 0, minChars: 0, maxChars: 0, dedupeThreshold: 0.8 },
@@ -423,7 +426,7 @@ await test("createRecallHook caches core memory per session and reranks locally"
         workspaceFallbackMaxItems: 0,
         workspaceFallbackMaxFiles: 0,
       },
-      core: { enabled: true, topK: 5, maxItemChars: 240, autoExtractProposals: false, humanReviewRequired: false, touchOnRecall: false, proposalQueueMax: 10 },
+      core: { enabled: true, topK: 5, maxItemChars: 240, autoExtractProposals: false, humanReviewRequired: false, touchOnRecall: false, proposalQueueMax: 10, alwaysInjectTiers: ["profile", "general"], retrievalOnlyTiers: ["technical"], maxAlwaysInjectChars: 600 },
       backend: { freeText: { provider: "mem0" } },
       mem0: { mode: "open-source", enableGraph: false, searchThreshold: 0.3, topK: 5 },
       capture: { enabled: false, maxItemsPerRun: 0, minChars: 0, maxChars: 0, dedupeThreshold: 0.8 },
@@ -454,7 +457,7 @@ await test("createRecallHook caches core memory per session and reranks locally"
   assertEqual(listCalls, 1, "core list should be fetched once per session cache window");
 });
 
-await test("createRecallHook suppresses lower-priority relevant memories when core strongly covers a single-fact query", async () => {
+await test("createRecallHook includes both core and relevant memories when core strongly covers a single-fact query", async () => {
   const hook = createRecallHook(
     { provider: "mem0", search: async () => [{ id: "m1", text: "用户的人格类型是 INTJ", category: "mem0", score: 0.9, source: "memu_item", scope: { userId: "u", agentId: "a", sessionKey: "s" } }] } as any,
     { resolveRuntimeScope: () => ({ userId: "u", agentId: "a", sessionKey: "agent:a:main" }) } as any,
@@ -481,7 +484,7 @@ await test("createRecallHook suppresses lower-priority relevant memories when co
         workspaceFallbackMaxItems: 0,
         workspaceFallbackMaxFiles: 0,
       },
-      core: { enabled: true, topK: 5, maxItemChars: 240, autoExtractProposals: false, humanReviewRequired: false, touchOnRecall: false, proposalQueueMax: 10 },
+      core: { enabled: true, topK: 5, maxItemChars: 240, autoExtractProposals: false, humanReviewRequired: false, touchOnRecall: false, proposalQueueMax: 10, alwaysInjectTiers: ["profile", "general"], retrievalOnlyTiers: ["technical"], maxAlwaysInjectChars: 600 },
       backend: { freeText: { provider: "mem0" } },
       mem0: { mode: "open-source", enableGraph: false, searchThreshold: 0.3, topK: 5 },
       capture: { enabled: false, maxItemsPerRun: 0, minChars: 0, maxChars: 0, dedupeThreshold: 0.8 },
@@ -503,7 +506,8 @@ await test("createRecallHook suppresses lower-priority relevant memories when co
 
   const prepend = String((out as any)?.prependContext ?? "");
   if (!prepend.includes("<core-memory>")) throw new Error("core memory should remain");
-  if (prepend.includes("<relevant-memories>")) throw new Error("relevant memories should be suppressed when core strongly covers the answer");
+  // Both memory layers now always contribute — relevant memories are no longer suppressed
+  if (!prepend.includes("<relevant-memories>")) throw new Error("relevant memories should also be included alongside core");
 });
 
 await test("createRecallHook skips duplicate injection inside the same session", async () => {
@@ -533,7 +537,7 @@ await test("createRecallHook skips duplicate injection inside the same session",
         workspaceFallbackMaxItems: 0,
         workspaceFallbackMaxFiles: 0,
       },
-      core: { enabled: true, topK: 5, maxItemChars: 240, autoExtractProposals: false, humanReviewRequired: false, touchOnRecall: false, proposalQueueMax: 10 },
+      core: { enabled: true, topK: 5, maxItemChars: 240, autoExtractProposals: false, humanReviewRequired: false, touchOnRecall: false, proposalQueueMax: 10, alwaysInjectTiers: ["profile", "general"], retrievalOnlyTiers: ["technical"], maxAlwaysInjectChars: 600 },
       backend: { freeText: { provider: "mem0" } },
       mem0: { mode: "open-source", enableGraph: false, searchThreshold: 0.3, topK: 5 },
       capture: { enabled: false, maxItemsPerRun: 0, minChars: 0, maxChars: 0, dedupeThreshold: 0.8 },
@@ -599,7 +603,7 @@ await test("createRecallHook avoids re-injecting the same stable core facts acro
         workspaceFallbackMaxItems: 0,
         workspaceFallbackMaxFiles: 0,
       },
-      core: { enabled: true, topK: 5, maxItemChars: 240, autoExtractProposals: false, humanReviewRequired: false, touchOnRecall: false, proposalQueueMax: 10 },
+      core: { enabled: true, topK: 5, maxItemChars: 240, autoExtractProposals: false, humanReviewRequired: false, touchOnRecall: false, proposalQueueMax: 10, alwaysInjectTiers: ["profile", "general"], retrievalOnlyTiers: ["technical"], maxAlwaysInjectChars: 600 },
       backend: { freeText: { provider: "mem0" } },
       mem0: { mode: "open-source", enableGraph: false, searchThreshold: 0.3, topK: 5 },
       capture: { enabled: false, maxItemsPerRun: 0, minChars: 0, maxChars: 0, dedupeThreshold: 0.8 },
@@ -669,7 +673,7 @@ await test("createRecallHook reuses relevant selections for similar session quer
         workspaceFallbackMaxItems: 0,
         workspaceFallbackMaxFiles: 0,
       },
-      core: { enabled: false, topK: 5, maxItemChars: 240, autoExtractProposals: false, humanReviewRequired: false, touchOnRecall: false, proposalQueueMax: 10 },
+      core: { enabled: false, topK: 5, maxItemChars: 240, autoExtractProposals: false, humanReviewRequired: false, touchOnRecall: false, proposalQueueMax: 10, alwaysInjectTiers: ["profile", "general"], retrievalOnlyTiers: ["technical"], maxAlwaysInjectChars: 600 },
       backend: { freeText: { provider: "mem0" } },
       mem0: { mode: "open-source", enableGraph: false, searchThreshold: 0.3, topK: 5 },
       capture: { enabled: false, maxItemsPerRun: 0, minChars: 0, maxChars: 0, dedupeThreshold: 0.8 },
@@ -697,6 +701,147 @@ await test("createRecallHook reuses relevant selections for similar session quer
   );
 
   assertEqual(searchCalls, 1, "similar session queries should reuse relevant recall selection");
+});
+
+await test("createRecallHook returns early for startup prompt (no injection)", async () => {
+  let searchCalled = false;
+  const hook = createRecallHook(
+    { provider: "mem0", search: async () => { searchCalled = true; return []; } } as any,
+    { resolveRuntimeScope: () => ({ userId: "u", agentId: "a", sessionKey: "agent:a:main" }) } as any,
+    {
+      list: async () => [
+        { id: "1", category: "identity", key: "identity.timezone", value: "用户的时区是 UTC+8。", score: 0.8 },
+      ],
+    } as any,
+    { get: () => null, set: () => {} } as any,
+    { getBySender: async () => "" } as any,
+    {
+      scope: { userId: "u", agentId: "a", requireUserId: false, requireAgentId: false },
+      recall: {
+        enabled: true, method: "rag", hybrid: { enabled: false, alpha: 0.5, fallbackToRag: false },
+        topK: 2, scoreThreshold: 0.3, maxContextChars: 1200, injectionBudgetChars: 1200,
+        cacheTtlMs: 1000, cacheMaxSize: 10, workspaceFallback: false, workspaceFallbackMaxItems: 0, workspaceFallbackMaxFiles: 0,
+      },
+      core: { enabled: true, topK: 5, maxItemChars: 240, autoExtractProposals: false, humanReviewRequired: false, touchOnRecall: false, proposalQueueMax: 10, alwaysInjectTiers: ["profile", "general"], retrievalOnlyTiers: ["technical"], maxAlwaysInjectChars: 600 },
+      backend: { freeText: { provider: "mem0" } },
+      mem0: { mode: "open-source", enableGraph: false, searchThreshold: 0.3, topK: 5 },
+      capture: { enabled: false, maxItemsPerRun: 0, minChars: 0, maxChars: 0, dedupeThreshold: 0.8 },
+      outbox: { enabled: false, concurrency: 1, batchSize: 1, maxRetries: 1, drainTimeoutMs: 1000, persistPath: "", flushIntervalMs: 1000 },
+      sync: { flushToMarkdown: false, flushIntervalSec: 300, memoryFilePath: "MEMORY.md" },
+    } as any,
+    { info: () => {}, warn: () => {} },
+    { recallTotal: 0, recallHits: 0, recallMisses: 0, recallErrors: 0, recordRecallLatency: () => {}, recordRecallCompare: () => {}, recordRecallFallback: () => {} } as any,
+    { registerAgent: () => {} } as any,
+  );
+
+  const result = await hook(
+    {
+      prompt: "A new session was started via /new or /reset. Execute your Session Startup Sequence now...",
+      messages: [{ role: "user", content: "A new session was started via /new or /reset. Execute your Session Startup Sequence now..." }],
+    },
+    { agentId: "a", workspaceDir: "/tmp", sessionId: "s-startup" } as any,
+  );
+  if (result !== undefined) throw new Error("startup prompt should return early with no injection");
+  if (searchCalled) throw new Error("startup prompt should not trigger a backend search");
+});
+
+await test("createRecallHook prefers event.prompt when messages contain startup prompt", async () => {
+  const hook = createRecallHook(
+    { provider: "mem0", search: async () => [] } as any,
+    { resolveRuntimeScope: () => ({ userId: "u", agentId: "a", sessionKey: "agent:a:main" }) } as any,
+    {
+      list: async () => [
+        { id: "core-tz", category: "identity", key: "identity.timezone", value: "用户的时区是 UTC+8。", score: 0.2 },
+      ],
+    } as any,
+    { get: () => null, set: () => {} } as any,
+    { getBySender: async () => "" } as any,
+    {
+      scope: { userId: "u", agentId: "a", requireUserId: false, requireAgentId: false },
+      recall: {
+        enabled: true, method: "rag", hybrid: { enabled: false, alpha: 0.5, fallbackToRag: false },
+        topK: 2, scoreThreshold: 0.3, maxContextChars: 1200, injectionBudgetChars: 1200,
+        cacheTtlMs: 1000, cacheMaxSize: 10, workspaceFallback: false, workspaceFallbackMaxItems: 0, workspaceFallbackMaxFiles: 0,
+      },
+      core: { enabled: true, topK: 5, maxItemChars: 240, autoExtractProposals: false, humanReviewRequired: false, touchOnRecall: false, proposalQueueMax: 10, alwaysInjectTiers: ["profile", "general"], retrievalOnlyTiers: ["technical"], maxAlwaysInjectChars: 600 },
+      backend: { freeText: { provider: "mem0" } },
+      mem0: { mode: "open-source", enableGraph: false, searchThreshold: 0.3, topK: 5 },
+      capture: { enabled: false, maxItemsPerRun: 0, minChars: 0, maxChars: 0, dedupeThreshold: 0.8 },
+      outbox: { enabled: false, concurrency: 1, batchSize: 1, maxRetries: 1, drainTimeoutMs: 1000, persistPath: "", flushIntervalMs: 1000 },
+      sync: { flushToMarkdown: false, flushIntervalSec: 300, memoryFilePath: "MEMORY.md" },
+    } as any,
+    { info: () => {}, warn: () => {} },
+    { recallTotal: 0, recallHits: 0, recallMisses: 0, recallErrors: 0, recordRecallLatency: () => {}, recordRecallCompare: () => {}, recordRecallFallback: () => {} } as any,
+    { registerAgent: () => {} } as any,
+  );
+
+  const result = await hook(
+    {
+      prompt: "请只用一句中文回答：用户的时区是什么？",
+      messages: [{ role: "user", content: "A new session was started via /new or /reset. Execute your Session Startup Sequence now..." }],
+    },
+    { agentId: "a", workspaceDir: "/tmp", sessionId: "s-prefer-prompt" } as any,
+  );
+  const prepend = String((result as any)?.prependContext ?? "");
+  if (!prepend.includes("UTC+8")) throw new Error("should use event.prompt query and inject timezone");
+});
+
+await test("createRecallHook session dedup does not block different queries in same session", async () => {
+  const hook = createRecallHook(
+    { provider: "mem0", search: async () => [] } as any,
+    { resolveRuntimeScope: () => ({ userId: "u", agentId: "a", sessionKey: "agent:a:main" }) } as any,
+    {
+      list: async () => [
+        { id: "core-tz", category: "identity", key: "identity.timezone", value: "用户的时区是 UTC+8。", score: 0.2 },
+        { id: "core-job", category: "identity", key: "identity.job", value: "用户当前的全职工作是字节跳动程序员。", score: 0.2 },
+      ],
+    } as any,
+    { get: () => null, set: () => {} } as any,
+    { getBySender: async () => "" } as any,
+    {
+      scope: { userId: "u", agentId: "a", requireUserId: false, requireAgentId: false },
+      recall: {
+        enabled: true, method: "rag", hybrid: { enabled: false, alpha: 0.5, fallbackToRag: false },
+        topK: 2, scoreThreshold: 0.3, maxContextChars: 1200, injectionBudgetChars: 1200,
+        cacheTtlMs: 1000, cacheMaxSize: 10, workspaceFallback: false, workspaceFallbackMaxItems: 0, workspaceFallbackMaxFiles: 0,
+      },
+      core: { enabled: true, topK: 5, maxItemChars: 240, autoExtractProposals: false, humanReviewRequired: false, touchOnRecall: false, proposalQueueMax: 10, alwaysInjectTiers: ["profile", "general"], retrievalOnlyTiers: ["technical"], maxAlwaysInjectChars: 600 },
+      backend: { freeText: { provider: "mem0" } },
+      mem0: { mode: "open-source", enableGraph: false, searchThreshold: 0.3, topK: 5 },
+      capture: { enabled: false, maxItemsPerRun: 0, minChars: 0, maxChars: 0, dedupeThreshold: 0.8 },
+      outbox: { enabled: false, concurrency: 1, batchSize: 1, maxRetries: 1, drainTimeoutMs: 1000, persistPath: "", flushIntervalMs: 1000 },
+      sync: { flushToMarkdown: false, flushIntervalSec: 300, memoryFilePath: "MEMORY.md" },
+    } as any,
+    { info: () => {}, warn: () => {} },
+    { recallTotal: 0, recallHits: 0, recallMisses: 0, recallErrors: 0, recordRecallLatency: () => {}, recordRecallCompare: () => {}, recordRecallFallback: () => {} } as any,
+    { registerAgent: () => {} } as any,
+  );
+
+  const ctx = { agentId: "a", workspaceDir: "/tmp", sessionId: "s-dedup-query-aware" } as any;
+  const first = await hook(
+    {
+      prompt: "请只用一句中文回答：用户的时区是什么？",
+      messages: [{ role: "user", content: "用户的时区是什么？" }],
+    },
+    ctx,
+  );
+  const second = await hook(
+    {
+      prompt: "请只用一句中文回答：用户当前的全职工作是什么？",
+      messages: [{ role: "user", content: "用户当前的全职工作是什么？" }],
+    },
+    ctx,
+  );
+
+  if (!String((first as any)?.prependContext ?? "").includes("UTC+8")) {
+    throw new Error("first query should inject timezone");
+  }
+  if (second === undefined) {
+    throw new Error("second different query in same session should NOT be deduped");
+  }
+  if (!String((second as any)?.prependContext ?? "").includes("字节跳动程序员")) {
+    throw new Error("second query should inject job fact");
+  }
 });
 
 const passed = results.filter((r) => r.passed).length;

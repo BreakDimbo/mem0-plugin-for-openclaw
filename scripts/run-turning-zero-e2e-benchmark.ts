@@ -1,12 +1,14 @@
 import { execFile } from "node:child_process";
 import { writeFile } from "node:fs/promises";
 import { promisify } from "node:util";
-import { TURNING_ZERO_E2E_CASES } from "./turning-zero-e2e-fixtures.js";
+import { BENCHMARK_E2E_CASES } from "./benchmark-e2e-fixtures.js";
 import { includesExpected } from "./layered-benchmark.js";
 
 const execFileAsync = promisify(execFile);
-const AGENT_ID = "turning_zero";
+const AGENT_ID = process.env.BENCHMARK_AGENT_ID || "main";
 const SESSION_KEY = `agent:${AGENT_ID}:main`;
+
+const OPENCLAW_BIN = process.env.OPENCLAW_BIN || "openclaw";
 
 type E2EResult = {
   id: string;
@@ -21,7 +23,7 @@ type E2EResult = {
 async function main() {
   const limit = parseOptionalPositiveInt(process.env.E2E_LIMIT);
   const resetPerCase = process.env.BENCHMARK_RESET_SESSION !== "0";
-  const cases = limit ? TURNING_ZERO_E2E_CASES.slice(0, limit) : TURNING_ZERO_E2E_CASES;
+  const cases = limit ? BENCHMARK_E2E_CASES.slice(0, limit) : BENCHMARK_E2E_CASES;
   const runId = new Date().toISOString().replace(/[:.]/g, "-");
   const results: E2EResult[] = [];
 
@@ -55,7 +57,7 @@ async function main() {
     results,
   };
 
-  const reportPath = `/tmp/turning-zero-e2e-benchmark-${runId}.json`;
+  const reportPath = `/tmp/e2e-benchmark-${runId}.json`;
   await writeFile(reportPath, JSON.stringify(report, null, 2), "utf-8");
 
   console.log("");
@@ -78,7 +80,7 @@ async function runAgentQuery(message: string): Promise<string> {
 
 async function resetAgentSession(reason: "new" | "reset"): Promise<void> {
   await execFileAsync(
-    "openclaw",
+    OPENCLAW_BIN,
     [
       "gateway",
       "call",
@@ -95,7 +97,7 @@ async function resetAgentSession(reason: "new" | "reset"): Promise<void> {
 
 async function runAgentCommand(message: string): Promise<any> {
   const { stdout } = await execFileAsync(
-    "openclaw",
+    OPENCLAW_BIN,
     ["agent", "--agent", AGENT_ID, "--message", message, "--timeout", "45", "--json"],
     { cwd: `${process.env.HOME}/.openclaw`, maxBuffer: 4 * 1024 * 1024 },
   );

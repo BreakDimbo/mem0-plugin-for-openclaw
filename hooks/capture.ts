@@ -13,7 +13,7 @@ import { shouldCapture } from "../security.js";
 import type { CoreMemoryRepository } from "../core-repository.js";
 import { extractCoreProposal } from "../core-proposals.js";
 import type { CoreProposalQueue } from "../core-proposals.js";
-import { buildFreeTextMetadata } from "../metadata.js";
+import { buildFreeTextMetadata, trigramSimilarity } from "../metadata.js";
 
 type Logger = { info(msg: string): void; warn(msg: string): void };
 
@@ -67,29 +67,6 @@ function extractUserTextFromAgentEndMessage(msg: unknown): string {
   return extractMessageText(rec.content).trim();
 }
 
-// Simple text similarity via character trigram overlap
-function trigramSimilarity(a: string, b: string): number {
-  const trigramsOf = (s: string): Set<string> => {
-    const t = new Set<string>();
-    const lower = s.toLowerCase();
-    for (let i = 0; i <= lower.length - 3; i++) {
-      t.add(lower.slice(i, i + 3));
-    }
-    return t;
-  };
-
-  const ta = trigramsOf(a);
-  const tb = trigramsOf(b);
-  if (ta.size === 0 || tb.size === 0) return 0;
-
-  let overlap = 0;
-  for (const t of ta) {
-    if (tb.has(t)) overlap++;
-  }
-
-  return (2 * overlap) / (ta.size + tb.size);
-}
-
 export function createCaptureHook(
   outbox: OutboxWorker,
   coreRepo: CoreMemoryRepository,
@@ -107,6 +84,13 @@ export function createCaptureHook(
     // Register agent workspace for sync
     if (ctx.agentId && ctx.workspaceDir) {
       sync.registerAgent(ctx.agentId, ctx.workspaceDir);
+    }
+
+    // When CandidateQueue is active, user messages are already captured
+    // per-message via message_received hook. Skip user message scanning here.
+    if (config.capture.candidateQueue.enabled) {
+      logger.info("capture-hook: skipping (candidateQueue active, capture handled per-message)");
+      return;
     }
 
     const scope = buildDynamicScope(config.scope, ctx);

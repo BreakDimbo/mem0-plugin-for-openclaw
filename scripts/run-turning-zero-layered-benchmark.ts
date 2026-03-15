@@ -8,14 +8,14 @@ import { createRecallHook } from "../hooks/recall.js";
 import { buildDynamicScope, loadConfig } from "../types.js";
 import { createPrimaryFreeTextBackend } from "../backends/free-text/factory.js";
 import { includesExpected, summarizeLayeredRows, type LayeredBenchmarkRow } from "./layered-benchmark.js";
-import { TURNING_ZERO_E2E_CASES } from "./turning-zero-e2e-fixtures.js";
+import { BENCHMARK_E2E_CASES } from "./benchmark-e2e-fixtures.js";
 
 const execFileAsync = promisify(execFile);
 
 async function main() {
   const limit = parseOptionalPositiveInt(process.env.E2E_LIMIT);
   const resetPerCase = process.env.BENCHMARK_RESET_SESSION !== "0";
-  const cases = limit ? TURNING_ZERO_E2E_CASES.slice(0, limit) : TURNING_ZERO_E2E_CASES;
+  const cases = limit ? BENCHMARK_E2E_CASES.slice(0, limit) : BENCHMARK_E2E_CASES;
   const runId = new Date().toISOString().replace(/[:.]/g, "-");
   const config = await loadPluginConfig();
   const hook = await buildRecallHook(config);
@@ -55,7 +55,7 @@ async function main() {
     rows,
   };
 
-  const reportPath = `/tmp/turning-zero-layered-benchmark-${runId}.json`;
+  const reportPath = `/tmp/layered-benchmark-${runId}.json`;
   await writeFile(reportPath, JSON.stringify(report, null, 2), "utf-8");
 
   console.log("");

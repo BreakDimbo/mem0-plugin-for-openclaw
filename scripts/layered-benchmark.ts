@@ -1,4 +1,4 @@
-import type { E2ECase } from "./turning-zero-e2e-fixtures.js";
+import type { E2ECase } from "./benchmark-e2e-fixtures.js";
 
 export type LayeredBenchmarkRow = {
   id: string;

@@ -4,7 +4,7 @@ import { dirname } from "node:path";
 import { promisify } from "node:util";
 
 import { includesExpected } from "./layered-benchmark.js";
-import { TURNING_ZERO_E2E_CASES } from "./turning-zero-e2e-fixtures.js";
+import { BENCHMARK_E2E_CASES } from "./benchmark-e2e-fixtures.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -51,7 +51,7 @@ async function main() {
 
     const report = {
       generatedAt: new Date().toISOString(),
-      method: "Real openclaw agent end-to-end benchmark on turning_zero. Each plugin variant runs all 40 cases in the same session; /new is issued only once when switching plugin variants. Auto-capture is disabled during the benchmark to keep the memory corpus frozen while switching only the memory plugin.",
+      method: "Real openclaw agent end-to-end benchmark. Each plugin variant runs all cases in the same session; /new is issued only once when switching plugin variants. Auto-capture is disabled during the benchmark to keep the memory corpus frozen while switching only the memory plugin.",
       current,
       official,
       currentOnlyHits: current.rows.filter((row) => row.hit && !official.rows.find((r) => r.id === row.id)?.hit),
@@ -143,7 +143,7 @@ async function runVariant(variant: PluginVariant, originalConfigText: string) {
   await resetAgentSession();
 
   const rows: AgentRow[] = [];
-  for (const [index, item] of TURNING_ZERO_E2E_CASES.entries()) {
+  for (const [index, item] of BENCHMARK_E2E_CASES.entries()) {
     const message = `请只用一句中文回答：${item.query}`;
     const started = Date.now();
     const answer = await runAgentQuery(message);
@@ -157,7 +157,7 @@ async function runVariant(variant: PluginVariant, originalConfigText: string) {
       hit,
       durationMs,
     });
-    console.log(`[${variant.id}] [${index + 1}/${TURNING_ZERO_E2E_CASES.length}] ${item.id} hit=${hit ? "Y" : "N"} ${durationMs}ms`);
+    console.log(`[${variant.id}] [${index + 1}/${BENCHMARK_E2E_CASES.length}] ${item.id} hit=${hit ? "Y" : "N"} ${durationMs}ms`);
   }
 
   return {
@@ -176,12 +176,7 @@ async function restoreConfig(originalConfigText: string): Promise<void> {
 
 async function restartGateway(): Promise<void> {
   await execFileAsync("openclaw", ["gateway", "restart"], {
-    cwd: `${process.env.HOME}/.openclaw`,
-    maxBuffer: 4 * 1024 * 1024,
-  });
-}
-
-async function runAgentQuery(message: string): Promise<string> {
+    cwd: `${process.env.HOME}/.openclaw`,(message: string): Promise<string> {
   const parsed = await runAgentCommand(message);
   return String(parsed?.result?.payloads?.[0]?.text ?? "").trim();
 }
@@ -312,10 +307,10 @@ function renderMarkdown(
     "## Conclusion",
     "",
     report.current.summary.hitRate > report.official.summary.hitRate
-      ? "在真实 turning_zero agent 场景下，当前 memory-mem0 插件的端到端回答命中率高于官方 mem0 插件。"
+      ? "当前 memory-mem0 插件的端到端回答命中率高于官方 mem0 插件。"
       : report.current.summary.hitRate < report.official.summary.hitRate
-        ? "在真实 turning_zero agent 场景下，官方 mem0 插件的端到端回答命中率更高。"
-        : "在真实 turning_zero agent 场景下，两套插件的端到端回答命中率相同。",
+        ? "官方 mem0 插件的端到端回答命中率更高。"
+        : "两套插件的端到端回答命中率相同。",
     "",
   ];
 

@@ -1,0 +1,141 @@
+// ============================================================================
+// Core Admission Gate: LLM-based judgment for capture candidates
+// Called from CandidateQueue processor for items the regex didn't catch.
+// Uses OpenAI-compatible chat completions API (works with Gemini, DeepSeek, etc.)
+// ============================================================================
+
+import type { LlmGateConfig } from "./types.js";
+import { sanitizeJsonLikeResponse } from "./backends/free-text/mem0.js";
+
+type Logger = { info(msg: string): void; warn(msg: string): void };
+
+export type AdmissionResult = {
+  index: number;
+  verdict: "core" | "free_text" | "discard";
+  key?: string;
+  value?: string;
+  reason?: string;
+};
+
+const SYSTEM_PROMPT = `你是记忆管理系统的评审员。判断用户消息是否包含值得长期记忆的事实。
+
+对于每条消息，判断类别：
+- core: 用户的稳定个人特征（身份/偏好/目标/关系/约束/工作背景/技能/习惯）
+- free_text: 有价值的上下文信息（技术决策/工作进展/经验教训/项目信息/架构选择）
+- discard: 低信号/临时性/纯指令/闲聊内容
+
+规则：
+1. 每条消息只输出一个判断
+2. core 类型必须提供 key（格式: category.topic，如 identity.name, work.company, preferences.editor）和 value（简洁的第三人称事实陈述）
+3. free_text 类型可选提供 value（简洁摘要）
+4. discard 类型可以省略不输出
+5. 只返回 JSON 数组，不要包含其他文字
+
+返回格式: [{"index": 1, "verdict": "core", "key": "identity.name", "value": "用户叫昊", "reason": "稳定身份信息"}]`;
+
+export function buildUserPrompt(texts: string[]): string {
+  const numbered = texts.map((t, i) => `${i + 1}. ${t}`).join("\n");
+  return `消息列表:\n${numbered}`;
+}
+
+export function parseAdmissionResponse(raw: unknown): AdmissionResult[] {
+  const sanitized = sanitizeJsonLikeResponse(raw);
+  let parsed: unknown;
+  try {
+    parsed = typeof sanitized === "string" ? JSON.parse(sanitized) : sanitized;
+  } catch {
+    return [];
+  }
+
+  if (!Array.isArray(parsed)) return [];
+
+  const results: AdmissionResult[] = [];
+  for (const item of parsed) {
+    if (!item || typeof item !== "object") continue;
+    const obj = item as Record<string, unknown>;
+
+    const index = typeof obj.index === "number" ? obj.index : NaN;
+    const verdict = obj.verdict;
+    if (!Number.isFinite(index) || index < 1) continue;
+    if (verdict !== "core" && verdict !== "free_text" && verdict !== "discard") continue;
+
+    results.push({
+      index,
+      verdict,
+      key: typeof obj.key === "string" ? obj.key : undefined,
+      value: typeof obj.value === "string" ? obj.value : undefined,
+      reason: typeof obj.reason === "string" ? obj.reason : undefined,
+    });
+  }
+
+  return results;
+}
+
+export async function judgeCandidates(
+  texts: string[],
+  config: LlmGateConfig,
+  logger: Logger,
+): Promise<AdmissionResult[]> {
+  if (texts.length === 0) return [];
+
+  const apiKey = config.apiKey;
+  if (!apiKey) {
+    logger.info("llm-gate: skipped (no API key)");
+    return [];
+  }
+
+  const url = `${config.apiBase.replace(/\/+$/, "")}/chat/completions`;
+
+  const body = {
+    model: config.model,
+    messages: [
+      { role: "system", content: SYSTEM_PROMPT },
+      { role: "user", content: buildUserPrompt(texts) },
+    ],
+    max_tokens: config.maxTokensPerBatch,
+    temperature: 0.1,
+  };
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), config.timeoutMs);
+
+  try {
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => "");
+      logger.warn(`llm-gate: HTTP ${resp.status} — ${text.slice(0, 200)}`);
+      return [];
+    }
+
+    const json = (await resp.json()) as Record<string, unknown>;
+    const choices = json.choices as Array<{ message?: { content?: string } }> | undefined;
+    const content = choices?.[0]?.message?.content;
+
+    if (!content) {
+      logger.warn("llm-gate: empty response content");
+      return [];
+    }
+
+    const results = parseAdmissionResponse(content);
+    logger.info(`llm-gate: judged ${texts.length} candidates → ${results.length} actionable results`);
+    return results;
+  } catch (err) {
+    if ((err as Error).name === "AbortError") {
+      logger.warn(`llm-gate: timeout after ${config.timeoutMs}ms`);
+    } else {
+      logger.warn(`llm-gate: error — ${String(err)}`);
+    }
+    return [];
+  } finally {
+    clearTimeout(timer);
+  }
+}

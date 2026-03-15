@@ -7,7 +7,7 @@ import { createRecallHook } from "../hooks/recall.js";
 import { loadConfig, buildDynamicScope } from "../types.js";
 import { createPrimaryFreeTextBackend } from "../backends/free-text/factory.js";
 import { includesExpected } from "./layered-benchmark.js";
-import { TURNING_ZERO_E2E_CASES } from "./turning-zero-e2e-fixtures.js";
+import { BENCHMARK_E2E_CASES } from "./benchmark-e2e-fixtures.js";
 
 type CompareRow = {
   id: string;
@@ -47,9 +47,9 @@ async function main() {
   const officialHook = await buildOfficialRecallHook(raw, currentConfig);
 
   const rows: CompareRow[] = [];
-  for (const item of TURNING_ZERO_E2E_CASES) {
+  for (const item of BENCHMARK_E2E_CASES) {
     const prompt = `请只用一句中文回答：${item.query}`;
-    const sessionKey = `agent:turning_zero:compare-${item.id}`;
+    const sessionKey = `agent:main:compare-${item.id}`;
     const sessionId = `compare-${item.id}`;
 
     const currentStarted = Date.now();
@@ -170,7 +170,7 @@ async function renderCurrentContext(
       messages: [{ role: "user", content: query }],
     },
     {
-      agentId: "turning_zero",
+      agentId: "main",
       sessionKey,
       sessionId,
       workspaceDir: `${process.env.HOME}/.openclaw/workspace-turning_zero`,

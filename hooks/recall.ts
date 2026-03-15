@@ -10,7 +10,7 @@ import type { Metrics } from "../metrics.js";
 import type { MarkdownSync } from "../sync.js";
 import type { MemuPluginConfig, MemuMemoryRecord, MemoryScope, PluginHookContext } from "../types.js";
 import { buildDynamicScope } from "../types.js";
-import type { CoreMemoryRepository } from "../core-repository.js";
+import { type CoreMemoryRepository, inferTierFromCategory } from "../core-repository.js";
 import { applyInjectionBudget, escapeForInjection, formatCoreMemoriesContext, formatMemoriesContext } from "../security.js";
 import type { FreeTextBackend } from "../backends/free-text/base.js";
 import { genericConceptBoost, rerankMemoryResults, tokenizeSemanticQuery } from "../metadata.js";
@@ -24,7 +24,7 @@ type SessionInjectionSnapshot = {
 };
 
 type SessionCoreCacheEntry = {
-  items: Array<{ id: string; category?: string; key: string; value: string; score?: number }>;
+  items: Array<{ id: string; category?: string; key: string; value: string; tier?: string; score?: number }>;
   fetchedAt: number;
 };
 
@@ -41,8 +41,9 @@ type QueryIntent = {
 
 const SESSION_INJECTION_CACHE = new Map<string, SessionInjectionSnapshot>();
 const SESSION_INJECTION_CACHE_LIMIT = 200;
+const SESSION_INJECTION_DEDUP_WINDOW_MS = 30_000; // 30s time-window dedup instead of session-wide
 const SESSION_CORE_CACHE = new Map<string, SessionCoreCacheEntry>();
-const SESSION_CORE_CACHE_TTL_MS = 5 * 60 * 1000;
+const SESSION_CORE_CACHE_TTL_MS = 90 * 1000; // 90s — reduced from 5min to pick up mid-session core updates sooner
 const SESSION_RELEVANT_CACHE = new Map<string, SessionRelevantCacheEntry>();
 const SESSION_RELEVANT_CACHE_TTL_MS = 90 * 1000;
 
@@ -76,7 +77,10 @@ function maybeJson(raw: string): unknown | undefined {
 
 function isLikelyQuery(text: string): boolean {
   const s = stripPromptLead(text.trim());
-  if (s.length < 3 || s.length > 2000) return false;
+  if (s.length > 2000) return false;
+  // CJK characters are denser — allow 2-char CJK queries
+  const hasCJK = /[\u4e00-\u9fff]/.test(s);
+  if (s.length < (hasCJK ? 2 : 3)) return false;
   if (/^\[reacted with\b/i.test(s)) return false;
   if (/^(sender|sender_id|message_id|chat_id|user_id)$/i.test(s)) return false;
   if (/^system:\s*\[[^\]]+\]/i.test(s)) return false;
@@ -92,6 +96,14 @@ function isOpaqueIdentifier(text: string): boolean {
   if (/^(om|ou|on|oc|chat|msg|thread)_[a-z0-9]{8,}$/i.test(s)) return true;
   if (/^[a-f0-9]{16,}$/i.test(s)) return true;
   if (/^[A-Za-z0-9_-]{20,}$/.test(s) && !/[\u4e00-\u9fff]/.test(s)) return true;
+  return false;
+}
+
+function isSystemStartupPrompt(text: string): boolean {
+  const s = text.trim();
+  if (/^A new session was started via\b/i.test(s)) return true;
+  if (/Execute your Session Startup Sequence/i.test(s)) return true;
+  if (/^Read HEARTBEAT\.md/i.test(s)) return true;
   return false;
 }
 
@@ -211,7 +223,7 @@ export function splitRecallQueries(raw: string): string[] {
     const normalized = part.trim();
     if (!normalized || unique.has(normalized)) continue;
     unique.add(normalized);
-    if (unique.size >= 4) break;
+    if (unique.size >= 6) break;
   }
 
   return Array.from(unique);
@@ -234,8 +246,8 @@ function selectRelevantCoreMemories<T extends { score?: number }>(items: T[], qu
   const topScore = items[0]?.score ?? 0;
   if (topScore <= 0) return items;
   const threshold = queryPartCount <= 1
-    ? Math.max(0.45, topScore * 0.55)
-    : Math.max(0.18, topScore * 0.35);
+    ? Math.max(0.30, topScore * 0.40)
+    : Math.max(0.15, topScore * 0.28);
   const filtered = items.filter((item, index) => index === 0 || (item.score ?? 0) >= threshold);
   return filtered.length > 0 ? filtered : items;
 }
@@ -317,7 +329,8 @@ function stripQueryBoilerplate(query: string): string {
 }
 
 const QUERY_STOP_TERMS = [
-  "用户",
+  // Only strip pure functional/modal words that carry no search value.
+  // Domain terms like "用户", "工作", "偏好" are intentionally kept.
   "什么",
   "多少",
   "如何",
@@ -333,9 +346,6 @@ const QUERY_STOP_TERMS = [
   "哪个",
   "哪种",
   "哪类",
-  "当前",
-  "现在",
-  "主要",
   "一下",
   "一下子",
   "的是",
@@ -428,25 +438,13 @@ function dedupeCoreMemories<T extends { id: string; score?: number }>(items: T[]
   return Array.from(byId.values()).sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
 }
 
-function shouldSuppressRelevantMemories(
-  coreMemories: Array<{ score?: number }>,
-  queryPartCount: number,
-  intent: QueryIntent,
-): boolean {
-  if (coreMemories.length === 0) return false;
-  const topScore = coreMemories[0]?.score ?? 0;
-  // configLike queries benefit most from precise core data; suppress at a lower threshold
-  if (intent.configLike && topScore >= 0.55) return true;
-  if (topScore < 0.6) return false;
-  // singleFact: require higher confidence before discarding semantic recall results
-  if (intent.singleFact && topScore >= 0.70) return true;
-  if (queryPartCount <= 1) return true;
-  return coreMemories.length >= queryPartCount;
-}
+// shouldSuppressRelevantMemories removed — both memory layers now always
+// contribute to injection. The injection budget constraint is the primary limiter.
 
-function buildSessionInjectionKey(scope: MemoryScope, ctx: PluginHookContext): string {
+function buildSessionInjectionKey(scope: MemoryScope, ctx: PluginHookContext, query: string): string {
   const sessionId = typeof ctx.sessionId === "string" && ctx.sessionId.trim() ? ctx.sessionId.trim() : "";
-  return `${scope.sessionKey}::${sessionId || "session-unknown"}`;
+  const queryFingerprint = normalizeForMatch(stripQueryBoilerplate(query)).slice(0, 60);
+  return `${scope.sessionKey}::${sessionId || "session-unknown"}::${queryFingerprint}`;
 }
 
 function buildRelevantClusterKey(sessionKey: string, query: string): string {
@@ -506,6 +504,8 @@ function rememberSessionInjection(key: string, signature: string): void {
 function shouldSkipDuplicateSessionInjection(key: string, signature: string): boolean {
   const snapshot = SESSION_INJECTION_CACHE.get(key);
   if (!snapshot) return false;
+  // Only dedup within the time window — after 30s, allow re-injection
+  if (Date.now() - snapshot.timestamp > SESSION_INJECTION_DEDUP_WINDOW_MS) return false;
   return snapshot.signature === signature;
 }
 
@@ -547,17 +547,17 @@ function trimCoreForInjection<T extends { score?: number }>(items: T[], intent: 
   const topScore = items[0]?.score ?? 0;
   const secondScore = items[1]?.score ?? 0;
   const maxItems = intent.singleFact
-    ? ((topScore >= 1.2 && topScore - secondScore >= 0.5) ? 1 : Math.min(2, topK))
-    : Math.min(topK, 4);
-  if (queryPartCount > 1) return items.slice(0, Math.min(maxItems + 1, items.length));
+    ? ((topScore >= 1.2 && topScore - secondScore >= 0.5) ? 1 : Math.min(4, topK))
+    : Math.min(topK, 6);
+  if (queryPartCount > 1) return items.slice(0, Math.min(maxItems + 2, items.length));
   return items.slice(0, maxItems);
 }
 
 function trimRelevantForInjection(items: MemuMemoryRecord[], intent: QueryIntent, queryPartCount: number, topK: number): MemuMemoryRecord[] {
   if (items.length === 0) return items;
-  if (intent.configLike) return items.slice(0, 1);
-  const maxItems = Math.min(2, Math.max(1, topK));
-  if (queryPartCount > 1) return items.slice(0, Math.min(maxItems + 1, items.length));
+  if (intent.configLike) return items.slice(0, Math.min(2, topK));
+  const maxItems = Math.min(topK, 4);
+  if (queryPartCount > 1) return items.slice(0, Math.min(maxItems + 2, items.length));
   return items.slice(0, maxItems);
 }
 
@@ -628,12 +628,18 @@ export function createRecallHook(
     const promptRaw = event.prompt ?? "";
     let query = "";
 
+    // Primary: extract from last user message in conversation history
     if (event.messages) {
       const lastUser = event.messages.filter((m) => m.role === "user").slice(-1)[0];
       query = extractTextBlocks(lastUser?.content);
     }
-
     query = sanitizePromptQuery(query);
+
+    // If messages yielded a system startup prompt, prefer event.prompt instead
+    const promptQuery = sanitizePromptQuery(promptRaw);
+    if (isSystemStartupPrompt(query) && promptQuery && !isSystemStartupPrompt(promptQuery)) {
+      query = promptQuery;
+    }
 
     const senderId = extractSenderId(promptRaw);
     if (!query && ctx.channelId && senderId) {
@@ -641,8 +647,11 @@ export function createRecallHook(
       query = sanitizePromptQuery(query);
     }
 
-  if (!query) query = sanitizePromptQuery(promptRaw);
-    if (!query || query.length < 3) return;
+    if (!query) query = promptQuery || sanitizePromptQuery(promptRaw);
+    if (!query || query.length < 2) return;
+    if (isSystemStartupPrompt(query)) return;
+    // Skip greetings and trivial social phrases — no memory recall needed.
+    if (/^(你好|hi|hello|hey|嗨|哈喽|早|晚安|早安|午安|在吗|在不在|嘿|yo)[\s!！。.？?~～]*$/i.test(query.trim())) return;
     const recallQueries = splitRecallQueries(query);
     const searchQueries = recallQueries.length > 0 ? recallQueries : [query];
     const queryIntent = inferQueryIntent(query, searchQueries.length);
@@ -652,13 +661,14 @@ export function createRecallHook(
 
     try {
       const scope = buildDynamicScope(config.scope, ctx);
-      const injectionKey = buildSessionInjectionKey(scope, ctx);
+      const injectionKey = buildSessionInjectionKey(scope, ctx, query);
+      const sessionCacheKey = `${scope.sessionKey}::${(typeof ctx.sessionId === "string" && ctx.sessionId.trim()) ? ctx.sessionId.trim() : "session-unknown"}`;
       let memoryContext = "";
       let filteredMemories: MemuMemoryRecord[] = [];
       if (config.recall.enabled) {
         const cacheKey = LRUCache.buildCacheKey(`${primaryBackend.provider}\0${searchQueries.join("\u241f")}`, scope.sessionKey, config.recall.topK);
         const cached = cache.get(cacheKey);
-        const relevantClusterKey = buildRelevantClusterKey(injectionKey, query);
+        const relevantClusterKey = buildRelevantClusterKey(sessionCacheKey, query);
         const cachedRelevantSelection = getSessionRelevantCache(relevantClusterKey);
 
         let memories: MemuMemoryRecord[];
@@ -685,16 +695,17 @@ export function createRecallHook(
         }
 
         filteredMemories = memories.filter((m) => m.score === undefined || m.score >= config.recall.scoreThreshold);
+        // Always search workspace facts in parallel and merge (instead of fallback-only)
         const workspaceDir = config.recall.workspaceFallback ? resolveWorkspaceDir(scope.agentId, ctx.workspaceDir) : "";
-        const needsWorkspaceFallback = filteredMemories.length < Math.min(config.recall.topK, 2);
-        if (workspaceDir && config.recall.workspaceFallback && needsWorkspaceFallback) {
+        if (workspaceDir && config.recall.workspaceFallback) {
           const workspaceFacts = await searchWorkspaceFacts(query, scope, workspaceDir, {
             maxItems: config.recall.workspaceFallbackMaxItems,
             maxFiles: config.recall.workspaceFallbackMaxFiles,
           });
           if (workspaceFacts.length > 0) {
             logger.info(`recall-hook: fetched ${workspaceFacts.length} workspace facts for query="${query.slice(0, 60)}..."`);
-            filteredMemories = rerankMemoryResults(query, [...filteredMemories, ...workspaceFacts]).slice(0, config.recall.topK);
+            filteredMemories = dedupeMemories([...filteredMemories, ...workspaceFacts]);
+            filteredMemories = rerankMemoryResults(query, filteredMemories).slice(0, config.recall.topK);
           }
         }
         if (filteredMemories.length > 0) {
@@ -704,42 +715,80 @@ export function createRecallHook(
       }
 
       let coreContext = "";
-      let coreMemories: Array<{ id: string; category?: string; key: string; value: string; score?: number }> = [];
+      let alwaysInjectBlock = "";
+      let coreMemories: Array<{ id: string; category?: string; key: string; value: string; tier?: string; score?: number }> = [];
       if (config.core.enabled) {
-        const cachedCore = getSessionCoreCache(injectionKey);
-        let corePool: Array<{ id: string; category?: string; key: string; value: string; score?: number }>;
+        const cachedCore = getSessionCoreCache(sessionCacheKey);
+        let allCoreFacts: Array<{ id: string; category?: string; key: string; value: string; tier?: string; score?: number }>;
         if (cachedCore) {
-          corePool = cachedCore.items.map((item) => ({
-            ...item,
-            score: scoreCoreCandidate(searchQueries, item, queryIntent),
-          }));
+          allCoreFacts = cachedCore.items;
         } else {
           const coreCandidates = await coreRepo.list(scope, {
             limit: Math.max(config.core.topK * 5, 50),
           });
-          setSessionCoreCache(injectionKey, coreCandidates);
-          corePool = coreCandidates.map((item) => ({
+          allCoreFacts = coreCandidates.map((item) => ({
             id: item.id,
             category: item.category,
             key: item.key,
             value: item.value,
+            tier: item.tier,
+          }));
+          setSessionCoreCache(sessionCacheKey, allCoreFacts);
+        }
+
+        // Phase 1: Always-inject pool (profile + general tiers) — no scoring needed
+        const alwaysInjectTiers = config.core.alwaysInjectTiers;
+        const alwaysInjectPool = allCoreFacts.filter((item) => {
+          const tier = item.tier ?? inferTierFromCategory(item.category ?? "general");
+          return alwaysInjectTiers.includes(tier as any);
+        });
+
+        // Phase 2: Retrieval pool (technical tier) — scoring-based selection
+        const retrievalOnlyTiers = config.core.retrievalOnlyTiers;
+        const retrievalPool = allCoreFacts
+          .filter((item) => {
+            const tier = item.tier ?? inferTierFromCategory(item.category ?? "general");
+            return retrievalOnlyTiers.includes(tier as any);
+          })
+          .map((item) => ({
+            ...item,
             score: scoreCoreCandidate(searchQueries, item, queryIntent),
           }));
-        }
-        coreMemories = trimCoreForInjection(selectRelevantCoreMemories(
-          dedupeCoreMemories(corePool).slice(0, Math.max(config.core.topK * 2, config.core.topK)),
+
+        const selectedRetrieval = trimCoreForInjection(
+          selectRelevantCoreMemories(
+            dedupeCoreMemories(retrievalPool).slice(0, Math.max(config.core.topK * 2, config.core.topK)),
+            searchQueries.length,
+          ),
+          queryIntent,
           searchQueries.length,
-        ), queryIntent, searchQueries.length, config.core.topK);
-        logger.info(`recall-hook: scope user=${scope.userId} agent=${scope.agentId} core=${coreMemories.length}`);
-        coreContext = formatCoreMemoriesContext(coreMemories);
+          config.core.topK,
+        ).filter((item) => (item.score ?? 0) > 0);
+
+        // Combine: always-inject first, then scored retrieval
+        coreMemories = [...alwaysInjectPool, ...selectedRetrieval];
+
+        // Safety cap on always-inject chars to prevent unbounded growth
+        let alwaysInjectContext = formatCoreMemoriesContext(alwaysInjectPool as any);
+        if (alwaysInjectContext.length > config.core.maxAlwaysInjectChars) {
+          alwaysInjectContext = alwaysInjectContext.slice(0, config.core.maxAlwaysInjectChars) + "\n[truncated]</core-memory>";
+        }
+
+        // retrievalContext goes through budget with free-text; alwaysInjectContext is prepended separately
+        coreContext = formatCoreMemoriesContext(selectedRetrieval as any);
+        alwaysInjectBlock = alwaysInjectContext;
+
+        logger.info(`recall-hook: scope user=${scope.userId} agent=${scope.agentId} core=${coreMemories.length} (always=${alwaysInjectPool.length} retrieval=${selectedRetrieval.length})`);
       }
 
-      if (filteredMemories.length > 0 && !shouldSuppressRelevantMemories(coreMemories, searchQueries.length, queryIntent)) {
+      if (filteredMemories.length > 0) {
         memoryContext = formatMemoriesContext(filteredMemories);
       }
 
       metrics.recordRecallLatency(Date.now() - start);
-      const injected = applyInjectionBudget([coreContext, memoryContext], config.recall.injectionBudgetChars);
+      // Budget applies to retrieval core + free-text; always-inject is prepended outside budget
+      const budgetedContent = applyInjectionBudget([coreContext, memoryContext], config.recall.injectionBudgetChars);
+      const injected = [alwaysInjectBlock, budgetedContent].filter(Boolean).join("\n\n") || "";
       if (!injected) return;
       const shouldSkipByBlock = shouldSkipDuplicateSessionInjection(injectionKey, injected);
       if (shouldSkipByBlock) {

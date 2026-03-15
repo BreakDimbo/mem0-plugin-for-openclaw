@@ -111,12 +111,9 @@ export function inferQueryKindHints(query: string): FreeTextMemoryKind[] {
   if (workflowLike) hints.add("workflow");
   if (constraintLike) hints.add("constraint");
 
-  // In Chinese, preference words often appear inside tooling/profile queries
-  // ("更喜欢用什么编辑器"), so only treat them as preference-first when the
-  // query does not already specify a stronger domain noun.
-  if (preferenceLike && !toolingLike && !profileLike && !scheduleLike && !relationshipLike && !projectLike && !workflowLike) {
-    hints.add("preference");
-  } else if (preferenceLike && normalized.includes("饮料")) {
+  // Allow preference to overlap with other kinds — "更喜欢用什么编辑器" should
+  // match both "tooling" and "preference" memories.
+  if (preferenceLike) {
     hints.add("preference");
   }
 
@@ -205,6 +202,29 @@ const QUERY_CONCEPTS: QueryConcept[] = [
   { query: /决策|取舍|为什么|decision|tradeoff/i, item: /决策|取舍|原因|关闭|开启|采用/i, bonus: 0.16 },
   { query: /经验|教训|复盘|lesson|takeaway/i, item: /经验|教训|复盘|总结|启发/i, bonus: 0.16 },
 ];
+
+/** Character-trigram similarity (Dice coefficient). Reusable across capture dedup and consolidation. */
+export function trigramSimilarity(a: string, b: string): number {
+  const trigramsOf = (s: string): Set<string> => {
+    const t = new Set<string>();
+    const lower = s.toLowerCase();
+    for (let i = 0; i <= lower.length - 3; i++) {
+      t.add(lower.slice(i, i + 3));
+    }
+    return t;
+  };
+
+  const ta = trigramsOf(a);
+  const tb = trigramsOf(b);
+  if (ta.size === 0 || tb.size === 0) return 0;
+
+  let overlap = 0;
+  for (const t of ta) {
+    if (tb.has(t)) overlap++;
+  }
+
+  return (2 * overlap) / (ta.size + tb.size);
+}
 
 export function genericConceptBoost(query: string, text: string): number {
   let boost = 0;

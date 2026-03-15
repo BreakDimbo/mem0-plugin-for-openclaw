@@ -55,12 +55,15 @@ export type MemuMemoryRecord = {
   createdAt?: number;
 };
 
+export type CoreMemoryTier = "profile" | "technical" | "general";
+
 export type CoreMemoryRecord = {
   id: string;
   category?: string;
   key: string;
   value: string;
   importance?: number;
+  tier?: CoreMemoryTier;
   scope: MemoryScope;
   source?: string;
   score?: number;
@@ -153,6 +156,21 @@ export type ScopeConfig = {
   requireAgentId: boolean;
 };
 
+export type LlmGateConfig = {
+  enabled: boolean;
+  apiBase: string;
+  apiKey?: string;
+  model: string;
+  maxTokensPerBatch: number;
+  timeoutMs: number;
+};
+
+export type ConsolidationConfig = {
+  enabled: boolean;
+  intervalMs: number;
+  similarityThreshold: number;
+};
+
 export type MemuPluginConfig = {
   backend: {
     freeText: {
@@ -204,6 +222,11 @@ export type MemuPluginConfig = {
     humanReviewRequired: boolean;
     touchOnRecall: boolean;
     proposalQueueMax: number;
+    alwaysInjectTiers: CoreMemoryTier[];
+    retrievalOnlyTiers: CoreMemoryTier[];
+    maxAlwaysInjectChars: number;
+    consolidation: ConsolidationConfig;
+    llmGate: LlmGateConfig;
   };
   capture: {
     enabled: boolean;
@@ -211,6 +234,11 @@ export type MemuPluginConfig = {
     minChars: number;
     maxChars: number;
     dedupeThreshold: number;
+    candidateQueue: {
+      enabled: boolean;
+      intervalMs: number;
+      maxBatchSize: number;
+    };
   };
   outbox: {
     enabled: boolean;
@@ -281,6 +309,22 @@ export const DEFAULT_CONFIG: MemuPluginConfig = {
     humanReviewRequired: true,
     touchOnRecall: true,
     proposalQueueMax: 200,
+    alwaysInjectTiers: ["profile", "general"] as CoreMemoryTier[],
+    retrievalOnlyTiers: ["technical"] as CoreMemoryTier[],
+    maxAlwaysInjectChars: 600,
+    consolidation: {
+      enabled: true,
+      intervalMs: 3_600_000,
+      similarityThreshold: 0.85,
+    },
+    llmGate: {
+      enabled: false,
+      apiBase: "https://api.openai.com/v1",
+      apiKey: undefined,
+      model: "gpt-4o-mini",
+      maxTokensPerBatch: 2000,
+      timeoutMs: 30_000,
+    },
   },
   capture: {
     enabled: true,
@@ -288,6 +332,11 @@ export const DEFAULT_CONFIG: MemuPluginConfig = {
     minChars: 24,
     maxChars: 400,
     dedupeThreshold: 0.8,
+    candidateQueue: {
+      enabled: true,
+      intervalMs: 600_000,
+      maxBatchSize: 50,
+    },
   },
   outbox: {
     enabled: true,
@@ -397,6 +446,14 @@ function strMap(v: unknown): Record<string, string> | undefined {
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
+const VALID_TIERS: CoreMemoryTier[] = ["profile", "technical", "general"];
+
+function parseTierArray(v: unknown, def: CoreMemoryTier[]): CoreMemoryTier[] {
+  if (!Array.isArray(v)) return def;
+  const filtered = v.filter((t): t is CoreMemoryTier => typeof t === "string" && VALID_TIERS.includes(t as CoreMemoryTier));
+  return filtered.length > 0 ? filtered : def;
+}
+
 export function loadConfig(raw?: Record<string, unknown>): MemuPluginConfig {
   if (!raw) return { ...DEFAULT_CONFIG };
 
@@ -499,6 +556,28 @@ export function loadConfig(raw?: Record<string, unknown>): MemuPluginConfig {
       humanReviewRequired: bool(co.humanReviewRequired, DEFAULT_CONFIG.core.humanReviewRequired),
       touchOnRecall: bool(co.touchOnRecall, DEFAULT_CONFIG.core.touchOnRecall),
       proposalQueueMax: numInRange(co.proposalQueueMax, DEFAULT_CONFIG.core.proposalQueueMax, 10, 5_000),
+      alwaysInjectTiers: parseTierArray(co.alwaysInjectTiers, DEFAULT_CONFIG.core.alwaysInjectTiers),
+      retrievalOnlyTiers: parseTierArray(co.retrievalOnlyTiers, DEFAULT_CONFIG.core.retrievalOnlyTiers),
+      maxAlwaysInjectChars: numInRange(co.maxAlwaysInjectChars, DEFAULT_CONFIG.core.maxAlwaysInjectChars, 100, 5_000),
+      consolidation: (() => {
+        const cn = (co.consolidation ?? {}) as Record<string, unknown>;
+        return {
+          enabled: bool(cn.enabled, DEFAULT_CONFIG.core.consolidation.enabled),
+          intervalMs: num(cn.intervalMs, DEFAULT_CONFIG.core.consolidation.intervalMs),
+          similarityThreshold: numInRange(cn.similarityThreshold, DEFAULT_CONFIG.core.consolidation.similarityThreshold, 0.5, 1),
+        };
+      })(),
+      llmGate: (() => {
+        const lg = (co.llmGate ?? {}) as Record<string, unknown>;
+        return {
+          enabled: bool(lg.enabled, DEFAULT_CONFIG.core.llmGate.enabled),
+          apiBase: str(lg.apiBase, DEFAULT_CONFIG.core.llmGate.apiBase),
+          apiKey: optStr(lg.apiKey) ?? (typeof process !== "undefined" ? process.env.MEM0_LLM_GATE_API_KEY : undefined),
+          model: str(lg.model, DEFAULT_CONFIG.core.llmGate.model),
+          maxTokensPerBatch: numInRange(lg.maxTokensPerBatch, DEFAULT_CONFIG.core.llmGate.maxTokensPerBatch, 500, 10_000),
+          timeoutMs: numInRange(lg.timeoutMs, DEFAULT_CONFIG.core.llmGate.timeoutMs, 5_000, 120_000),
+        };
+      })(),
     },
     capture: {
       enabled: bool(c.enabled, DEFAULT_CONFIG.capture.enabled),
@@ -506,6 +585,14 @@ export function loadConfig(raw?: Record<string, unknown>): MemuPluginConfig {
       minChars: num(c.minChars, DEFAULT_CONFIG.capture.minChars),
       maxChars: num(c.maxChars, DEFAULT_CONFIG.capture.maxChars),
       dedupeThreshold: typeof c.dedupeThreshold === "number" ? c.dedupeThreshold : DEFAULT_CONFIG.capture.dedupeThreshold,
+      candidateQueue: (() => {
+        const cq = (c.candidateQueue ?? {}) as Record<string, unknown>;
+        return {
+          enabled: bool(cq.enabled, DEFAULT_CONFIG.capture.candidateQueue.enabled),
+          intervalMs: num(cq.intervalMs, DEFAULT_CONFIG.capture.candidateQueue.intervalMs),
+          maxBatchSize: numInRange(cq.maxBatchSize, DEFAULT_CONFIG.capture.candidateQueue.maxBatchSize, 1, 200),
+        };
+      })(),
     },
     outbox: {
       enabled: bool(o.enabled, DEFAULT_CONFIG.outbox.enabled),

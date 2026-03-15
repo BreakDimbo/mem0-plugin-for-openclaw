@@ -2,8 +2,8 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 
-import type { CoreMemoryRecord, MemoryScope } from "./types.js";
-import { genericConceptBoost, tokenizeSemanticQuery } from "./metadata.js";
+import type { CoreMemoryRecord, CoreMemoryTier, MemoryScope } from "./types.js";
+import { genericConceptBoost, tokenizeSemanticQuery, trigramSimilarity } from "./metadata.js";
 import { sanitizeCoreValue, shouldStoreCoreMemory } from "./security.js";
 
 type Logger = { info(msg: string): void; warn(msg: string): void };
@@ -14,6 +14,7 @@ type StoredCoreRecord = {
   key: string;
   value: string;
   importance?: number;
+  tier?: CoreMemoryTier;
   source?: string;
   metadata?: Record<string, unknown>;
   scope: MemoryScope;
@@ -105,6 +106,23 @@ export function normalizeCoreCategory(category: string | undefined, key: string)
   }
 }
 
+export function inferTierFromCategory(category: string): CoreMemoryTier {
+  switch (category) {
+    case "identity":
+    case "preferences":
+    case "goals":
+    case "relationships":
+      return "profile";
+    case "technical":
+    case "architecture":
+    case "decision":
+    case "benchmark":
+      return "technical";
+    default:
+      return "general";
+  }
+}
+
 function scopeMatches(scope: MemoryScope, record: StoredCoreRecord): boolean {
   return record.scope.userId === scope.userId && record.scope.agentId === scope.agentId;
 }
@@ -116,6 +134,7 @@ function cloneRecord(record: StoredCoreRecord): CoreMemoryRecord {
     key: record.key,
     value: record.value,
     importance: record.importance,
+    tier: record.tier ?? inferTierFromCategory(record.category),
     source: record.source,
     metadata: record.metadata,
     scope: { ...record.scope },
@@ -190,10 +209,15 @@ export class CoreMemoryRepository {
     return state.items.filter((item) => scopeMatches(scope, item));
   }
 
-  async list(scope: MemoryScope, opts?: { query?: string; limit?: number }): Promise<CoreMemoryRecord[]> {
+  async list(scope: MemoryScope, opts?: { query?: string; limit?: number; tiers?: CoreMemoryTier[] }): Promise<CoreMemoryRecord[]> {
     try {
       let records = (await this.listScopeRecords(scope)).map(cloneRecord);
       const totalBeforeLimit = records.length;
+
+      // Filter by tier if specified
+      if (opts?.tiers && opts.tiers.length > 0) {
+        records = records.filter((r) => opts.tiers!.includes(r.tier ?? inferTierFromCategory(r.category ?? "general")));
+      }
 
       if (opts?.query) {
         records = records.map((record) => ({
@@ -241,11 +265,13 @@ export class CoreMemoryRepository {
     try {
       const state = await this.ensureLoaded();
       const category = normalizeCoreCategory(payload.category, key);
+      const tier = inferTierFromCategory(category);
       const now = Date.now();
       const existing = state.items.find((item) => scopeMatches(scope, item) && item.category === category && item.key === key);
       if (existing) {
         existing.value = value;
         existing.importance = payload.importance;
+        existing.tier = tier;
         existing.source = payload.source ?? existing.source ?? "memory-mem0";
         existing.metadata = payload.metadata ? { ...payload.metadata } : existing.metadata;
         existing.updatedAt = now;
@@ -256,6 +282,7 @@ export class CoreMemoryRepository {
           key,
           value,
           importance: payload.importance,
+          tier,
           source: payload.source ?? "memory-mem0",
           metadata: payload.metadata ? { ...payload.metadata } : undefined,
           scope: { ...scope },
@@ -286,11 +313,13 @@ export class CoreMemoryRepository {
       .map((item) => {
         const key = item.key.trim().toLowerCase();
         const value = sanitizeCoreValue(item.value, this.maxItemChars);
+        const category = normalizeCoreCategory(item.category, key);
         return {
-          category: normalizeCoreCategory(item.category, key),
+          category,
           key,
           value,
           importance: item.importance,
+          tier: inferTierFromCategory(category) as CoreMemoryTier,
           source: item.provenance ?? "memory-mem0",
         };
       })
@@ -306,6 +335,7 @@ export class CoreMemoryRepository {
         if (existing) {
           existing.value = item.value;
           existing.importance = item.importance;
+          existing.tier = item.tier;
           existing.source = item.source;
           existing.updatedAt = now;
         } else {
@@ -315,6 +345,7 @@ export class CoreMemoryRepository {
             key: item.key,
             value: item.value,
             importance: item.importance,
+            tier: item.tier,
             source: item.source,
             scope: { ...scope },
             createdAt: now,
@@ -394,6 +425,94 @@ export class CoreMemoryRepository {
     } catch (err) {
       this.logger.warn(`core-repo: touch failed: ${String(err)}`);
       return false;
+    }
+  }
+
+  async consolidate(
+    scope: MemoryScope,
+    opts?: { dryRun?: boolean; similarityThreshold?: number },
+  ): Promise<{ merged: number; deleted: number; unchanged: number }> {
+    const threshold = opts?.similarityThreshold ?? 0.85;
+    const dryRun = opts?.dryRun ?? false;
+    let deleted = 0;
+    let merged = 0;
+
+    try {
+      const state = await this.ensureLoaded();
+      const scopeRecords = state.items.filter((item) => scopeMatches(scope, item));
+
+      // Group by (category, key) for exact-key dedup
+      const byKey = new Map<string, StoredCoreRecord[]>();
+      for (const record of scopeRecords) {
+        const groupKey = `${record.category}::${record.key}`;
+        const group = byKey.get(groupKey);
+        if (group) {
+          group.push(record);
+        } else {
+          byKey.set(groupKey, [record]);
+        }
+      }
+
+      const toDelete = new Set<string>(); // record ids to remove
+
+      // Step 1: Exact-key dedup — keep latest updatedAt per (category, key)
+      for (const [, group] of byKey) {
+        if (group.length <= 1) continue;
+        group.sort((a, b) => b.updatedAt - a.updatedAt);
+        for (let i = 1; i < group.length; i++) {
+          toDelete.add(group[i].id);
+          deleted++;
+        }
+      }
+
+      // Step 2: Value dedup within category — detect near-identical values with different keys
+      const byCategory = new Map<string, StoredCoreRecord[]>();
+      for (const record of scopeRecords) {
+        if (toDelete.has(record.id)) continue; // already marked for deletion
+        const group = byCategory.get(record.category);
+        if (group) {
+          group.push(record);
+        } else {
+          byCategory.set(record.category, [record]);
+        }
+      }
+
+      for (const [, categoryRecords] of byCategory) {
+        if (categoryRecords.length <= 1) continue;
+        for (let i = 0; i < categoryRecords.length; i++) {
+          if (toDelete.has(categoryRecords[i].id)) continue;
+          for (let j = i + 1; j < categoryRecords.length; j++) {
+            if (toDelete.has(categoryRecords[j].id)) continue;
+            const sim = trigramSimilarity(categoryRecords[i].value, categoryRecords[j].value);
+            if (sim >= threshold) {
+              const impI = categoryRecords[i].importance ?? 5;
+              const impJ = categoryRecords[j].importance ?? 5;
+              const loser =
+                impI > impJ ? categoryRecords[j] :
+                impJ > impI ? categoryRecords[i] :
+                categoryRecords[i].updatedAt >= categoryRecords[j].updatedAt ? categoryRecords[j] : categoryRecords[i];
+              toDelete.add(loser.id);
+              merged++;
+            }
+          }
+        }
+      }
+
+      const unchanged = scopeRecords.length - deleted - merged;
+
+      if (toDelete.size > 0 && !dryRun) {
+        state.items = state.items.filter((item) => !toDelete.has(item.id));
+        await this.persist();
+      }
+
+      this.logger.info(
+        `core-repo: consolidate scope=${scope.agentId} deleted=${deleted} merged=${merged} unchanged=${unchanged}${dryRun ? " (dry-run)" : ""}`,
+      );
+
+      return { merged, deleted, unchanged };
+    } catch (err) {
+      this.logger.warn(`core-repo: consolidate failed: ${String(err)}`);
+      return { merged: 0, deleted: 0, unchanged: 0 };
     }
   }
 }

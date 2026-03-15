@@ -61,14 +61,10 @@ export class LRUCache<T> {
     this.map.delete(key);
 
     if (this.map.size >= this.maxSize) {
-      // Evict oldest 10% per §13
-      const evictCount = Math.max(1, Math.floor(this.maxSize * 0.1));
-      const keys = this.map.keys();
-      for (let i = 0; i < evictCount; i++) {
-        const oldest = keys.next().value;
-        if (oldest !== undefined) {
-          this.map.delete(oldest);
-        }
+      // Evict single oldest entry to avoid thrashing
+      const oldest = this.map.keys().next().value;
+      if (oldest !== undefined) {
+        this.map.delete(oldest);
       }
     }
 
