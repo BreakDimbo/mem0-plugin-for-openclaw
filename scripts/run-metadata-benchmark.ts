@@ -11,7 +11,7 @@ function noiseTextForCase(testCase: SearchBenchmarkCase): string {
 }
 
 async function main() {
-  const raw = JSON.parse(fs.readFileSync("~/.openclaw/openclaw.json", "utf-8"));
+  const raw = JSON.parse(fs.readFileSync(`${process.env.HOME}/.openclaw/openclaw.json`, "utf-8"));
   const cfg = loadConfig(raw.plugins.entries["memory-mem0"].config);
   const logger = console;
   const backend = new Mem0FreeTextBackend(cfg, logger);

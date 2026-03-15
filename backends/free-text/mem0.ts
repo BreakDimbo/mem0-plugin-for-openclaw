@@ -186,7 +186,7 @@ export class Mem0FreeTextBackend implements FreeTextBackend {
       };
     } catch (err) {
       // Helpful fallback for local-source setups when mem0ai isn't installed as a package.
-      const localOssEntry = "~/Project/github/mem0ai/mem0/mem0-ts/src/oss/src/index.ts";
+      const localOssEntry = "<configure path to local mem0 OSS>";
       const imported = await import(toPathHref(localOssEntry));
       const MemoryCtor = (imported as Record<string, unknown>).Memory as new (cfg: Record<string, unknown>) => any;
       const memory = new MemoryCtor({

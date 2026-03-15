@@ -16,14 +16,14 @@ export type TurningZeroRecallCase = {
 };
 
 export const TURNING_ZERO_HISTORY_FACTS: TurningZeroHistoryFact[] = [
-  { id: "tz-001", text: "用户名字叫昊。", memoryKind: "profile", sourceSession: "00000000-0000-0000-0000-000000000001", sourceLabel: "USER.md" },
+  { id: "tz-001", text: "用户名字叫小明。", memoryKind: "profile", sourceSession: "00000000-0000-0000-0000-000000000001", sourceLabel: "USER.md" },
   { id: "tz-002", text: "用户所在时区是 UTC+8。", memoryKind: "profile", sourceSession: "00000000-0000-0000-0000-000000000001", sourceLabel: "USER.md" },
   { id: "tz-003", text: "用户是某互联网公司高级后端工程师。", memoryKind: "profile", sourceSession: "00000000-0000-0000-0000-000000000001", sourceLabel: "USER.md" },
   { id: "tz-004", text: "用户深耕分布式系统与高并发场景。", memoryKind: "profile", sourceSession: "00000000-0000-0000-0000-000000000001", sourceLabel: "USER.md" },
   { id: "tz-005", text: "用户的人格倾向是 INTJ。", memoryKind: "profile", sourceSession: "00000000-0000-0000-0000-000000000001", sourceLabel: "USER.md" },
   { id: "tz-006", text: "用户对冗余、低效和无逻辑的堆砌零容忍。", memoryKind: "constraint", sourceSession: "00000000-0000-0000-0000-000000000001", sourceLabel: "USER.md" },
   { id: "tz-007", text: "用户的主目标是借助 AI/LLM 完成从资深程序员到一人公司创业者的转型。", memoryKind: "project", sourceSession: "00000000-0000-0000-0000-000000000001", sourceLabel: "USER.md" },
-  { id: "tz-008", text: "用户的健康目标是养成健身习惯并保持健康体重。", memoryKind: "project", sourceSession: "00000000-0000-0000-0000-000000000001", sourceLabel: "USER.md" },
+  { id: "tz-008", text: "用户的健康目标是养成规律健身习惯。", memoryKind: "project", sourceSession: "00000000-0000-0000-0000-000000000001", sourceLabel: "USER.md" },
   { id: "tz-009", text: "用户当前的全职工作是某互联网公司高级后端工程师。", memoryKind: "work", sourceSession: "00000000-0000-0000-0000-000000000001", sourceLabel: "USER.md" },
   { id: "tz-010", text: "用户正在探索自媒体方向。", memoryKind: "project", sourceSession: "00000000-0000-0000-0000-000000000001", sourceLabel: "USER.md" },
   { id: "tz-011", text: "用户正在探索 iOS 开发方向。", memoryKind: "project", sourceSession: "00000000-0000-0000-0000-000000000001", sourceLabel: "USER.md" },

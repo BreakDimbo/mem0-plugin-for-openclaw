@@ -41,7 +41,7 @@ type CompareSummary = {
 
 async function main() {
   const runId = new Date().toISOString().replace(/[:.]/g, "-");
-  const raw = JSON.parse(await readFile("~/.openclaw/openclaw.json", "utf-8"));
+  const raw = JSON.parse(await readFile(`${process.env.HOME}/.openclaw/openclaw.json`, "utf-8"));
   const currentConfig = loadConfig(raw?.plugins?.entries?.["memory-mem0"]?.config ?? {});
   const currentHook = await buildCurrentRecallHook(currentConfig);
   const officialHook = await buildOfficialRecallHook(raw, currentConfig);
@@ -88,8 +88,8 @@ async function main() {
     rows,
   };
 
-  const jsonPath = `~/.openclaw/extensions/memory-mem0/reports/plugin-recall-comparison-${runId}.json`;
-  const mdPath = `~/.openclaw/extensions/memory-mem0/reports/plugin-recall-comparison-${runId}.md`;
+  const jsonPath = `${process.env.HOME}/.openclaw/extensions/memory-mem0/reports/plugin-recall-comparison-${runId}.json`;
+  const mdPath = `${process.env.HOME}/.openclaw/extensions/memory-mem0/reports/plugin-recall-comparison-${runId}.md`;
   await mkdir(dirname(jsonPath), { recursive: true });
   await writeFile(jsonPath, JSON.stringify(report, null, 2), "utf-8");
   await writeFile(mdPath, renderMarkdown(report, jsonPath), "utf-8");
@@ -141,7 +141,7 @@ async function buildOfficialRecallHook(rawConfig: any, currentConfig: ReturnType
     logger: { info: (_msg: string) => {}, warn: (_msg: string) => {} },
     resolvePath: (p: string) =>
       p.startsWith("~/.openclaw/")
-        ? p.replace(/^~\/\.openclaw\//, "~/.openclaw/")
+        ? p.replace(/^~\/\.openclaw\//, `${process.env.HOME}/.openclaw/`)
         : p,
     on: (event: string, handler: unknown) => {
       if (event === "before_agent_start") beforeAgentStart = handler as any;
@@ -173,7 +173,7 @@ async function renderCurrentContext(
       agentId: "turning_zero",
       sessionKey,
       sessionId,
-      workspaceDir: "~/.openclaw/workspace-turning_zero",
+      workspaceDir: `${process.env.HOME}/.openclaw/workspace-turning_zero`,
     } as any,
   );
   return String((result as { prependContext?: string } | undefined)?.prependContext ?? "");

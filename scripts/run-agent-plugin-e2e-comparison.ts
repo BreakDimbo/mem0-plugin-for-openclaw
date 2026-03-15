@@ -8,9 +8,9 @@ import { TURNING_ZERO_E2E_CASES } from "./turning-zero-e2e-fixtures.js";
 
 const execFileAsync = promisify(execFile);
 
-const OPENCLAW_CONFIG_PATH = "~/.openclaw/openclaw.json";
-const OFFICIAL_PLUGIN_SOURCE = "~/Project/github/mem0ai/mem0/openclaw";
-const OFFICIAL_PLUGIN_DIR = "~/.openclaw/extensions/openclaw-mem0";
+const OPENCLAW_CONFIG_PATH = `${process.env.HOME}/.openclaw/openclaw.json`;
+const OFFICIAL_PLUGIN_SOURCE = "<configure path to official plugin>";
+const OFFICIAL_PLUGIN_DIR = `${process.env.HOME}/.openclaw/extensions/openclaw-mem0`;
 
 type PluginVariant = {
   id: "memory-mem0" | "openclaw-mem0";
@@ -59,8 +59,8 @@ async function main() {
       bothMisses: current.rows.filter((row) => !row.hit && !official.rows.find((r) => r.id === row.id)?.hit),
     };
 
-    const jsonPath = `~/.openclaw/extensions/memory-mem0/reports/agent-plugin-e2e-comparison-${runId}.json`;
-    const mdPath = `~/.openclaw/extensions/memory-mem0/reports/agent-plugin-e2e-comparison-${runId}.md`;
+    const jsonPath = `${process.env.HOME}/.openclaw/extensions/memory-mem0/reports/agent-plugin-e2e-comparison-${runId}.json`;
+    const mdPath = `${process.env.HOME}/.openclaw/extensions/memory-mem0/reports/agent-plugin-e2e-comparison-${runId}.md`;
     await mkdir(dirname(jsonPath), { recursive: true });
     await writeFile(jsonPath, JSON.stringify(report, null, 2), "utf-8");
     await writeFile(mdPath, renderMarkdown(report, jsonPath), "utf-8");
@@ -176,7 +176,7 @@ async function restoreConfig(originalConfigText: string): Promise<void> {
 
 async function restartGateway(): Promise<void> {
   await execFileAsync("openclaw", ["gateway", "restart"], {
-    cwd: "~/.openclaw",
+    cwd: `${process.env.HOME}/.openclaw`,
     maxBuffer: 4 * 1024 * 1024,
   });
 }
@@ -194,7 +194,7 @@ async function runAgentCommand(message: string): Promise<any> {
   const { stdout } = await execFileAsync(
     "openclaw",
     ["agent", "--agent", "turning_zero", "--message", message, "--timeout", "45", "--json"],
-    { cwd: "~/.openclaw", maxBuffer: 4 * 1024 * 1024 },
+    { cwd: `${process.env.HOME}/.openclaw`, maxBuffer: 4 * 1024 * 1024 },
   );
   const payload = extractTrailingJson(stdout);
   return JSON.parse(payload);

@@ -89,7 +89,7 @@ async function resetAgentSession(reason: "new" | "reset"): Promise<void> {
       "--params",
       JSON.stringify({ key: SESSION_KEY, reason }),
     ],
-    { cwd: "~/.openclaw", maxBuffer: 2 * 1024 * 1024 },
+    { cwd: `${process.env.HOME}/.openclaw`, maxBuffer: 2 * 1024 * 1024 },
   );
 }
 
@@ -97,7 +97,7 @@ async function runAgentCommand(message: string): Promise<any> {
   const { stdout } = await execFileAsync(
     "openclaw",
     ["agent", "--agent", AGENT_ID, "--message", message, "--timeout", "45", "--json"],
-    { cwd: "~/.openclaw", maxBuffer: 4 * 1024 * 1024 },
+    { cwd: `${process.env.HOME}/.openclaw`, maxBuffer: 4 * 1024 * 1024 },
   );
   const payload = extractTrailingJson(stdout);
   return JSON.parse(payload);

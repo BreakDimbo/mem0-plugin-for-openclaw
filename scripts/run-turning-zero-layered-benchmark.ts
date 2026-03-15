@@ -66,7 +66,7 @@ async function main() {
 }
 
 async function loadPluginConfig() {
-  const raw = JSON.parse(await readFile("~/.openclaw/openclaw.json", "utf-8"));
+  const raw = JSON.parse(await readFile(`${process.env.HOME}/.openclaw/openclaw.json`, "utf-8"));
   return loadConfig(raw?.plugins?.entries?.["memory-mem0"]?.config ?? {});
 }
 
@@ -104,7 +104,7 @@ async function renderInjectedContext(
     },
     {
       agentId: "turning_zero",
-      workspaceDir: "~/.openclaw/workspace-turning_zero",
+      workspaceDir: `${process.env.HOME}/.openclaw/workspace-turning_zero`,
     } as any,
   );
   return String((result as { prependContext?: string } | undefined)?.prependContext ?? "");
@@ -123,7 +123,7 @@ async function runAgentCommand(message: string): Promise<any> {
   const { stdout } = await execFileAsync(
     "openclaw",
     ["agent", "--agent", "turning_zero", "--message", message, "--timeout", "45", "--json"],
-    { cwd: "~/.openclaw", maxBuffer: 4 * 1024 * 1024 },
+    { cwd: `${process.env.HOME}/.openclaw`, maxBuffer: 4 * 1024 * 1024 },
   );
   const payload = extractTrailingJson(stdout);
   return JSON.parse(payload);

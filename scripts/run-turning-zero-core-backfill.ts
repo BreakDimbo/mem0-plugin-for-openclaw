@@ -17,7 +17,7 @@ import { loadConfig, type MemoryScope } from "../types.js";
 import { TURNING_ZERO_CORE_BACKFILL_ITEMS } from "./turning-zero-core-backfill-fixtures.js";
 
 async function main() {
-  const raw = JSON.parse(await readFile("~/.openclaw/openclaw.json", "utf-8"));
+  const raw = JSON.parse(await readFile(`${process.env.HOME}/.openclaw/openclaw.json`, "utf-8"));
   const config = loadConfig(raw?.plugins?.entries?.["memory-mem0"]?.config ?? {});
   const logger = { info: (msg: string) => console.log(msg), warn: (msg: string) => console.warn(msg) };
   const repo = new CoreMemoryRepository(config.core.persistPath, logger, config.core.maxItemChars);
