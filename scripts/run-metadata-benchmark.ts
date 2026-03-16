@@ -87,7 +87,7 @@ async function main() {
       : profile),
     {
       maxItems: 5,
-      maxContextChars: cfg.recall.maxContextChars,
+      maxContextChars: cfg.recall.maxChars,
     },
   );
 
@@ -98,7 +98,7 @@ async function main() {
     if (!durablePlusKind) continue;
     const rerun = await backend.search(row.query, scope, {
       maxItems: 5,
-      maxContextChars: cfg.recall.maxContextChars,
+      maxContextChars: cfg.recall.maxChars,
       quality: "durable",
       memoryKinds: row.expectedKind ? [row.expectedKind] : undefined,
       includeSessionScope: true,

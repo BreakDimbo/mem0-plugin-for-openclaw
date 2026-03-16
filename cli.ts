@@ -173,7 +173,7 @@ export function createMemuCommand(
           `  Pending Proposals: ${proposalQueue.pendingCount}`,
           "",
           "Sync:",
-          `  Enabled:  ${config.sync.flushToMarkdown}`,
+          `  Enabled:  ${config.sync.enabled}`,
           `  Syncs:    ${sync.syncCount}`,
           `  Written:  ${sync.totalWritten}`,
           `  Last:     ${sync.lastSyncAt ? new Date(sync.lastSyncAt).toISOString() : "never"}`,
@@ -195,7 +195,7 @@ export function createMemuCommand(
 
         let memories = await primaryBackend.search(query, runtimeScope, {
           maxItems: 10,
-          maxContextChars: config.recall.maxContextChars,
+          maxContextChars: config.recall.maxChars,
           includeSessionScope: true,
         });
         memories = rerankMemoryResults(query, memories).slice(0, 10);

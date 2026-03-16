@@ -34,13 +34,6 @@ export type SmartRouterConfig = {
   };
 };
 
-export type RerankerConfig = {
-  enabled?: boolean;
-  threshold?: number;
-  bm25Weight?: number;
-  embeddingWeight?: number;
-};
-
 // -- Scope --
 
 export type MemoryScope = {
@@ -210,6 +203,11 @@ export type ConsolidationConfig = {
 };
 
 export type MemuPluginConfig = {
+  // -- Top-level simplified config (new format) --
+  dataDir?: string;           // Base data directory, replaces multiple paths
+  geminiApiKey?: string;      // Shared Gemini API key for classifier, llmGate, mem0 LLM
+
+  // -- Existing detailed config (backward compatible) --
   backend: {
     freeText: {
       provider: "mem0";
@@ -230,26 +228,18 @@ export type MemuPluginConfig = {
       vectorStore?: { provider: string; config: Record<string, unknown> };
       llm?: { provider: string; config: Record<string, unknown> };
       historyDbPath?: string;
+      graph_store?: { provider: string; config: Record<string, unknown> };
     };
   };
   scope: ScopeConfig;
   recall: {
     enabled: boolean;
-    method: "rag" | "llm";
-    hybrid: {
-      enabled: boolean;
-      alpha: number;
-      fallbackToRag: boolean;
-    };
     topK: number;
-    scoreThreshold: number;
-    maxContextChars: number;
-    injectionBudgetChars: number;
+    threshold: number;            // Renamed from scoreThreshold
+    maxChars: number;             // Renamed from maxContextChars/injectionBudgetChars
     cacheTtlMs: number;
     cacheMaxSize: number;
-    workspaceFallback: boolean;
-    workspaceFallbackMaxItems: number;
-    workspaceFallbackMaxFiles: number;
+    alwaysInjectCategories: string[];
   };
   core: {
     enabled: boolean;
@@ -261,14 +251,12 @@ export type MemuPluginConfig = {
     touchOnRecall: boolean;
     proposalQueueMax: number;
     alwaysInjectTiers: CoreMemoryTier[];
-    retrievalOnlyTiers: CoreMemoryTier[];
-    maxAlwaysInjectChars: number;
+    alwaysInjectLimit: number;    // Renamed from maxAlwaysInjectChars
     consolidation: ConsolidationConfig;
     llmGate: LlmGateConfig;
   };
   capture: {
     enabled: boolean;
-    maxItemsPerRun: number;
     minChars: number;
     maxChars: number;
     dedupeThreshold: number;
@@ -288,16 +276,34 @@ export type MemuPluginConfig = {
     flushIntervalMs: number;
   };
   sync: {
-    flushToMarkdown: boolean;
-    flushIntervalSec: number;
+    enabled: boolean;
+    intervalMs: number;
     memoryFilePath: string;
   };
   classifier: ClassifierConfig;
   smartRouter: SmartRouterConfig;
-  reranker: RerankerConfig;
 };
 
+// Backward compatibility aliases (for code that uses old field names)
+export function getRecallThreshold(config: MemuPluginConfig): number {
+  return config.recall.threshold;
+}
+export function getRecallMaxChars(config: MemuPluginConfig): number {
+  return config.recall.maxChars;
+}
+export function getCoreAlwaysInjectLimit(config: MemuPluginConfig): number {
+  return config.core.alwaysInjectLimit;
+}
+export function getSyncEnabled(config: MemuPluginConfig): boolean {
+  return config.sync.enabled;
+}
+export function getSyncIntervalMs(config: MemuPluginConfig): number {
+  return config.sync.intervalMs;
+}
+
 export const DEFAULT_CONFIG: MemuPluginConfig = {
+  dataDir: "~/.openclaw/data/memory-mem0",
+  geminiApiKey: undefined,
   backend: {
     freeText: {
       provider: "mem0",
@@ -325,34 +331,24 @@ export const DEFAULT_CONFIG: MemuPluginConfig = {
   },
   recall: {
     enabled: true,
-    method: "rag",
-    hybrid: {
-      enabled: false,
-      alpha: 0.7,
-      fallbackToRag: true,
-    },
-    topK: 3,
-    scoreThreshold: 0.30,
-    maxContextChars: 1200,
-    injectionBudgetChars: 1600,
+    topK: 5,
+    threshold: 0.25,
+    maxChars: 1500,
     cacheTtlMs: 60_000,
     cacheMaxSize: 100,
-    workspaceFallback: true,
-    workspaceFallbackMaxItems: 2,
-    workspaceFallbackMaxFiles: 6,
+    alwaysInjectCategories: [],
   },
   core: {
     enabled: true,
-    topK: 8,
-    maxItemChars: 240,
-    persistPath: "~/.openclaw/data/memory-memu",
+    topK: 10,
+    maxItemChars: 300,
+    persistPath: "~/.openclaw/data/memory-mem0",
     autoExtractProposals: true,
-    humanReviewRequired: true,
+    humanReviewRequired: false,
     touchOnRecall: true,
     proposalQueueMax: 200,
     alwaysInjectTiers: ["profile", "general"] as CoreMemoryTier[],
-    retrievalOnlyTiers: ["technical"] as CoreMemoryTier[],
-    maxAlwaysInjectChars: 600,
+    alwaysInjectLimit: 800,
     consolidation: {
       enabled: true,
       intervalMs: 3_600_000,
@@ -360,22 +356,21 @@ export const DEFAULT_CONFIG: MemuPluginConfig = {
     },
     llmGate: {
       enabled: false,
-      apiBase: "https://api.openai.com/v1",
+      apiBase: "https://generativelanguage.googleapis.com/v1beta/openai",
       apiKey: undefined,
-      model: "gpt-4o-mini",
-      maxTokensPerBatch: 2000,
-      timeoutMs: 30_000,
+      model: "gemini-2.5-flash",
+      maxTokensPerBatch: 4000,
+      timeoutMs: 60_000,
     },
   },
   capture: {
     enabled: true,
-    maxItemsPerRun: 2,
-    minChars: 24,
-    maxChars: 400,
+    minChars: 20,
+    maxChars: 600,
     dedupeThreshold: 0.8,
     candidateQueue: {
       enabled: true,
-      intervalMs: 600_000,
+      intervalMs: 10_000,
       maxBatchSize: 50,
     },
   },
@@ -385,36 +380,25 @@ export const DEFAULT_CONFIG: MemuPluginConfig = {
     batchSize: 10,
     maxRetries: 5,
     drainTimeoutMs: 5_000,
-    persistPath: "~/.openclaw/data/memory-memu",
+    persistPath: "~/.openclaw/data/memory-mem0",
     flushIntervalMs: 10_000,
   },
   sync: {
-    flushToMarkdown: true,
-    flushIntervalSec: 300,
-    memoryFilePath: "",
+    enabled: true,
+    intervalMs: 300_000,
+    memoryFilePath: "~/.openclaw/workspace/MEMORY.md",
   },
   classifier: {
     enabled: true,
     model: "gemini-2.0-flash-lite",
-    apiBase: undefined,
+    apiBase: "https://generativelanguage.googleapis.com/v1beta/openai",
     apiKey: undefined,
     cacheTtlMs: 300_000,
     cacheMaxSize: 200,
   },
   smartRouter: {
-    enabled: true,
-    tierModels: {
-      SIMPLE: undefined,
-      MEDIUM: undefined,
-      COMPLEX: undefined,
-      REASONING: undefined,
-    },
-  },
-  reranker: {
     enabled: false,
-    threshold: 0.3,
-    bm25Weight: 0.4,
-    embeddingWeight: 0.6,
+    tierModels: undefined,
   },
 };
 
@@ -521,6 +505,10 @@ function parseTierArray(v: unknown, def: CoreMemoryTier[]): CoreMemoryTier[] {
 export function loadConfig(raw?: Record<string, unknown>): MemuPluginConfig {
   if (!raw) return { ...DEFAULT_CONFIG };
 
+  // Top-level simplified config
+  const dataDir = optStr(raw.dataDir) ?? DEFAULT_CONFIG.dataDir;
+  const geminiApiKey = optStr(raw.geminiApiKey);
+
   const b = (raw.backend ?? {}) as Record<string, unknown>;
   const ft = (b.freeText ?? {}) as Record<string, unknown>;
   const mem0 = (raw.mem0 ?? {}) as Record<string, unknown>;
@@ -531,7 +519,38 @@ export function loadConfig(raw?: Record<string, unknown>): MemuPluginConfig {
   const o = (raw.outbox ?? {}) as Record<string, unknown>;
   const s = (raw.sync ?? {}) as Record<string, unknown>;
 
+  // Parse oss config with graph_store support
+  const ossRaw = mem0.oss as Record<string, unknown> | undefined;
+  const oss = ossRaw && typeof ossRaw === "object"
+    ? {
+        embedder: ossRaw.embedder && typeof ossRaw.embedder === "object"
+          ? (ossRaw.embedder as { provider: string; config: Record<string, unknown> })
+          : undefined,
+        vectorStore: ossRaw.vectorStore && typeof ossRaw.vectorStore === "object"
+          ? (ossRaw.vectorStore as { provider: string; config: Record<string, unknown> })
+          : undefined,
+        llm: ossRaw.llm && typeof ossRaw.llm === "object"
+          ? (ossRaw.llm as { provider: string; config: Record<string, unknown> })
+          : undefined,
+        historyDbPath: typeof ossRaw.historyDbPath === "string" ? ossRaw.historyDbPath : undefined,
+        graph_store: ossRaw.graph_store && typeof ossRaw.graph_store === "object"
+          ? (ossRaw.graph_store as { provider: string; config: Record<string, unknown> })
+          : undefined,
+      }
+    : undefined;
+
+  // Backward compatibility: support old config field names
+  const recallThreshold = typeof r.threshold === "number" ? r.threshold
+    : typeof r.scoreThreshold === "number" ? r.scoreThreshold
+    : DEFAULT_CONFIG.recall.threshold;
+  const recallMaxChars = num(r.maxChars, 0) || num(r.maxContextChars, 0) || num(r.injectionBudgetChars, DEFAULT_CONFIG.recall.maxChars);
+  const coreAlwaysInjectLimit = num(co.alwaysInjectLimit, 0) || num(co.maxAlwaysInjectChars, DEFAULT_CONFIG.core.alwaysInjectLimit);
+  const syncEnabled = bool(s.enabled, bool(s.flushToMarkdown, DEFAULT_CONFIG.sync.enabled));
+  const syncIntervalMs = num(s.intervalMs, 0) || num(s.flushIntervalSec, 0) * 1000 || DEFAULT_CONFIG.sync.intervalMs;
+
   return {
+    dataDir,
+    geminiApiKey,
     backend: {
       freeText: {
         provider: ft.provider === "mem0" ? "mem0" : DEFAULT_CONFIG.backend.freeText.provider,
@@ -543,34 +562,13 @@ export function loadConfig(raw?: Record<string, unknown>): MemuPluginConfig {
       orgId: optStr(mem0.orgId),
       projectId: optStr(mem0.projectId),
       enableGraph: bool(mem0.enableGraph, DEFAULT_CONFIG.mem0.enableGraph),
-      searchThreshold:
-        typeof mem0.searchThreshold === "number" ? mem0.searchThreshold : DEFAULT_CONFIG.mem0.searchThreshold,
+      searchThreshold: typeof mem0.searchThreshold === "number" ? mem0.searchThreshold
+        : typeof mem0.threshold === "number" ? mem0.threshold
+        : DEFAULT_CONFIG.mem0.searchThreshold,
       topK: numInRange(mem0.topK, DEFAULT_CONFIG.mem0.topK, 1, 50),
       customInstructions: optStr(mem0.customInstructions),
       customPrompt: optStr(mem0.customPrompt),
-      oss: mem0.oss && typeof mem0.oss === "object"
-        ? {
-            embedder:
-              (mem0.oss as Record<string, unknown>).embedder &&
-              typeof (mem0.oss as Record<string, unknown>).embedder === "object"
-                ? ((mem0.oss as Record<string, unknown>).embedder as { provider: string; config: Record<string, unknown> })
-                : undefined,
-            vectorStore:
-              (mem0.oss as Record<string, unknown>).vectorStore &&
-              typeof (mem0.oss as Record<string, unknown>).vectorStore === "object"
-                ? ((mem0.oss as Record<string, unknown>).vectorStore as { provider: string; config: Record<string, unknown> })
-                : undefined,
-            llm:
-              (mem0.oss as Record<string, unknown>).llm &&
-              typeof (mem0.oss as Record<string, unknown>).llm === "object"
-                ? ((mem0.oss as Record<string, unknown>).llm as { provider: string; config: Record<string, unknown> })
-                : undefined,
-            historyDbPath:
-              typeof (mem0.oss as Record<string, unknown>).historyDbPath === "string"
-                ? ((mem0.oss as Record<string, unknown>).historyDbPath as string)
-                : undefined,
-          }
-        : undefined,
+      oss,
     },
     scope: {
       userId: str(sc.userId, DEFAULT_CONFIG.scope.userId),
@@ -582,47 +580,26 @@ export function loadConfig(raw?: Record<string, unknown>): MemuPluginConfig {
     },
     recall: {
       enabled: bool(r.enabled, DEFAULT_CONFIG.recall.enabled),
-      method: r.method === "llm" ? "llm" : DEFAULT_CONFIG.recall.method,
-      hybrid: {
-        enabled: bool((r.hybrid as Record<string, unknown> | undefined)?.enabled, DEFAULT_CONFIG.recall.hybrid.enabled),
-        alpha: numInRange((r.hybrid as Record<string, unknown> | undefined)?.alpha, DEFAULT_CONFIG.recall.hybrid.alpha, 0, 1),
-        fallbackToRag: bool(
-          (r.hybrid as Record<string, unknown> | undefined)?.fallbackToRag,
-          DEFAULT_CONFIG.recall.hybrid.fallbackToRag,
-        ),
-      },
       topK: num(r.topK, DEFAULT_CONFIG.recall.topK),
-      scoreThreshold: typeof r.scoreThreshold === "number" ? r.scoreThreshold : DEFAULT_CONFIG.recall.scoreThreshold,
-      maxContextChars: num(r.maxContextChars, DEFAULT_CONFIG.recall.maxContextChars),
-      injectionBudgetChars: numInRange(r.injectionBudgetChars, DEFAULT_CONFIG.recall.injectionBudgetChars, 300, 20_000),
+      threshold: recallThreshold,
+      maxChars: recallMaxChars,
       cacheTtlMs: num(r.cacheTtlMs, DEFAULT_CONFIG.recall.cacheTtlMs),
       cacheMaxSize: num(r.cacheMaxSize, DEFAULT_CONFIG.recall.cacheMaxSize),
-      workspaceFallback: bool(r.workspaceFallback, DEFAULT_CONFIG.recall.workspaceFallback),
-      workspaceFallbackMaxItems: numInRange(
-        r.workspaceFallbackMaxItems,
-        DEFAULT_CONFIG.recall.workspaceFallbackMaxItems,
-        1,
-        5,
-      ),
-      workspaceFallbackMaxFiles: numInRange(
-        r.workspaceFallbackMaxFiles,
-        DEFAULT_CONFIG.recall.workspaceFallbackMaxFiles,
-        1,
-        20,
-      ),
+      alwaysInjectCategories: Array.isArray(r.alwaysInjectCategories)
+        ? (r.alwaysInjectCategories as string[]).filter((x) => typeof x === "string")
+        : DEFAULT_CONFIG.recall.alwaysInjectCategories,
     },
     core: {
       enabled: bool(co.enabled, DEFAULT_CONFIG.core.enabled),
       topK: numInRange(co.topK, DEFAULT_CONFIG.core.topK, 1, 50),
       maxItemChars: numInRange(co.maxItemChars, DEFAULT_CONFIG.core.maxItemChars, 30, 2_000),
-      persistPath: typeof co.persistPath === "string" ? co.persistPath : DEFAULT_CONFIG.core.persistPath,
+      persistPath: typeof co.persistPath === "string" ? co.persistPath : dataDir ?? DEFAULT_CONFIG.core.persistPath,
       autoExtractProposals: bool(co.autoExtractProposals, DEFAULT_CONFIG.core.autoExtractProposals),
       humanReviewRequired: bool(co.humanReviewRequired, DEFAULT_CONFIG.core.humanReviewRequired),
       touchOnRecall: bool(co.touchOnRecall, DEFAULT_CONFIG.core.touchOnRecall),
       proposalQueueMax: numInRange(co.proposalQueueMax, DEFAULT_CONFIG.core.proposalQueueMax, 10, 5_000),
       alwaysInjectTiers: parseTierArray(co.alwaysInjectTiers, DEFAULT_CONFIG.core.alwaysInjectTiers),
-      retrievalOnlyTiers: parseTierArray(co.retrievalOnlyTiers, DEFAULT_CONFIG.core.retrievalOnlyTiers),
-      maxAlwaysInjectChars: numInRange(co.maxAlwaysInjectChars, DEFAULT_CONFIG.core.maxAlwaysInjectChars, 100, 5_000),
+      alwaysInjectLimit: coreAlwaysInjectLimit,
       consolidation: (() => {
         const cn = (co.consolidation ?? {}) as Record<string, unknown>;
         return {
@@ -636,7 +613,7 @@ export function loadConfig(raw?: Record<string, unknown>): MemuPluginConfig {
         return {
           enabled: bool(lg.enabled, DEFAULT_CONFIG.core.llmGate.enabled),
           apiBase: str(lg.apiBase, DEFAULT_CONFIG.core.llmGate.apiBase),
-          apiKey: optStr(lg.apiKey) ?? (typeof process !== "undefined" ? process.env.MEM0_LLM_GATE_API_KEY : undefined),
+          apiKey: optStr(lg.apiKey) ?? geminiApiKey ?? (typeof process !== "undefined" ? process.env.MEM0_LLM_GATE_API_KEY : undefined),
           model: str(lg.model, DEFAULT_CONFIG.core.llmGate.model),
           maxTokensPerBatch: numInRange(lg.maxTokensPerBatch, DEFAULT_CONFIG.core.llmGate.maxTokensPerBatch, 500, 10_000),
           timeoutMs: numInRange(lg.timeoutMs, DEFAULT_CONFIG.core.llmGate.timeoutMs, 5_000, 120_000),
@@ -645,15 +622,16 @@ export function loadConfig(raw?: Record<string, unknown>): MemuPluginConfig {
     },
     capture: {
       enabled: bool(c.enabled, DEFAULT_CONFIG.capture.enabled),
-      maxItemsPerRun: num(c.maxItemsPerRun, DEFAULT_CONFIG.capture.maxItemsPerRun),
       minChars: num(c.minChars, DEFAULT_CONFIG.capture.minChars),
       maxChars: num(c.maxChars, DEFAULT_CONFIG.capture.maxChars),
       dedupeThreshold: typeof c.dedupeThreshold === "number" ? c.dedupeThreshold : DEFAULT_CONFIG.capture.dedupeThreshold,
       candidateQueue: (() => {
         const cq = (c.candidateQueue ?? {}) as Record<string, unknown>;
+        // Support simplified batchIntervalMs
+        const intervalMs = num(cq.intervalMs, 0) || num(c.batchIntervalMs, DEFAULT_CONFIG.capture.candidateQueue.intervalMs);
         return {
           enabled: bool(cq.enabled, DEFAULT_CONFIG.capture.candidateQueue.enabled),
-          intervalMs: num(cq.intervalMs, DEFAULT_CONFIG.capture.candidateQueue.intervalMs),
+          intervalMs,
           maxBatchSize: numInRange(cq.maxBatchSize, DEFAULT_CONFIG.capture.candidateQueue.maxBatchSize, 1, 200),
         };
       })(),
@@ -664,13 +642,13 @@ export function loadConfig(raw?: Record<string, unknown>): MemuPluginConfig {
       batchSize: num(o.batchSize, DEFAULT_CONFIG.outbox.batchSize),
       maxRetries: num(o.maxRetries, DEFAULT_CONFIG.outbox.maxRetries),
       drainTimeoutMs: num(o.drainTimeoutMs, DEFAULT_CONFIG.outbox.drainTimeoutMs),
-      persistPath: typeof o.persistPath === "string" ? o.persistPath : DEFAULT_CONFIG.outbox.persistPath,
+      persistPath: typeof o.persistPath === "string" ? o.persistPath : dataDir ?? DEFAULT_CONFIG.outbox.persistPath,
       flushIntervalMs: num(o.flushIntervalMs, DEFAULT_CONFIG.outbox.flushIntervalMs),
     },
     sync: {
-      flushToMarkdown: bool(s.flushToMarkdown, DEFAULT_CONFIG.sync.flushToMarkdown),
-      flushIntervalSec: num(s.flushIntervalSec, DEFAULT_CONFIG.sync.flushIntervalSec),
-      memoryFilePath: (s.memoryFilePath as string) ?? DEFAULT_CONFIG.sync.memoryFilePath,
+      enabled: syncEnabled,
+      intervalMs: syncIntervalMs,
+      memoryFilePath: optStr(s.memoryFilePath) ?? optStr(s.filePath) ?? DEFAULT_CONFIG.sync.memoryFilePath,
     },
     classifier: (() => {
       const cl = (raw.classifier ?? {}) as Record<string, unknown>;
@@ -678,7 +656,7 @@ export function loadConfig(raw?: Record<string, unknown>): MemuPluginConfig {
         enabled: bool(cl.enabled, DEFAULT_CONFIG.classifier.enabled ?? true),
         model: optStr(cl.model) ?? DEFAULT_CONFIG.classifier.model,
         apiBase: optStr(cl.apiBase) ?? DEFAULT_CONFIG.classifier.apiBase,
-        apiKey: optStr(cl.apiKey) ?? (typeof process !== "undefined" ? process.env.MEM0_CLASSIFIER_API_KEY : undefined),
+        apiKey: optStr(cl.apiKey) ?? geminiApiKey ?? (typeof process !== "undefined" ? process.env.MEM0_CLASSIFIER_API_KEY : undefined),
         cacheTtlMs: num(cl.cacheTtlMs, DEFAULT_CONFIG.classifier.cacheTtlMs ?? 300_000),
         cacheMaxSize: num(cl.cacheMaxSize, DEFAULT_CONFIG.classifier.cacheMaxSize ?? 200),
       };
@@ -687,22 +665,13 @@ export function loadConfig(raw?: Record<string, unknown>): MemuPluginConfig {
       const sr = (raw.smartRouter ?? {}) as Record<string, unknown>;
       const tierModels = (sr.tierModels ?? {}) as Record<string, unknown>;
       return {
-        enabled: bool(sr.enabled, DEFAULT_CONFIG.smartRouter.enabled ?? true),
+        enabled: bool(sr.enabled, DEFAULT_CONFIG.smartRouter.enabled ?? false),
         tierModels: {
-          SIMPLE: optStr(tierModels.SIMPLE) ?? DEFAULT_CONFIG.smartRouter.tierModels?.SIMPLE,
-          MEDIUM: optStr(tierModels.MEDIUM) ?? DEFAULT_CONFIG.smartRouter.tierModels?.MEDIUM,
-          COMPLEX: optStr(tierModels.COMPLEX) ?? DEFAULT_CONFIG.smartRouter.tierModels?.COMPLEX,
-          REASONING: optStr(tierModels.REASONING) ?? DEFAULT_CONFIG.smartRouter.tierModels?.REASONING,
+          SIMPLE: optStr(tierModels.SIMPLE),
+          MEDIUM: optStr(tierModels.MEDIUM),
+          COMPLEX: optStr(tierModels.COMPLEX),
+          REASONING: optStr(tierModels.REASONING),
         },
-      };
-    })(),
-    reranker: (() => {
-      const rr = (raw.reranker ?? {}) as Record<string, unknown>;
-      return {
-        enabled: bool(rr.enabled, DEFAULT_CONFIG.reranker.enabled ?? false),
-        threshold: numInRange(rr.threshold, DEFAULT_CONFIG.reranker.threshold ?? 0.3, 0, 1),
-        bm25Weight: numInRange(rr.bm25Weight, DEFAULT_CONFIG.reranker.bm25Weight ?? 0.4, 0, 1),
-        embeddingWeight: numInRange(rr.embeddingWeight, DEFAULT_CONFIG.reranker.embeddingWeight ?? 0.6, 0, 1),
       };
     })(),
   };

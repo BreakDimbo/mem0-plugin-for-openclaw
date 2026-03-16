@@ -71,7 +71,7 @@ async function main() {
     const rawHits = await withTimeout(
       backend.search(item.query, scope, {
         maxItems: 8,
-        maxContextChars: cfg.recall.maxContextChars,
+        maxContextChars: cfg.recall.maxChars,
         includeSessionScope: true,
       }),
       20_000,

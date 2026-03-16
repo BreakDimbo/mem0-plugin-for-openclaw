@@ -178,11 +178,10 @@ function buildTestConfig(tmpDir: string): MemuPluginConfig {
     recall: {
       ...DEFAULT_CONFIG.recall,
       enabled: true,
-      workspaceFallback: false,
     },
     sync: {
       ...DEFAULT_CONFIG.sync,
-      flushToMarkdown: false,
+      enabled: false,
     },
   };
 }

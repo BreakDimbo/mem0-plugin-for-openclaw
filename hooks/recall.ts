@@ -10,7 +10,7 @@ import type { Metrics } from "../metrics.js";
 import type { MarkdownSync } from "../sync.js";
 import type { CandidateQueue } from "../candidate-queue.js";
 import { shouldCapture } from "../security.js";
-import type { MemuPluginConfig, MemuMemoryRecord, MemoryScope, PluginHookContext, ClassificationResult, CoreMemoryRecord } from "../types.js";
+import type { MemuPluginConfig, MemuMemoryRecord, MemoryScope, PluginHookContext, ClassificationResult, CoreMemoryRecord, CoreMemoryTier } from "../types.js";
 import { buildDynamicScope } from "../types.js";
 import { type CoreMemoryRepository, inferTierFromCategory } from "../core-repository.js";
 import { applyInjectionBudget, escapeForInjection, formatCoreMemoriesContext, formatMemoriesContext } from "../security.js";
@@ -786,7 +786,7 @@ export function createRecallHook(
         } else {
           const primaryResults = await Promise.all(searchQueries.map((searchQuery) => primaryBackend.search(searchQuery, scope, {
             maxItems: searchLimit,
-            maxContextChars: config.recall.maxContextChars,
+            maxContextChars: config.recall.maxChars,
             includeSessionScope: true,
           })));
           memories = dedupeMemories(primaryResults.flat());
@@ -796,20 +796,9 @@ export function createRecallHook(
           logger.info(`recall-hook: fetched ${memories.length} memories via ${primaryBackend.provider} for ${searchQueries.length} query parts="${query.slice(0, 60)}..."`);
         }
 
-        filteredMemories = memories.filter((m) => m.score === undefined || m.score >= config.recall.scoreThreshold);
-        // Always search workspace facts in parallel and merge (instead of fallback-only)
-        const workspaceDir = config.recall.workspaceFallback ? resolveWorkspaceDir(scope.agentId, ctx.workspaceDir) : "";
-        if (workspaceDir && config.recall.workspaceFallback) {
-          const workspaceFacts = await searchWorkspaceFacts(query, scope, workspaceDir, {
-            maxItems: config.recall.workspaceFallbackMaxItems,
-            maxFiles: config.recall.workspaceFallbackMaxFiles,
-          });
-          if (workspaceFacts.length > 0) {
-            logger.info(`recall-hook: fetched ${workspaceFacts.length} workspace facts for query="${query.slice(0, 60)}..."`);
-            filteredMemories = dedupeMemories([...filteredMemories, ...workspaceFacts]);
-            filteredMemories = rerankMemoryResults(query, filteredMemories).slice(0, config.recall.topK);
-          }
-        }
+        filteredMemories = memories.filter((m) => m.score === undefined || m.score >= config.recall.threshold);
+        // Workspace fallback removed in config simplification
+        // Previously: workspaceFallback feature for searching local files
         if (filteredMemories.length > 0) {
           setSessionRelevantCache(relevantClusterKey, filteredMemories);
         }
@@ -849,7 +838,7 @@ export function createRecallHook(
         alwaysInjectPool = filterAlwaysInject(alwaysInjectPool, classification);
 
         // Phase 2: Retrieval pool (technical tier) — scoring-based selection
-        const retrievalOnlyTiers = config.core.retrievalOnlyTiers;
+        const retrievalOnlyTiers = ["technical"] as CoreMemoryTier[];
         const retrievalPool = allCoreFacts
           .filter((item) => {
             const tier = item.tier ?? inferTierFromCategory(item.category ?? "general");
@@ -875,8 +864,8 @@ export function createRecallHook(
 
         // Safety cap on always-inject chars to prevent unbounded growth
         let alwaysInjectContext = formatCoreMemoriesContext(alwaysInjectPool as any);
-        if (alwaysInjectContext.length > config.core.maxAlwaysInjectChars) {
-          alwaysInjectContext = alwaysInjectContext.slice(0, config.core.maxAlwaysInjectChars) + "\n[truncated]</core-memory>";
+        if (alwaysInjectContext.length > config.core.alwaysInjectLimit) {
+          alwaysInjectContext = alwaysInjectContext.slice(0, config.core.alwaysInjectLimit) + "\n[truncated]</core-memory>";
         }
 
         // retrievalContext goes through budget with free-text; alwaysInjectContext is prepended separately
@@ -893,7 +882,7 @@ export function createRecallHook(
 
       metrics.recordRecallLatency(Date.now() - start);
       // Budget applies to retrieval core + free-text; always-inject is prepended outside budget
-      const budgetedContent = applyInjectionBudget([coreContext, memoryContext], config.recall.injectionBudgetChars);
+      const budgetedContent = applyInjectionBudget([coreContext, memoryContext], config.recall.maxChars);
       const injected = [alwaysInjectBlock, budgetedContent].filter(Boolean).join("\n\n") || "";
       if (!injected) return;
       const shouldSkipByBlock = shouldSkipDuplicateSessionInjection(injectionKey, injected);

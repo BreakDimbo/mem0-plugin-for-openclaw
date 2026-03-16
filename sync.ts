@@ -345,7 +345,7 @@ export class MarkdownSync {
   }
 
   scheduleSync(agentId?: string): void {
-    if (!this.config.sync.flushToMarkdown) return;
+    if (!this.config.sync.enabled) return;
     if (agentId) {
       this.pendingAgents.add(agentId);
     } else {
@@ -394,7 +394,7 @@ export class MarkdownSync {
         this.config.recall.enabled && coreMemories.length > 0
           ? await this.primaryBackend.search("long-term memory summary", scope, {
               maxItems: Math.max(8, this.config.recall.topK),
-              maxContextChars: this.config.recall.maxContextChars,
+              maxContextChars: this.config.recall.maxChars,
               includeSessionScope: false,
               quality: "durable",
             })
@@ -425,10 +425,10 @@ export class MarkdownSync {
   }
 
   start(): void {
-    if (!this.config.sync.flushToMarkdown) return;
+    if (!this.config.sync.enabled) return;
     if (this.timer) return;
 
-    const intervalMs = this.config.sync.flushIntervalSec * 1000;
+    const intervalMs = this.config.sync.intervalMs;
 
     this.timer = setInterval(() => {
       this.syncOnce().catch((err) => {
@@ -436,7 +436,7 @@ export class MarkdownSync {
       });
     }, intervalMs);
 
-    this.logger.info(`markdown-sync: started (interval: ${this.config.sync.flushIntervalSec}s)`);
+    this.logger.info(`markdown-sync: started (interval: ${this.config.sync.intervalMs / 1000}s)`);
   }
 
   stop(): void {

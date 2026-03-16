@@ -52,7 +52,7 @@ export function createRecallTool(
           const searchLimit = Math.min(Math.max(limit * 2, limit), 10);
           memories = await primaryBackend.search(args.query, scope, {
             maxItems: searchLimit,
-            maxContextChars: config.recall.maxContextChars,
+            maxContextChars: config.recall.maxChars,
             category: args.category,
             includeSessionScope: true,
           });
@@ -65,16 +65,7 @@ export function createRecallTool(
 
         metrics.recordRecallLatency(Date.now() - start);
 
-        const workspaceDir = config.recall.workspaceFallback ? resolveWorkspaceDir(scope.agentId, toolCtx?.workspaceDir) : "";
-        if (workspaceDir && config.recall.workspaceFallback) {
-          const workspaceFacts = await searchWorkspaceFacts(args.query, scope, workspaceDir, {
-            maxItems: Math.min(config.recall.workspaceFallbackMaxItems, limit),
-            maxFiles: config.recall.workspaceFallbackMaxFiles,
-          });
-          if (workspaceFacts.length > 0) {
-            memories = rerankMemoryResults(args.query, [...memories, ...workspaceFacts]).slice(0, limit);
-          }
-        }
+        // Workspace fallback removed in config simplification
 
         const memorySections: string[] = [];
         if (memories.length > 0) {

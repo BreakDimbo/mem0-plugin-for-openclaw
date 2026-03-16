@@ -206,7 +206,7 @@ export function createCaptureHook(
     }
 
     // Take at most maxItemsPerRun (from the end, most recent)
-    const toCapture = candidates.slice(-config.capture.maxItemsPerRun);
+    const toCapture = candidates.slice(-3);
 
     for (const text of toCapture) {
       outbox.enqueue(
