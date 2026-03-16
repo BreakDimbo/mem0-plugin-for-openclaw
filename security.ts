@@ -20,9 +20,9 @@ export function escapeForInjection(text: string): string {
 export function formatMemoriesContext(memories: MemuMemoryRecord[]): string {
   if (memories.length === 0) return "";
 
-  const lines = memories.map((m, i) => {
-    const categoryTag = m.category ? ` [${escapeForInjection(m.category)}]` : "";
-    return `${i + 1}. 候选答案${categoryTag}：${escapeForInjection(m.text)}`;
+  const lines = memories.map((m) => {
+    const categoryTag = m.category ? `[${escapeForInjection(m.category)}] ` : "";
+    return `${categoryTag}${escapeForInjection(m.text)}`;
   });
 
   return [
@@ -56,11 +56,25 @@ export function shouldStoreCoreMemory(key: string, value: string, maxChars: numb
   return true;
 }
 
+/**
+ * Simplify key path display:
+ * - identity/identity.name → identity/name
+ * - preferences/preferences.editor → preferences/editor
+ */
+function simplifyKey(category: string | undefined, key: string): string {
+  if (!category) return key;
+  // If key starts with "category.", strip that prefix
+  if (key.startsWith(`${category}.`)) {
+    return `${category}/${key.slice(category.length + 1)}`;
+  }
+  return `${category}/${key}`;
+}
+
 export function formatCoreMemoriesContext(memories: CoreMemoryRecord[]): string {
   if (memories.length === 0) return "";
-  const lines = memories.map((m, i) => {
-    const tag = m.category ? `${escapeForInjection(m.category)}/${escapeForInjection(m.key)}` : escapeForInjection(m.key);
-    return `${i + 1}. 候选答案 [${tag}]：${escapeForInjection(m.value)}`;
+  const lines = memories.map((m) => {
+    const tag = simplifyKey(m.category, m.key);
+    return `[${escapeForInjection(tag)}] ${escapeForInjection(m.value)}`;
   });
   return [
     "<core-memory>",

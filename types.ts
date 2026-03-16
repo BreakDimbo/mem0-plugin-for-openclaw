@@ -3,6 +3,44 @@
 // Aligned with 设计文档 v3.0 — full MemoryScope + Phase 2/3 config
 // ============================================================================
 
+// -- Classification --
+
+export type QueryType = 'greeting' | 'code' | 'debug' | 'factual' | 'preference' | 'planning' | 'open';
+export type CaptureHint = 'skip' | 'light' | 'full';
+
+export interface ClassificationResult {
+  tier: 'SIMPLE' | 'MEDIUM' | 'COMPLEX' | 'REASONING';
+  queryType: QueryType;
+  targetCategories: string[];
+  captureHint: CaptureHint;
+}
+
+export type ClassifierConfig = {
+  enabled?: boolean;
+  model?: string;
+  apiBase?: string;
+  apiKey?: string;
+  cacheTtlMs?: number;
+  cacheMaxSize?: number;
+};
+
+export type SmartRouterConfig = {
+  enabled?: boolean;
+  tierModels?: {
+    SIMPLE?: string;
+    MEDIUM?: string;
+    COMPLEX?: string;
+    REASONING?: string;
+  };
+};
+
+export type RerankerConfig = {
+  enabled?: boolean;
+  threshold?: number;
+  bm25Weight?: number;
+  embeddingWeight?: number;
+};
+
 // -- Scope --
 
 export type MemoryScope = {
@@ -254,6 +292,9 @@ export type MemuPluginConfig = {
     flushIntervalSec: number;
     memoryFilePath: string;
   };
+  classifier: ClassifierConfig;
+  smartRouter: SmartRouterConfig;
+  reranker: RerankerConfig;
 };
 
 export const DEFAULT_CONFIG: MemuPluginConfig = {
@@ -351,6 +392,29 @@ export const DEFAULT_CONFIG: MemuPluginConfig = {
     flushToMarkdown: true,
     flushIntervalSec: 300,
     memoryFilePath: "",
+  },
+  classifier: {
+    enabled: true,
+    model: "gemini-2.0-flash-lite",
+    apiBase: undefined,
+    apiKey: undefined,
+    cacheTtlMs: 300_000,
+    cacheMaxSize: 200,
+  },
+  smartRouter: {
+    enabled: true,
+    tierModels: {
+      SIMPLE: undefined,
+      MEDIUM: undefined,
+      COMPLEX: undefined,
+      REASONING: undefined,
+    },
+  },
+  reranker: {
+    enabled: false,
+    threshold: 0.3,
+    bm25Weight: 0.4,
+    embeddingWeight: 0.6,
   },
 };
 
@@ -608,5 +672,38 @@ export function loadConfig(raw?: Record<string, unknown>): MemuPluginConfig {
       flushIntervalSec: num(s.flushIntervalSec, DEFAULT_CONFIG.sync.flushIntervalSec),
       memoryFilePath: (s.memoryFilePath as string) ?? DEFAULT_CONFIG.sync.memoryFilePath,
     },
+    classifier: (() => {
+      const cl = (raw.classifier ?? {}) as Record<string, unknown>;
+      return {
+        enabled: bool(cl.enabled, DEFAULT_CONFIG.classifier.enabled ?? true),
+        model: optStr(cl.model) ?? DEFAULT_CONFIG.classifier.model,
+        apiBase: optStr(cl.apiBase) ?? DEFAULT_CONFIG.classifier.apiBase,
+        apiKey: optStr(cl.apiKey) ?? (typeof process !== "undefined" ? process.env.MEM0_CLASSIFIER_API_KEY : undefined),
+        cacheTtlMs: num(cl.cacheTtlMs, DEFAULT_CONFIG.classifier.cacheTtlMs ?? 300_000),
+        cacheMaxSize: num(cl.cacheMaxSize, DEFAULT_CONFIG.classifier.cacheMaxSize ?? 200),
+      };
+    })(),
+    smartRouter: (() => {
+      const sr = (raw.smartRouter ?? {}) as Record<string, unknown>;
+      const tierModels = (sr.tierModels ?? {}) as Record<string, unknown>;
+      return {
+        enabled: bool(sr.enabled, DEFAULT_CONFIG.smartRouter.enabled ?? true),
+        tierModels: {
+          SIMPLE: optStr(tierModels.SIMPLE) ?? DEFAULT_CONFIG.smartRouter.tierModels?.SIMPLE,
+          MEDIUM: optStr(tierModels.MEDIUM) ?? DEFAULT_CONFIG.smartRouter.tierModels?.MEDIUM,
+          COMPLEX: optStr(tierModels.COMPLEX) ?? DEFAULT_CONFIG.smartRouter.tierModels?.COMPLEX,
+          REASONING: optStr(tierModels.REASONING) ?? DEFAULT_CONFIG.smartRouter.tierModels?.REASONING,
+        },
+      };
+    })(),
+    reranker: (() => {
+      const rr = (raw.reranker ?? {}) as Record<string, unknown>;
+      return {
+        enabled: bool(rr.enabled, DEFAULT_CONFIG.reranker.enabled ?? false),
+        threshold: numInRange(rr.threshold, DEFAULT_CONFIG.reranker.threshold ?? 0.3, 0, 1),
+        bm25Weight: numInRange(rr.bm25Weight, DEFAULT_CONFIG.reranker.bm25Weight ?? 0.4, 0, 1),
+        embeddingWeight: numInRange(rr.embeddingWeight, DEFAULT_CONFIG.reranker.embeddingWeight ?? 0.6, 0, 1),
+      };
+    })(),
   };
 }

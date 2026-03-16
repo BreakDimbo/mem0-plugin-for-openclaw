@@ -2,9 +2,12 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { homedir } from "node:os";
 
+import type { ClassificationResult } from "./types.js";
+
 type InboundEntry = {
   content: string;
   ts: number;
+  classification?: ClassificationResult;
 };
 
 type InboundStore = {
@@ -147,6 +150,29 @@ export class InboundMessageCache {
     for (const sid of this.normalizeSenderVariants(senderId)) {
       const hit = store.bySender[this.makeSenderKey(channelId, sid)];
       if (hit?.content) return hit.content;
+    }
+    return undefined;
+  }
+
+  async setClassification(channelId: string, senderId: string | undefined, classification: ClassificationResult): Promise<void> {
+    if (!channelId || !senderId?.trim()) return;
+
+    await this.queueWrite((store) => {
+      for (const sid of this.normalizeSenderVariants(senderId)) {
+        const key = this.makeSenderKey(channelId, sid);
+        const existing = store.bySender[key];
+        if (existing) {
+          store.bySender[key] = { ...existing, classification };
+        }
+      }
+    });
+  }
+
+  async getClassification(channelId: string, senderId: string): Promise<ClassificationResult | undefined> {
+    const store = await this.loadStore();
+    for (const sid of this.normalizeSenderVariants(senderId)) {
+      const hit = store.bySender[this.makeSenderKey(channelId, sid)];
+      if (hit?.classification) return hit.classification;
     }
     return undefined;
   }

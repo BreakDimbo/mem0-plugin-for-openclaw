@@ -6,6 +6,7 @@
 import { createMessageReceivedHook } from "../hooks/message-received.js";
 import type { MemoryScope, MemuPluginConfig } from "../types.js";
 import { DEFAULT_CONFIG } from "../types.js";
+import { Metrics } from "../metrics.js";
 
 type TestResult = { name: string; passed: boolean; error?: string };
 const results: TestResult[] = [];
@@ -109,7 +110,7 @@ await test("caches inbound message for recall", async () => {
   const cq = createMockCandidateQueue();
   const coreRepo = createMockCoreRepo();
 
-  const hook = createMessageReceivedHook(cache as any, cq as any, coreRepo as any, baseConfig, testLogger);
+  const hook = createMessageReceivedHook(cache as any, cq as any, coreRepo as any, baseConfig, testLogger, new Metrics());
   await hook({ from: "user1", content: "我喜欢用Obsidian做笔记" }, baseCtx);
 
   assertEqual(cache.stored.length, 1, "should cache 1 message");
@@ -122,7 +123,7 @@ await test("enqueues valid text to candidate queue", async () => {
   const cq = createMockCandidateQueue();
   const coreRepo = createMockCoreRepo();
 
-  const hook = createMessageReceivedHook(cache as any, cq as any, coreRepo as any, baseConfig, testLogger);
+  const hook = createMessageReceivedHook(cache as any, cq as any, coreRepo as any, baseConfig, testLogger, new Metrics());
   const longText = "我在字节跳动做后端开发，主要用Go语言，负责推荐系统的核心服务";
   await hook({ from: "user1", content: longText }, baseCtx);
 
@@ -136,7 +137,7 @@ await test("skips empty content", async () => {
   const cq = createMockCandidateQueue();
   const coreRepo = createMockCoreRepo();
 
-  const hook = createMessageReceivedHook(cache as any, cq as any, coreRepo as any, baseConfig, testLogger);
+  const hook = createMessageReceivedHook(cache as any, cq as any, coreRepo as any, baseConfig, testLogger, new Metrics());
   await hook({ from: "user1", content: "" }, baseCtx);
   await hook({ from: "user1", content: "   " }, baseCtx);
 
@@ -149,7 +150,7 @@ await test("filters system fragments", async () => {
   const cq = createMockCandidateQueue();
   const coreRepo = createMockCoreRepo();
 
-  const hook = createMessageReceivedHook(cache as any, cq as any, coreRepo as any, baseConfig, testLogger);
+  const hook = createMessageReceivedHook(cache as any, cq as any, coreRepo as any, baseConfig, testLogger, new Metrics());
   await hook({ from: "user1", content: "[system] internal message" }, baseCtx);
   await hook({ from: "user1", content: "<system-reminder>some reminder</system-reminder>" }, baseCtx);
 
@@ -164,7 +165,7 @@ await test("filters low-signal messages", async () => {
   const cq = createMockCandidateQueue();
   const coreRepo = createMockCoreRepo();
 
-  const hook = createMessageReceivedHook(cache as any, cq as any, coreRepo as any, baseConfig, testLogger);
+  const hook = createMessageReceivedHook(cache as any, cq as any, coreRepo as any, baseConfig, testLogger, new Metrics());
   await hook({ from: "user1", content: "好的" }, baseCtx);
   await hook({ from: "user1", content: "收到" }, baseCtx);
   await hook({ from: "user1", content: "thanks!" }, baseCtx);
@@ -178,7 +179,7 @@ await test("filters too-short messages", async () => {
   const cq = createMockCandidateQueue();
   const coreRepo = createMockCoreRepo();
 
-  const hook = createMessageReceivedHook(cache as any, cq as any, coreRepo as any, baseConfig, testLogger);
+  const hook = createMessageReceivedHook(cache as any, cq as any, coreRepo as any, baseConfig, testLogger, new Metrics());
   await hook({ from: "user1", content: "这段文字不够二十四个字符" }, baseCtx); // under minChars=24
 
   assertEqual(cache.stored.length, 1, "short text still cached");
@@ -198,7 +199,7 @@ await test("does not enqueue when candidateQueue disabled", async () => {
     },
   };
 
-  const hook = createMessageReceivedHook(cache as any, cq as any, coreRepo as any, disabledConfig, testLogger);
+  const hook = createMessageReceivedHook(cache as any, cq as any, coreRepo as any, disabledConfig, testLogger, new Metrics());
   await hook({ from: "user1", content: "我在字节跳动做后端开发，主要用Go语言" }, baseCtx);
 
   assertEqual(cache.stored.length, 1, "still cached");
@@ -215,7 +216,7 @@ await test("does not enqueue when capture disabled", async () => {
     capture: { ...baseConfig.capture, enabled: false },
   };
 
-  const hook = createMessageReceivedHook(cache as any, cq as any, coreRepo as any, disabledConfig, testLogger);
+  const hook = createMessageReceivedHook(cache as any, cq as any, coreRepo as any, disabledConfig, testLogger, new Metrics());
   await hook({ from: "user1", content: "我在字节跳动做后端开发，主要用Go语言" }, baseCtx);
 
   assertEqual(cache.stored.length, 1, "still cached");
@@ -227,7 +228,7 @@ await test("immediate core extract for high-confidence pattern", async () => {
   const cq = createMockCandidateQueue();
   const coreRepo = createMockCoreRepo();
 
-  const hook = createMessageReceivedHook(cache as any, cq as any, coreRepo as any, baseConfig, testLogger);
+  const hook = createMessageReceivedHook(cache as any, cq as any, coreRepo as any, baseConfig, testLogger, new Metrics());
   // "我叫小明" is a high-confidence identity pattern that extractCoreProposal catches
   // Text must be >= minChars (24) to pass shouldCapture
   const longText = "我叫小明，是一个在字节跳动工作的前端工程师，主要做React开发";
@@ -248,7 +249,7 @@ await test("no immediate core extract when humanReviewRequired", async () => {
     core: { ...baseConfig.core, humanReviewRequired: true },
   };
 
-  const hook = createMessageReceivedHook(cache as any, cq as any, coreRepo as any, reviewConfig, testLogger);
+  const hook = createMessageReceivedHook(cache as any, cq as any, coreRepo as any, reviewConfig, testLogger, new Metrics());
   await hook({ from: "user1", content: "我叫小明，是一个在字节跳动工作的前端工程师，主要做React开发" }, baseCtx);
 
   assertEqual(coreRepo.upserted.length, 0, "no immediate upsert when review required");

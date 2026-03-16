@@ -231,10 +231,10 @@ await test("createRecallHook always-injects profile-tier facts and scores techni
   );
   prepend = String((out as any)?.prependContext ?? "");
   // Profile-tier facts (identity + goals) are always injected
-  if (!prepend.includes("identity/identity.timezone")) throw new Error("timezone core fact should remain (profile tier)");
-  if (!prepend.includes("goals/goals.primary")) throw new Error("goals fact should be always-injected (profile tier)");
+  if (!prepend.includes("identity/timezone")) throw new Error("timezone core fact should remain (profile tier)");
+  if (!prepend.includes("goals/primary")) throw new Error("goals fact should be always-injected (profile tier)");
   // Technical-tier fact should NOT appear when irrelevant to timezone query
-  if (prepend.includes("technical/technical.model")) throw new Error("irrelevant technical-tier fact should be filtered out");
+  if (prepend.includes("technical/model")) throw new Error("irrelevant technical-tier fact should be filtered out");
 });
 
 await test("createRecallHook prefers the stronger lexical core match for a focused query", async () => {
@@ -390,7 +390,8 @@ await test("createRecallHook always-injects all profile-tier facts including bac
   );
   const prepend = String((out as any)?.prependContext ?? "");
   if (!prepend.includes("用户当前的全职工作是某互联网公司程序员")) throw new Error("exact answer phrase should be selected");
-  if (prepend.includes("用户的健康目标是保持健康体重")) throw new Error("background fact should not be selected");
+  // Both facts are profile-tier, so both should be always-injected regardless of query relevance
+  if (!prepend.includes("用户的健康目标是保持健康体重")) throw new Error("background fact should also be injected (profile tier)");
 });
 
 await test("createRecallHook caches core memory per session and reranks locally", async () => {
@@ -633,10 +634,10 @@ await test("createRecallHook avoids re-injecting the same stable core facts acro
 
   const firstText = String((first as any)?.prependContext ?? "");
   const secondText = String((second as any)?.prependContext ?? "");
-  if (!firstText.includes("identity/identity.timezone")) {
+  if (!firstText.includes("identity/timezone")) {
     throw new Error("first turn should inject the timezone core fact");
   }
-  if (!secondText.includes("relationships/relationships.primary")) {
+  if (!secondText.includes("relationships/primary")) {
     throw new Error("second turn should still inject a new unrepeated core fact");
   }
 });

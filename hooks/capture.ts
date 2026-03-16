@@ -7,7 +7,7 @@ import type { OutboxWorker } from "../outbox.js";
 import type { LRUCache } from "../cache.js";
 import type { Metrics } from "../metrics.js";
 import type { MarkdownSync } from "../sync.js";
-import type { MemuPluginConfig, MemuMemoryRecord, PluginHookContext } from "../types.js";
+import type { MemuPluginConfig, MemuMemoryRecord, PluginHookContext, ClassificationResult } from "../types.js";
 import { buildDynamicScope } from "../types.js";
 import { shouldCapture } from "../security.js";
 import type { CoreMemoryRepository } from "../core-repository.js";
@@ -15,6 +15,7 @@ import { extractCoreProposal } from "../core-proposals.js";
 import type { CoreProposalQueue } from "../core-proposals.js";
 import { buildFreeTextMetadata, trigramSimilarity } from "../metadata.js";
 import type { CandidateQueue } from "../candidate-queue.js";
+import type { InboundMessageCache } from "../inbound-cache.js";
 import { sanitizePromptQuery } from "./recall.js";
 
 type Logger = { info(msg: string): void; warn(msg: string): void };
@@ -79,7 +80,16 @@ export function createCaptureHook(
   metrics: Metrics,
   sync: MarkdownSync,
   candidateQueue?: CandidateQueue,
+  inbound?: InboundMessageCache,
 ) {
+  // Helper to extract sender ID from an event message
+  const extractSenderId = (msg: unknown): string => {
+    const rec = asRecord(msg);
+    if (!rec) return "";
+    const sender = rec.sender ?? rec.sender_id ?? rec.senderId;
+    return typeof sender === "string" ? sender : "";
+  };
+
   return async (event: { messages?: unknown[] }, ctx: PluginHookContext) => {
     if (!config.capture.enabled) return;
     if (!event.messages || event.messages.length === 0) return;
@@ -87,6 +97,25 @@ export function createCaptureHook(
     // Register agent workspace for sync
     if (ctx.agentId && ctx.workspaceDir) {
       sync.registerAgent(ctx.agentId, ctx.workspaceDir);
+    }
+
+    // Try to get classification from inbound cache (set by recall hook)
+    let classification: ClassificationResult | undefined;
+    if (inbound && ctx.channelId) {
+      // Try to find sender ID from first user message
+      for (const msg of event.messages) {
+        const senderId = extractSenderId(msg);
+        if (senderId) {
+          classification = await inbound.getClassification(ctx.channelId, senderId);
+          break;
+        }
+      }
+    }
+
+    // Skip capture entirely if captureHint is "skip"
+    if (classification?.captureHint === "skip") {
+      logger.info(`capture-hook: skipping (captureHint=skip, queryType=${classification.queryType})`);
+      return;
     }
 
     // When CandidateQueue is active, forward user messages to it as a fallback.
@@ -113,7 +142,9 @@ export function createCaptureHook(
       if (lastUserText) {
         metrics.captureTotal++;
         if (shouldCapture(lastUserText, config.capture.minChars, config.capture.maxChars) && !isLowSignalUserText(lastUserText)) {
-          candidateQueue.enqueue(lastUserText, scope);
+          // Pass classification to CandidateQueue for LLM gate decision
+          const metadata = classification ? { classification } : undefined;
+          candidateQueue.enqueue(lastUserText, scope, metadata);
           metrics.captureCaptured++;
           logger.info(`capture-hook: forwarded last user message to candidateQueue (fallback)`);
           // Ensure timer is started in this process

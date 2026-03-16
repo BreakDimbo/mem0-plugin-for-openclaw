@@ -68,7 +68,7 @@ await test("store maps non-main agents to namespaced user and preserves session 
     }),
     logger,
     async () => ({
-      add: async (messages, options) => {
+      add: async (messages: Array<{ role: string; content: string }>, options: Record<string, unknown>) => {
         capturedMessages = messages;
         capturedOptions = options;
         return { results: [{ id: "m1", event: "ADD" }] };
@@ -86,10 +86,10 @@ await test("store maps non-main agents to namespaced user and preserves session 
   );
 
   assertEqual(ok, true, "store ok");
-  assertEqual(capturedMessages?.[0]?.content, "remember this preference", "stored text");
-  assertEqual(capturedOptions?.userId, "alice:agent:researcher", "namespaced user");
-  assertEqual(capturedOptions?.runId, "agent:researcher:main", "run id");
-  const metadata = capturedOptions?.metadata as Record<string, unknown>;
+  assertEqual((capturedMessages as Array<{ content: string }> | null)?.[0]?.content, "remember this preference", "stored text");
+  assertEqual((capturedOptions as Record<string, unknown> | null)?.userId, "alice:agent:researcher", "namespaced user");
+  assertEqual((capturedOptions as Record<string, unknown> | null)?.runId, "agent:researcher:main", "run id");
+  const metadata = (capturedOptions as Record<string, unknown> | null)?.metadata as Record<string, unknown>;
   assertEqual(metadata.scope_user_id, "alice", "base user metadata");
   assertEqual(metadata.scope_agent_id, "researcher", "agent metadata");
   assertEqual(metadata.capture_kind, "explicit", "capture kind");
@@ -105,7 +105,7 @@ await test("store injects default long-term instructions for platform mode", asy
     }),
     logger,
     async () => ({
-      add: async (_messages, options) => {
+      add: async (_messages: unknown, options: Record<string, unknown>) => {
         capturedOptions = options;
         return { results: [{ id: "m1", event: "ADD" }] };
       },
@@ -121,7 +121,7 @@ await test("store injects default long-term instructions for platform mode", asy
     { metadata: { capture_kind: "explicit" } },
   );
 
-  assert(typeof capturedOptions?.custom_instructions === "string", "default instructions should be included");
+  assert(typeof (capturedOptions as Record<string, unknown> | null)?.custom_instructions === "string", "default instructions should be included");
 });
 
 await test("search combines long-term and session memories without duplicates", async () => {

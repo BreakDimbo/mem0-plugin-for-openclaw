@@ -215,7 +215,7 @@ await test("1. Message → InboundCache", async () => {
       persistPath: tmpDir,
     });
 
-    const hook = createMessageReceivedHook(inbound, candidateQueue, coreRepo, config, logger);
+    const hook = createMessageReceivedHook(inbound, candidateQueue, coreRepo, config, logger, new Metrics());
     await hook({ from: "user1", content: "我在字节跳动做后端开发，主要用Go语言，负责推荐系统的核心服务" }, baseCtx);
 
     const cached = await inbound.getBySender("ch_e2e", "user1");
@@ -233,24 +233,23 @@ await test("2. Message → CandidateQueue filtering", async () => {
     const inbound = new InboundMessageCache(join(tmpDir, "inbound.json"));
     const coreRepo = new CoreMemoryRepository(tmpDir, logger, config.core.maxItemChars);
 
-    let enqueueCount = 0;
     const candidateQueue = new CandidateQueue(async () => {}, logger, {
       intervalMs: 999_999,
       maxBatchSize: 50,
       persistPath: tmpDir,
     });
 
-    const hook = createMessageReceivedHook(inbound, candidateQueue, coreRepo, config, logger);
+    const testMetrics = new Metrics();
+    const hook = createMessageReceivedHook(inbound, candidateQueue, coreRepo, config, logger, testMetrics);
 
-    // Valid message should enqueue
+    // Valid message should be captured
     await hook({ from: "user1", content: "我在字节跳动做后端开发，主要用Go语言，负责推荐系统的核心服务" }, baseCtx);
-    assert(candidateQueue.pending >= 1, "valid message should be enqueued");
+    assertEqual(testMetrics.captureCaptured, 1, "valid message should be captured");
 
-    const pendingAfterValid = candidateQueue.pending;
-
-    // Low-signal message should NOT enqueue
+    // Low-signal message should be filtered (not captured)
     await hook({ from: "user1", content: "好的" }, baseCtx);
-    assertEqual(candidateQueue.pending, pendingAfterValid, "low-signal '好的' should not be enqueued");
+    assertEqual(testMetrics.captureCaptured, 1, "low-signal '好的' should not be captured");
+    assertEqual(testMetrics.captureFiltered, 1, "low-signal '好的' should be filtered");
   } finally {
     await rm(tmpDir, { recursive: true, force: true });
   }
@@ -309,7 +308,7 @@ await test("4. Core regex extraction (我叫小明)", async () => {
       persistPath: tmpDir,
     });
 
-    const hook = createMessageReceivedHook(inbound, candidateQueue, coreRepo, config, logger);
+    const hook = createMessageReceivedHook(inbound, candidateQueue, coreRepo, config, logger, new Metrics());
 
     // "我叫小明" matches the extractCoreProposal regex
     // Must be >= minChars (24) to pass shouldCapture
@@ -578,7 +577,7 @@ await test("10. Full round-trip: message → queue → capture → recall", asyn
       { intervalMs: 999_999, maxBatchSize: 50, persistPath: tmpDir },
     );
 
-    const messageHook = createMessageReceivedHook(inbound, candidateQueue, coreRepo, config, logger);
+    const messageHook = createMessageReceivedHook(inbound, candidateQueue, coreRepo, config, logger, new Metrics());
     const recallHook = createRecallHook(
       mockBackend,
       scopeResolver,

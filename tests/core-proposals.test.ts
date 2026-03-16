@@ -74,7 +74,7 @@ await test("extracts Chinese durable preference fact with stable fallback key su
   const proposal = extractCoreProposal("我偏好异步沟通。", scope);
   assert(!!proposal, "proposal should be extracted");
   assertEqual(proposal?.category, "preferences", "category");
-  assert(proposal?.key.startsWith("preferences."), "key prefix");
+  assert(proposal?.key.startsWith("preferences.") ?? false, "key prefix");
 });
 
 await test("scope-guarded proposal approval only reviews matching scope", async () => {

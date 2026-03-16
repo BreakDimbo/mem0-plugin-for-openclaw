@@ -31,7 +31,7 @@ await test("fixture list includes 20 Chinese business queries", () => {
 
 await test("Chinese package manager fact is classified as tooling", () => {
   const item = CHINESE_BENCHMARK_CASES.find((row) => row.id === "zh09");
-  assert(item, "missing zh09");
+  assert(!!item, "missing zh09");
   assertEqual(inferFreeTextMemoryKind(item!.fact), "tooling", "zh09 kind");
 });
 

@@ -7,7 +7,7 @@ import type { OpenClawPluginDefinition, OpenClawPluginApi } from "openclaw/plugi
 
 import { buildDynamicScope } from "./types.js";
 import { loadConfig } from "./types.js";
-import type { MemuMemoryRecord } from "./types.js";
+import type { MemuMemoryRecord, ClassificationResult } from "./types.js";
 import { LRUCache } from "./cache.js";
 import { InboundMessageCache } from "./inbound-cache.js";
 import { OutboxWorker } from "./outbox.js";
@@ -21,10 +21,12 @@ import { resolveWorkspaceDir } from "./workspace-facts.js";
 import { extractCoreProposal } from "./core-proposals.js";
 import { buildFreeTextMetadata } from "./metadata.js";
 import { judgeCandidates } from "./core-admission.js";
+import { UnifiedIntentClassifier } from "./classifier.js";
 
 import { createRecallHook } from "./hooks/recall.js";
 import { createCaptureHook } from "./hooks/capture.js";
 import { createMessageReceivedHook } from "./hooks/message-received.js";
+import { createSmartRouterHook } from "./hooks/smart-router.js";
 
 import { createRecallTool } from "./tools/recall.js";
 import { createStoreTool } from "./tools/store.js";
@@ -39,6 +41,7 @@ import { createCoreProposalTool } from "./tools/core-proposals.js";
 import { createMemuCommand } from "./cli.js";
 
 const HOOK_PRIORITY = {
+  smartRouter: 200,
   recall: 100,
   capture: 100,
   messageReceived: 100,
@@ -65,6 +68,20 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
     const proposalQueue = new CoreProposalQueue(config.outbox.persistPath, config.core.proposalQueueMax, api.logger);
 
     const primaryFreeTextBackend = createPrimaryFreeTextBackend(config, { logger: api.logger });
+
+    // -- Unified Intent Classifier --
+    const classifierCache = new LRUCache<ClassificationResult>(
+      config.classifier.cacheMaxSize ?? 200,
+      config.classifier.cacheTtlMs ?? 300_000,
+    );
+    const classifierMetrics = {
+      classifierCalls: 0,
+      classifierHits: 0,
+      classifierErrors: 0,
+    };
+    const classifier = config.classifier.enabled !== false
+      ? new UnifiedIntentClassifier(config.classifier, classifierCache, classifierMetrics, api.logger)
+      : undefined;
 
     const outbox = new OutboxWorker(primaryFreeTextBackend, api.logger, {
       concurrency: config.outbox.concurrency,
@@ -113,7 +130,14 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
           }
 
           // Collect for LLM gate if regex missed
-          if (!regexMatched && config.core.llmGate.enabled) {
+          // Skip LLM gate for code/debug/greeting queries (based on classification from capture hook)
+          const itemClassification = item.metadata?.classification as ClassificationResult | undefined;
+          const skipLlmGate = itemClassification &&
+            (itemClassification.queryType === "code" ||
+             itemClassification.queryType === "debug" ||
+             itemClassification.queryType === "greeting" ||
+             itemClassification.captureHint === "light");
+          if (!regexMatched && config.core.llmGate.enabled && !skipLlmGate) {
             llmCandidates.push({ index: i, item });
           }
         }
@@ -184,21 +208,28 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
     sync.registerAgent(bootstrapAgentId, resolveWorkspaceDir(bootstrapAgentId));
 
     api.logger.info(
-      `memory-mem0: registered (core=local, freeText=${config.backend.freeText.provider}, userId: ${config.scope.userId}, agentId: ${config.scope.agentId}, recall: ${config.recall.enabled}, capture: ${config.capture.enabled})`,
+      `memory-mem0: registered (core=local, freeText=${config.backend.freeText.provider}, userId: ${config.scope.userId}, agentId: ${config.scope.agentId}, recall: ${config.recall.enabled}, capture: ${config.capture.enabled}, classifier: ${config.classifier.enabled !== false})`,
     );
 
     // ========================================================================
     // Hooks
     // ========================================================================
 
+    // Smart Router: select model based on query complexity tier
+    if (config.smartRouter.enabled && classifier) {
+      api.on("before_model_resolve", createSmartRouterHook(classifier, inbound, config, api.logger), {
+        priority: HOOK_PRIORITY.smartRouter,
+      });
+    }
+
     if (config.recall.enabled || config.core.enabled) {
-      api.on("before_prompt_build", createRecallHook(primaryFreeTextBackend, scopeResolver, coreRepo, cache, inbound, config, api.logger, metrics, sync, candidateQueue), {
+      api.on("before_prompt_build", createRecallHook(primaryFreeTextBackend, scopeResolver, coreRepo, cache, inbound, config, api.logger, metrics, sync, candidateQueue, classifier), {
         priority: HOOK_PRIORITY.recall,
       });
     }
 
     if (config.capture.enabled) {
-      api.on("agent_end", createCaptureHook(outbox, coreRepo, proposalQueue, cache, config, api.logger, metrics, sync, candidateQueue), {
+      api.on("agent_end", createCaptureHook(outbox, coreRepo, proposalQueue, cache, config, api.logger, metrics, sync, candidateQueue, inbound), {
         priority: HOOK_PRIORITY.capture,
       });
     }
@@ -245,7 +276,7 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
 
     api.registerService({
       id: "memory-mem0",
-      start: async (_ctx) => {
+      start: async (_ctx: unknown) => {
         api.logger.info("memory-mem0: using local core store and mem0 free-text backend");
 
         // Start outbox worker (loads persisted queue from disk)
@@ -264,7 +295,7 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
 
         api.logger.info("memory-mem0: service started");
       },
-      stop: async (_ctx) => {
+      stop: async (_ctx: unknown) => {
         // Graceful shutdown: drain candidate queue and outbox with timeout
         if (config.capture.enabled && config.capture.candidateQueue.enabled) {
           await candidateQueue.drain(config.outbox.drainTimeoutMs);

@@ -26,12 +26,19 @@ const SYSTEM_PROMPT = `你是记忆管理系统的评审员。判断用户消息
 
 规则：
 1. 每条消息只输出一个判断
-2. core 类型必须提供 key（格式: category.topic，如 identity.name, work.company, preferences.editor）和 value（简洁的第三人称事实陈述）
+2. core 类型必须提供 key（格式: category.topic，如 identity.name, work.company, preferences.editor）和 value
 3. free_text 类型可选提供 value（简洁摘要）
 4. discard 类型可以省略不输出
 5. 只返回 JSON 数组，不要包含其他文字
 
-返回格式: [{"index": 1, "verdict": "core", "key": "identity.name", "value": "用户叫昊", "reason": "稳定身份信息"}]`;
+Value格式要求：
+- 不要使用"用户"作为主语
+- 不要重复 key 的语义（如 key 是 name，不要写"名字是..."）
+- 直接陈述事实，简洁明了
+- 示例：key=identity.name → value="昊，北京，UTC+8"（而不是"用户叫昊，常驻北京..."）
+- 示例：key=preferences.editor → value="VSCode + Vim 模式"（而不是"用户偏好使用 VSCode..."）
+
+返回格式: [{"index": 1, "verdict": "core", "key": "identity.name", "value": "昊", "reason": "稳定身份信息"}]`;
 
 export function buildUserPrompt(texts: string[]): string {
   const numbered = texts.map((t, i) => `${i + 1}. ${t}`).join("\n");

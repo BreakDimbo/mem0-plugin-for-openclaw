@@ -13,6 +13,7 @@ export type FreeTextSearchOptions = {
 export type FreeTextStoreOptions = {
   sessionScoped?: boolean;
   metadata?: Record<string, unknown>;
+  memory_kind?: string;
 };
 
 export type FreeTextForgetOptions = {

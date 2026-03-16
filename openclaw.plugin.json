@@ -196,6 +196,45 @@
           "flushIntervalSec": { "type": "number", "default": 300 },
           "memoryFilePath": { "type": "string", "description": "Path to MEMORY.md for sync writeback" }
         }
+      },
+      "classifier": {
+        "type": "object",
+        "description": "Unified intent classifier for query routing and capture optimization",
+        "properties": {
+          "enabled": { "type": "boolean", "default": true, "description": "Enable/disable unified intent classifier" },
+          "model": { "type": "string", "default": "gemini-2.5-flash", "description": "LLM model for classification" },
+          "apiBase": { "type": "string", "description": "API base URL (defaults to Gemini)" },
+          "apiKey": { "type": "string", "description": "API key for classifier (env: MEM0_CLASSIFIER_API_KEY)" },
+          "cacheTtlMs": { "type": "number", "default": 300000, "minimum": 0, "maximum": 3600000, "description": "Classification cache TTL in ms" },
+          "cacheMaxSize": { "type": "number", "default": 200, "minimum": 10, "maximum": 1000, "description": "Max entries in classification cache" }
+        }
+      },
+      "smartRouter": {
+        "type": "object",
+        "description": "Smart model routing based on query complexity tier",
+        "properties": {
+          "enabled": { "type": "boolean", "default": true, "description": "Enable/disable smart router" },
+          "tierModels": {
+            "type": "object",
+            "description": "Model mapping per complexity tier (provider/model format)",
+            "properties": {
+              "SIMPLE": { "type": "string", "description": "Model for SIMPLE tier (quick facts, greetings)" },
+              "MEDIUM": { "type": "string", "description": "Model for MEDIUM tier (standard tasks)" },
+              "COMPLEX": { "type": "string", "description": "Model for COMPLEX tier (multi-step analysis)" },
+              "REASONING": { "type": "string", "description": "Model for REASONING tier (deep thinking, architecture)" }
+            }
+          }
+        }
+      },
+      "reranker": {
+        "type": "object",
+        "description": "Embedding-based reranker for retrieval (requires embedder config)",
+        "properties": {
+          "enabled": { "type": "boolean", "default": false, "description": "Enable/disable embedding reranker" },
+          "threshold": { "type": "number", "default": 0.3, "minimum": 0, "maximum": 1, "description": "Score threshold for reranking" },
+          "bm25Weight": { "type": "number", "default": 0.4, "minimum": 0, "maximum": 1, "description": "BM25 score weight in fusion" },
+          "embeddingWeight": { "type": "number", "default": 0.6, "minimum": 0, "maximum": 1, "description": "Embedding score weight in fusion" }
+        }
       }
     },
     "required": []

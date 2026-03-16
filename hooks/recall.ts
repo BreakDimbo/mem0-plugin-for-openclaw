@@ -10,13 +10,15 @@ import type { Metrics } from "../metrics.js";
 import type { MarkdownSync } from "../sync.js";
 import type { CandidateQueue } from "../candidate-queue.js";
 import { shouldCapture } from "../security.js";
-import type { MemuPluginConfig, MemuMemoryRecord, MemoryScope, PluginHookContext } from "../types.js";
+import type { MemuPluginConfig, MemuMemoryRecord, MemoryScope, PluginHookContext, ClassificationResult, CoreMemoryRecord } from "../types.js";
 import { buildDynamicScope } from "../types.js";
 import { type CoreMemoryRepository, inferTierFromCategory } from "../core-repository.js";
 import { applyInjectionBudget, escapeForInjection, formatCoreMemoriesContext, formatMemoriesContext } from "../security.js";
 import type { FreeTextBackend } from "../backends/free-text/base.js";
 import { genericConceptBoost, rerankMemoryResults, tokenizeSemanticQuery } from "../metadata.js";
 import { resolveWorkspaceDir, searchWorkspaceFacts } from "../workspace-facts.js";
+import type { UnifiedIntentClassifier } from "../classifier.js";
+import { DEFAULT_CLASSIFICATION } from "../classifier.js";
 
 type Logger = { info(msg: string): void; warn(msg: string): void };
 
@@ -563,6 +565,49 @@ function trimRelevantForInjection(items: MemuMemoryRecord[], intent: QueryIntent
   return items.slice(0, maxItems);
 }
 
+/**
+ * Filter always-inject core memories based on classification result.
+ * - greeting → no injection
+ * - code/debug → only identity.name
+ * - targetCategories specified → filter by category
+ * - otherwise → return all
+ */
+function filterAlwaysInject(
+  items: Array<{ id: string; category?: string; key: string; value: string; tier?: string; score?: number }>,
+  classification: ClassificationResult | undefined,
+): Array<{ id: string; category?: string; key: string; value: string; tier?: string; score?: number }> {
+  if (!classification) return items;
+
+  const { queryType, targetCategories } = classification;
+
+  // Greeting → no injection at all
+  if (queryType === "greeting") {
+    return [];
+  }
+
+  // Code/debug → only inject identity.name for minimal context
+  if (queryType === "code" || queryType === "debug") {
+    return items.filter((item) =>
+      item.key === "identity.name" || item.key === "name"
+    );
+  }
+
+  // If targetCategories specified, filter by them
+  if (targetCategories.length > 0) {
+    return items.filter((item) => {
+      const itemCategory = (item.category ?? "general").toLowerCase();
+      return targetCategories.some((cat) => {
+        const lowerCat = cat.toLowerCase();
+        return itemCategory === lowerCat ||
+               itemCategory.startsWith(lowerCat) ||
+               lowerCat.includes(itemCategory);
+      });
+    });
+  }
+
+  return items;
+}
+
 export function sanitizePromptQuery(raw: string): string {
   const s = stripPromptLead(stripInjectedBlocks(raw.trim()));
   if (!s) return "";
@@ -620,6 +665,7 @@ export function createRecallHook(
   metrics: Metrics,
   sync: MarkdownSync,
   candidateQueue?: CandidateQueue,
+  classifier?: UnifiedIntentClassifier,
 ) {
   return async (event: { prompt?: string; messages?: Array<{ role: string; content?: string | Array<{ type: string; text?: string }> }> }, ctx: PluginHookContext) => {
     if (!config.recall.enabled && !config.core.enabled) return;
@@ -689,8 +735,25 @@ export function createRecallHook(
     if (!query) query = promptQuery || sanitizePromptQuery(promptRaw);
     if (!query || query.length < 2) return;
     if (isSystemStartupPrompt(query)) return;
-    // Skip greetings and trivial social phrases — no memory recall needed.
-    if (/^(你好|hi|hello|hey|嗨|哈喽|早|晚安|早安|午安|在吗|在不在|嘿|yo)[\s!！。.？?~～]*$/i.test(query.trim())) return;
+
+    // Classify query intent (for filtering + capture hint)
+    let classification: ClassificationResult | undefined;
+    if (classifier) {
+      classification = await classifier.classify(query);
+      // Store classification for capture hook to use
+      if (ctx.channelId && senderId) {
+        inbound.setClassification(ctx.channelId, senderId, classification).catch(() => {});
+      }
+      // Skip greetings entirely — no memory recall needed
+      if (classification.queryType === "greeting") {
+        logger.info(`recall-hook: skipping greeting query="${query.slice(0, 40)}..."`);
+        return;
+      }
+    } else {
+      // Fallback: regex-based greeting skip
+      if (/^(你好|hi|hello|hey|嗨|哈喽|早|晚安|早安|午安|在吗|在不在|嘿|yo)[\s!！。.？?~～]*$/i.test(query.trim())) return;
+    }
+
     const recallQueries = splitRecallQueries(query);
     const searchQueries = recallQueries.length > 0 ? recallQueries : [query];
     const queryIntent = inferQueryIntent(query, searchQueries.length);
@@ -777,10 +840,13 @@ export function createRecallHook(
 
         // Phase 1: Always-inject pool (profile + general tiers) — no scoring needed
         const alwaysInjectTiers = config.core.alwaysInjectTiers;
-        const alwaysInjectPool = allCoreFacts.filter((item) => {
+        let alwaysInjectPool = allCoreFacts.filter((item) => {
           const tier = item.tier ?? inferTierFromCategory(item.category ?? "general");
           return alwaysInjectTiers.includes(tier as any);
         });
+
+        // Apply classification-based filtering to always-inject pool
+        alwaysInjectPool = filterAlwaysInject(alwaysInjectPool, classification);
 
         // Phase 2: Retrieval pool (technical tier) — scoring-based selection
         const retrievalOnlyTiers = config.core.retrievalOnlyTiers;
@@ -817,7 +883,8 @@ export function createRecallHook(
         coreContext = formatCoreMemoriesContext(selectedRetrieval as any);
         alwaysInjectBlock = alwaysInjectContext;
 
-        logger.info(`recall-hook: scope user=${scope.userId} agent=${scope.agentId} core=${coreMemories.length} (always=${alwaysInjectPool.length} retrieval=${selectedRetrieval.length})`);
+        const classInfo = classification ? ` [type=${classification.queryType}]` : "";
+        logger.info(`recall-hook: scope user=${scope.userId} agent=${scope.agentId} core=${coreMemories.length} (always=${alwaysInjectPool.length} retrieval=${selectedRetrieval.length})${classInfo}`);
       }
 
       if (filteredMemories.length > 0) {
@@ -838,14 +905,21 @@ export function createRecallHook(
       if (config.core.enabled && config.core.touchOnRecall && coreMemories.length > 0) {
         const injectedIds = coreMemories
           .filter((m) => {
-            const tag = m.category ? `${escapeForInjection(m.category)}/${escapeForInjection(m.key)}` : escapeForInjection(m.key);
-            return injected.includes(`候选答案 [${tag}]：${escapeForInjection(m.value)}`);
+            // Match new simplified format: [category/key] value
+            const category = m.category ?? "";
+            const key = m.key;
+            // Simplified key: if key starts with "category.", strip that prefix
+            const simplifiedKey = category && key.startsWith(`${category}.`)
+              ? `${category}/${key.slice(category.length + 1)}`
+              : category ? `${category}/${key}` : key;
+            return injected.includes(`[${escapeForInjection(simplifiedKey)}] ${escapeForInjection(m.value)}`);
           })
           .map((m) => m.id);
         if (injectedIds.length > 0) {
           coreRepo.touch(scope, { ids: injectedIds, kind: "injected" }).catch(() => {});
         }
       }
+
       return { prependContext: injected };
     } catch (err) {
       metrics.recallErrors++;

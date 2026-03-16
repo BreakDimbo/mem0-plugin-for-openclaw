@@ -129,12 +129,12 @@ test("formats memories with xml tags", () => {
   const result = formatMemoriesContext([
     { text: "User prefers dark mode", category: "preference", score: 0.85 },
     { text: "Team uses Go for backend", category: "decision" },
-  ]);
+  ] as any);
   assert(result.includes("<relevant-memories>"), "should have opening tag");
   assert(result.includes("</relevant-memories>"), "should have closing tag");
   assert(result.includes("补充历史事实"), "should include compact Chinese guidance");
-  assert(result.includes("候选答案"), "should render answer-style entries");
-  assert(result.includes("preference"), "should include category");
+  assert(result.includes("[preference]"), "should include category tag");
+  assert(result.includes("User prefers dark mode"), "should include text");
 });
 
 test("returns empty for no memories", () => {
@@ -147,8 +147,8 @@ test("formats core memories with direct-answer guidance", () => {
   ]);
   assert(result.includes("<core-memory>"), "should have opening tag");
   assert(result.includes("若这里已覆盖答案，直接据此作答"), "should include direct-answer guidance");
-  assert(result.includes("候选答案"), "should use answer-style entries");
-  assert(result.includes("identity/identity.timezone"), "should include tag");
+  assert(result.includes("[identity/timezone]"), "should use simplified tag (identity/identity.timezone -> identity/timezone)");
+  assert(result.includes("用户的时区是 UTC+8。"), "should include value");
 });
 
 // -- audit --
