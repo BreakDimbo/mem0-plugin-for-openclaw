@@ -519,7 +519,7 @@ export function loadConfig(raw?: Record<string, unknown>): MemuPluginConfig {
   const o = (raw.outbox ?? {}) as Record<string, unknown>;
   const s = (raw.sync ?? {}) as Record<string, unknown>;
 
-  // Parse oss config with graph_store support
+  // Parse oss config with graph_store support and geminiApiKey inheritance
   const ossRaw = mem0.oss as Record<string, unknown> | undefined;
   const oss = ossRaw && typeof ossRaw === "object"
     ? {
@@ -529,9 +529,16 @@ export function loadConfig(raw?: Record<string, unknown>): MemuPluginConfig {
         vectorStore: ossRaw.vectorStore && typeof ossRaw.vectorStore === "object"
           ? (ossRaw.vectorStore as { provider: string; config: Record<string, unknown> })
           : undefined,
-        llm: ossRaw.llm && typeof ossRaw.llm === "object"
-          ? (ossRaw.llm as { provider: string; config: Record<string, unknown> })
-          : undefined,
+        llm: (() => {
+          const llmRaw = ossRaw.llm as { provider: string; config: Record<string, unknown> } | undefined;
+          if (!llmRaw || typeof llmRaw !== "object") return undefined;
+          // Inherit geminiApiKey if apiKey not set in llm.config
+          const llmConfig = llmRaw.config ?? {};
+          if (!llmConfig.apiKey && geminiApiKey) {
+            return { ...llmRaw, config: { ...llmConfig, apiKey: geminiApiKey } };
+          }
+          return llmRaw;
+        })(),
         historyDbPath: typeof ossRaw.historyDbPath === "string" ? ossRaw.historyDbPath : undefined,
         graph_store: ossRaw.graph_store && typeof ossRaw.graph_store === "object"
           ? (ossRaw.graph_store as { provider: string; config: Record<string, unknown> })

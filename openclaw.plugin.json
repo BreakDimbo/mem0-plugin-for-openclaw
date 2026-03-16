@@ -3,7 +3,7 @@
   "name": "memory-mem0",
   "description": "Enhanced memory plugin with local core memory, mem0 long-term recall, scoped retrieval, and async capture",
   "kind": "memory",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "uiHints": {
     "userId": {
       "label": "User ID",
@@ -55,6 +55,15 @@
     "type": "object",
     "additionalProperties": false,
     "properties": {
+      "dataDir": {
+        "type": "string",
+        "description": "Base data directory for all persistence (core memory, outbox, etc.)",
+        "default": "~/.openclaw/data/memory-mem0"
+      },
+      "geminiApiKey": {
+        "type": "string",
+        "description": "Shared Gemini API key for classifier, llmGate, and mem0 LLM"
+      },
       "backend": {
         "type": "object",
         "properties": {
@@ -84,7 +93,8 @@
               "embedder": { "type": "object" },
               "vectorStore": { "type": "object" },
               "llm": { "type": "object" },
-              "historyDbPath": { "type": "string" }
+              "historyDbPath": { "type": "string" },
+              "graph_store": { "type": "object" }
             }
           }
         }
@@ -107,37 +117,27 @@
         "type": "object",
         "properties": {
           "enabled": { "type": "boolean", "default": true },
-          "method": { "type": "string", "enum": ["rag", "llm"], "default": "rag" },
-          "hybrid": {
-            "type": "object",
-            "properties": {
-              "enabled": { "type": "boolean", "default": false },
-              "alpha": { "type": "number", "default": 0.7, "minimum": 0, "maximum": 1 },
-              "fallbackToRag": { "type": "boolean", "default": true }
-            }
-          },
-          "topK": { "type": "number", "default": 3, "minimum": 1, "maximum": 20 },
-          "scoreThreshold": { "type": "number", "default": 0.30, "minimum": 0, "maximum": 1 },
-          "maxContextChars": { "type": "number", "default": 1200, "minimum": 200, "maximum": 5000 },
-          "injectionBudgetChars": { "type": "number", "default": 1600, "minimum": 300, "maximum": 20000 },
+          "topK": { "type": "number", "default": 5, "minimum": 1, "maximum": 20 },
+          "threshold": { "type": "number", "default": 0.25, "minimum": 0, "maximum": 1, "description": "Minimum relevance score (renamed from scoreThreshold)" },
+          "maxChars": { "type": "number", "default": 1500, "minimum": 200, "maximum": 5000, "description": "Max injection chars (renamed from maxContextChars)" },
           "cacheTtlMs": { "type": "number", "default": 60000, "minimum": 0, "maximum": 600000 },
-          "cacheMaxSize": { "type": "number", "default": 100 }
+          "cacheMaxSize": { "type": "number", "default": 100 },
+          "alwaysInjectCategories": { "type": "array", "items": { "type": "string" }, "default": [] }
         }
       },
       "core": {
         "type": "object",
         "properties": {
           "enabled": { "type": "boolean", "default": true },
-          "topK": { "type": "number", "default": 8, "minimum": 1, "maximum": 50 },
-          "maxItemChars": { "type": "number", "default": 240, "minimum": 30, "maximum": 2000 },
-          "persistPath": { "type": "string", "description": "Directory for local Core Memory persistence", "default": "~/.openclaw/data/memory-memu" },
+          "topK": { "type": "number", "default": 10, "minimum": 1, "maximum": 50 },
+          "maxItemChars": { "type": "number", "default": 300, "minimum": 30, "maximum": 2000 },
+          "persistPath": { "type": "string", "description": "Directory for local Core Memory persistence (deprecated, use dataDir)" },
           "autoExtractProposals": { "type": "boolean", "default": true },
-          "humanReviewRequired": { "type": "boolean", "default": true },
+          "humanReviewRequired": { "type": "boolean", "default": false },
           "touchOnRecall": { "type": "boolean", "default": true },
           "proposalQueueMax": { "type": "number", "default": 200, "minimum": 10, "maximum": 5000 },
           "alwaysInjectTiers": { "type": "array", "items": { "type": "string", "enum": ["profile", "technical", "general"] }, "default": ["profile", "general"], "description": "Core memory tiers to always inject (no scoring)" },
-          "retrievalOnlyTiers": { "type": "array", "items": { "type": "string", "enum": ["profile", "technical", "general"] }, "default": ["technical"], "description": "Core memory tiers that require scoring for injection" },
-          "maxAlwaysInjectChars": { "type": "number", "default": 600, "minimum": 100, "maximum": 5000, "description": "Safety cap on always-inject block character count" },
+          "alwaysInjectLimit": { "type": "number", "default": 800, "minimum": 100, "maximum": 5000, "description": "Max chars for always-inject (renamed from maxAlwaysInjectChars)" },
           "consolidation": {
             "type": "object",
             "properties": {
@@ -150,11 +150,11 @@
             "type": "object",
             "properties": {
               "enabled": { "type": "boolean", "default": false },
-              "apiBase": { "type": "string", "default": "https://api.openai.com/v1" },
-              "apiKey": { "type": "string" },
-              "model": { "type": "string", "default": "gpt-4o-mini" },
-              "maxTokensPerBatch": { "type": "number", "default": 2000, "minimum": 500, "maximum": 10000 },
-              "timeoutMs": { "type": "number", "default": 30000, "minimum": 5000, "maximum": 120000 }
+              "apiBase": { "type": "string", "default": "https://generativelanguage.googleapis.com/v1beta/openai" },
+              "apiKey": { "type": "string", "description": "API key (inherits from geminiApiKey if not set)" },
+              "model": { "type": "string", "default": "gemini-2.5-flash" },
+              "maxTokensPerBatch": { "type": "number", "default": 4000, "minimum": 500, "maximum": 10000 },
+              "timeoutMs": { "type": "number", "default": 60000, "minimum": 5000, "maximum": 120000 }
             }
           }
         }
@@ -163,15 +163,14 @@
         "type": "object",
         "properties": {
           "enabled": { "type": "boolean", "default": true },
-          "maxItemsPerRun": { "type": "number", "default": 2, "minimum": 1, "maximum": 10 },
-          "minChars": { "type": "number", "default": 24 },
-          "maxChars": { "type": "number", "default": 500 },
+          "minChars": { "type": "number", "default": 20 },
+          "maxChars": { "type": "number", "default": 600 },
           "dedupeThreshold": { "type": "number", "default": 0.8 },
           "candidateQueue": {
             "type": "object",
             "properties": {
               "enabled": { "type": "boolean", "default": true },
-              "intervalMs": { "type": "number", "default": 600000, "minimum": 10000, "description": "Batch processing interval in ms (default 10min)" },
+              "intervalMs": { "type": "number", "default": 10000, "minimum": 1000, "description": "Batch processing interval in ms" },
               "maxBatchSize": { "type": "number", "default": 50, "minimum": 1, "maximum": 200 }
             }
           }
@@ -185,15 +184,15 @@
           "batchSize": { "type": "number", "default": 10 },
           "maxRetries": { "type": "number", "default": 5 },
           "drainTimeoutMs": { "type": "number", "default": 5000 },
-          "persistPath": { "type": "string", "description": "Directory for outbox persistence files", "default": "~/.openclaw/data/memory-memu" },
+          "persistPath": { "type": "string", "description": "Directory for outbox persistence (deprecated, use dataDir)" },
           "flushIntervalMs": { "type": "number", "default": 10000, "description": "Outbox flush interval in milliseconds" }
         }
       },
       "sync": {
         "type": "object",
         "properties": {
-          "flushToMarkdown": { "type": "boolean", "default": true },
-          "flushIntervalSec": { "type": "number", "default": 300 },
+          "enabled": { "type": "boolean", "default": true, "description": "Enable Markdown sync (renamed from flushToMarkdown)" },
+          "intervalMs": { "type": "number", "default": 300000, "description": "Sync interval in ms (renamed from flushIntervalSec)" },
           "memoryFilePath": { "type": "string", "description": "Path to MEMORY.md for sync writeback" }
         }
       },
@@ -202,9 +201,9 @@
         "description": "Unified intent classifier for query routing and capture optimization",
         "properties": {
           "enabled": { "type": "boolean", "default": true, "description": "Enable/disable unified intent classifier" },
-          "model": { "type": "string", "default": "gemini-2.5-flash", "description": "LLM model for classification" },
-          "apiBase": { "type": "string", "description": "API base URL (defaults to Gemini)" },
-          "apiKey": { "type": "string", "description": "API key for classifier (env: MEM0_CLASSIFIER_API_KEY)" },
+          "model": { "type": "string", "default": "gemini-2.0-flash-lite", "description": "LLM model for classification" },
+          "apiBase": { "type": "string", "default": "https://generativelanguage.googleapis.com/v1beta/openai", "description": "API base URL" },
+          "apiKey": { "type": "string", "description": "API key (inherits from geminiApiKey if not set)" },
           "cacheTtlMs": { "type": "number", "default": 300000, "minimum": 0, "maximum": 3600000, "description": "Classification cache TTL in ms" },
           "cacheMaxSize": { "type": "number", "default": 200, "minimum": 10, "maximum": 1000, "description": "Max entries in classification cache" }
         }
@@ -213,7 +212,7 @@
         "type": "object",
         "description": "Smart model routing based on query complexity tier",
         "properties": {
-          "enabled": { "type": "boolean", "default": true, "description": "Enable/disable smart router" },
+          "enabled": { "type": "boolean", "default": false, "description": "Enable/disable smart router" },
           "tierModels": {
             "type": "object",
             "description": "Model mapping per complexity tier (provider/model format)",
@@ -224,16 +223,6 @@
               "REASONING": { "type": "string", "description": "Model for REASONING tier (deep thinking, architecture)" }
             }
           }
-        }
-      },
-      "reranker": {
-        "type": "object",
-        "description": "Embedding-based reranker for retrieval (requires embedder config)",
-        "properties": {
-          "enabled": { "type": "boolean", "default": false, "description": "Enable/disable embedding reranker" },
-          "threshold": { "type": "number", "default": 0.3, "minimum": 0, "maximum": 1, "description": "Score threshold for reranking" },
-          "bm25Weight": { "type": "number", "default": 0.4, "minimum": 0, "maximum": 1, "description": "BM25 score weight in fusion" },
-          "embeddingWeight": { "type": "number", "default": 0.6, "minimum": 0, "maximum": 1, "description": "Embedding score weight in fusion" }
         }
       }
     },
