@@ -7,7 +7,7 @@ Automatically recalls relevant memories before prompt building, and captures dur
 ## Highlights
 
 - **Dual-Layer Architecture** — structured Core Memory (local JSON K/V) for high-confidence facts + free-text vector memory (mem0) for long-tail knowledge. Core Memory is always injected; free-text is retrieved on demand.
-- **78.6% End-to-End Recall** on a 70-case benchmark covering profiles, goals, preferences, constraints, technical configs, and architecture decisions — significantly outperforming the official mem0 plugin's 35.7%.
+- **88.6% End-to-End Recall** on a 70-case benchmark covering profiles, goals, preferences, constraints, technical configs, and architecture decisions — significantly outperforming the official mem0 plugin's 35.7%.
 - **LLM Admission Gate** — optional Gemini-powered quality filter classifies candidate memories as `core` / `free_text` / `discard` before storage, eliminating noise.
 - **Async Capture Pipeline** — `CandidateQueue → LLM Gate → Outbox → mem0`, with hash-based dedup, batch processing, retry with backoff, and disk persistence. Zero impact on agent response latency.
 - **Chinese-First** — CJK bigram tokenization, Chinese numeral normalization (第一 ↔ 1), and cross-language semantic matching.
@@ -81,7 +81,7 @@ Automatically recalls relevant memories before prompt building, and captures dur
 
 | Metric | memory-mem0 (ours) | @mem0/openclaw-mem0 (official) |
 |--------|---:|---:|
-| **Recall Hit Rate** | **78.6%** (55/70) | 35.7% (25/70) |
+| **Recall Hit Rate** | **88.6%** (62/70) | 35.7% (25/70) |
 | Avg Response Time | 12.6s | 24.5s |
 | P95 Response Time | 14.8s | 31.2s |
 
@@ -117,6 +117,7 @@ Automatically recalls relevant memories before prompt building, and captures dur
 | Baseline (official plugin) | 35.7% | Free-text only, no core memory |
 | + Core Memory + reranking | 75.7% | Local K/V store, semantic rerank |
 | + Capture pipeline fix | 78.6% | CLI mode capture, LLM gate, dedup fix |
+| + Unified intent classifier | 88.6% | Smart query routing, embedding bge-m3 |
 | + Pre-populated corpus | 92.9% | All facts pre-stored (upper bound) |
 
 ## Quick Start
@@ -139,16 +140,20 @@ Add to `~/.openclaw/openclaw.json`:
       "memory-mem0": {
         "enabled": true,
         "config": {
+          // Simplified top-level config (recommended)
+          "dataDir": "~/.openclaw/data/memory-mem0",
+          "geminiApiKey": "YOUR_GEMINI_API_KEY",  // Shared for classifier, llmGate, mem0 LLM
+
           "mem0": {
-            "mode": "open-source",                    // or "platform"
+            "mode": "open-source",
             "oss": {
               "llm": {
                 "provider": "google",
-                "config": { "apiKey": "YOUR_KEY", "model": "gemini-2.5-flash" }
+                "config": { "model": "gemini-2.5-flash" }  // apiKey inherited from geminiApiKey
               },
               "embedder": {
                 "provider": "ollama",
-                "config": { "model": "nomic-embed-text" }
+                "config": { "model": "bge-m3:latest", "embeddingDims": 1024 }
               },
               "vectorStore": {
                 "provider": "qdrant",
@@ -195,6 +200,8 @@ See [INSTALL.md](./INSTALL.md) for full configuration reference.
 ├── candidate-queue.ts        # Batched capture queue with dedup
 ├── outbox.ts                 # Async write queue with retry/backoff
 ├── cache.ts                  # LRU cache with TTL
+├── classifier.ts             # Unified intent classifier (query type, tier)
+├── smart-router.ts           # Model routing based on query complexity
 ├── metadata.ts               # Tokenization, Chinese numerals, ranking
 ├── security.ts               # Injection detection, XML escaping
 ├── sync.ts                   # Markdown export to workspaces
@@ -202,7 +209,7 @@ See [INSTALL.md](./INSTALL.md) for full configuration reference.
 ├── cli.ts                    # /memu CLI commands
 ├── types.ts                  # Config schema + defaults
 ├── scripts/                  # Benchmarks, backfill, comparison tools
-└── tests/                    # 20 test files, 63+ E2E lifecycle cases
+└── tests/                    # 25+ test files, 70+ E2E lifecycle cases
 ```
 
 ## Running Tests
@@ -213,6 +220,9 @@ npx tsx tests/cache.test.ts
 npx tsx tests/core-repository.test.ts
 npx tsx tests/metadata.test.ts
 npx tsx tests/security.test.ts
+npx tsx tests/classifier.test.ts           # Unified intent classifier
+npx tsx tests/smart-router.test.ts         # Smart model routing
+npx tsx tests/inbound-cache.test.ts        # Classification caching
 
 # Integration tests
 npx tsx tests/e2e-lifecycle.test.ts          # 63 cases

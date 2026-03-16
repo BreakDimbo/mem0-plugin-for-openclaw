@@ -1,6 +1,6 @@
 # memory-mem0 插件技术文档
 
-> 版本 v1.0.0 · 2026-03-16 · 基于源码深度分析
+> 版本 v1.1.0 · 2026-03-17 · 基于源码深度分析
 
 ---
 
@@ -13,8 +13,9 @@
 | 能力 | 描述 |
 | --- | --- |
 | **双轨记忆** | Core Memory（结构化 KV）+ Free-text Memory（向量语义） |
+| **统一意图分类** | 查询分类（greeting/code/factual...）+ 复杂度分层（SIMPLE→REASONING） |
 | **异步捕获** | 对话结束后静默提取，不干扰主流程 |
-| **混合检索** | 向量召回 + BM25 关键词，支持中文 |
+| **向量检索** | bge-m3 (1024维) + Qdrant |
 | **LLM 准入门控** | 批量 LLM 判断候选记忆质量，防止噪音写入 |
 | **Tier 分层注入** | profile/general 层永久注入，technical 层按需检索 |
 | **安全防护** | 注入攻击检测、敏感信息过滤、XML 转义 |
@@ -30,7 +31,7 @@
 |------|---------------|---------------------|
 | **记忆模型** | 单一向量记忆 | **双轨记忆**：Core Memory (结构化 KV) + Free-text Memory (向量) |
 | **Core Memory** | ❌ 不支持 | ✅ 本地 JSON 存储，分级注入 |
-| **召回率** | ~35.7% (基准测试) | **~78.6%** (相同 70 条测试集) |
+| **召回率** | ~35.7% (基准测试) | **~88.6%** (相同 70 条测试集) |
 | **中文支持** | 基础支持 | **CJK 分词、数字归一化、语义重排序** |
 | **LLM 门控** | ❌ 无质量过滤 | ✅ **三分类门控** (core/free_text/discard) |
 | **捕获方式** | 同步写入 | **异步流水线** (零延迟影响) |
@@ -52,7 +53,7 @@
 | 约束规则 (constraints) | 30% | **85%** | 关键词 BM25 增强 |
 | 技术配置 (technical) | 30% | **70%** | 工作区 Fallback |
 | 架构决策 (architecture) | 25% | **65%** | 语义重排序 |
-| **整体召回率** | **35.7%** | **78.6%** | 双轨 + 混合检索 |
+| **整体召回率** | **35.7%** | **88.6%** | 双轨 + 混合检索 |
 
 ### 2.3 延迟与性能
 
@@ -122,6 +123,8 @@ memory-mem0/
 │   ├── recall.ts         # before_prompt_build：召回 + 注入
 │   ├── capture.ts        # agent_end：捕获兜底
 │   └── message-received.ts  # 实时消息过滤 + 入队
+├── classifier.ts         # 统一意图分类器（查询类型、复杂度层级）
+├── smart-router.ts       # 基于查询复杂度的模型路由
 ├── core-repository.ts    # Core Memory CRUD + 合并去重
 ├── core-proposals.ts     # 人工审核队列
 ├── core-admission.ts     # LLM 准入门控
@@ -491,7 +494,9 @@ INJECTION_PATTERNS = [
 
 ## 5. 配置参考
 
-### 5.1 完整配置结构
+### 5.1 简化配置（推荐）
+
+v1.1.0 引入了顶层简化配置，减少重复字段：
 
 ```jsonc
 {
@@ -500,6 +505,67 @@ INJECTION_PATTERNS = [
       "memory-mem0": {
         "enabled": true,
         "config": {
+          // 顶层简化配置
+          "dataDir": "~/.openclaw/data/memory-mem0",      // 统一数据目录
+          "geminiApiKey": "YOUR_GEMINI_API_KEY",          // 共享 API Key（classifier、llmGate、mem0 LLM）
+
+          "mem0": {
+            "mode": "open-source",
+            "oss": {
+              "llm": {
+                "provider": "google",
+                "config": { "model": "gemini-2.5-flash" }  // apiKey 继承自 geminiApiKey
+              },
+              "embedder": {
+                "provider": "ollama",
+                "config": { "model": "bge-m3:latest", "embeddingDims": 1024 }
+              },
+              "vectorStore": {
+                "provider": "qdrant",
+                "config": { "host": "localhost", "port": 6333 }
+              }
+            }
+          },
+          "scope": {
+            "userId": "your-user-id"
+          },
+          "recall": {
+            "threshold": 0.25,    // 召回阈值（原 scoreThreshold）
+            "maxChars": 1500      // 注入预算（原 maxContextChars）
+          },
+          "core": {
+            "alwaysInjectLimit": 800  // always-inject 字符限制（原 maxAlwaysInjectChars）
+          },
+          "sync": {
+            "enabled": true,      // 原 flushToMarkdown
+            "intervalMs": 300000  // 原 flushIntervalSec * 1000
+          },
+          "classifier": {
+            "enabled": true       // 统一意图分类器
+          },
+          "smartRouter": {
+            "enabled": false      // 智能模型路由（可选）
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+### 5.2 完整配置结构（高级）
+
+以下为完整配置字段，大部分有合理默认值：
+
+```jsonc
+{
+  "plugins": {
+    "entries": {
+      "memory-mem0": {
+        "enabled": true,
+        "config": {
+          "dataDir": "~/.openclaw/data/memory-mem0",
+          "geminiApiKey": "YOUR_API_KEY",
           "backend": {
             "freeText": { "provider": "mem0" }
           },
@@ -518,77 +584,64 @@ INJECTION_PATTERNS = [
                 }
               },
               "vectorStore": {
-                "provider": "memory",
+                "provider": "qdrant",
                 "config": {
-                  "collectionName": "memory-mem0",
-                  "dimension": 1024,
-                  "dbPath": "/path/to/mem0-vector-store.db"
+                  "host": "localhost",
+                  "port": 6333
                 }
               },
               "llm": {
-                "provider": "openai",
+                "provider": "google",
                 "config": {
-                  "baseURL": "https://generativelanguage.googleapis.com/v1beta/openai/",
-                  "model": "gemini-3.1-flash-lite-preview"
+                  "model": "gemini-2.5-flash"
                 }
               }
             }
           },
           "scope": {
-            "userId": "hao.break.zero",
+            "userId": "your-user-id",
             "requireUserId": true,
             "requireAgentId": true
           },
           "recall": {
             "enabled": true,
-            "method": "rag",
-            "hybrid": {
-              "enabled": true,   // 开启混合检索（推荐中文）
-              "alpha": 0.6,
-              "fallbackToRag": true
-            },
-            "topK": 8,
-            "scoreThreshold": 0.25,
-            "maxContextChars": 1500,
-            "injectionBudgetChars": 1100,
+            "topK": 5,
+            "threshold": 0.25,
+            "maxChars": 1500,
             "cacheTtlMs": 60000,
-            "cacheMaxSize": 100,
-            "workspaceFallback": true
+            "cacheMaxSize": 100
           },
           "core": {
             "enabled": true,
-            "topK": 8,
-            "maxItemChars": 240,
-            "persistPath": "/path/to/data",
+            "topK": 10,
+            "maxItemChars": 300,
             "autoExtractProposals": true,
             "humanReviewRequired": false,
             "touchOnRecall": true,
             "proposalQueueMax": 200,
             "alwaysInjectTiers": ["profile", "general"],
-            "retrievalOnlyTiers": ["technical"],
-            "maxAlwaysInjectChars": 600,
+            "alwaysInjectLimit": 800,
             "consolidation": {
               "enabled": true,
-              "intervalMs": 3600000,    // 1小时
+              "intervalMs": 3600000,
               "similarityThreshold": 0.85
             },
             "llmGate": {
               "enabled": true,
               "apiBase": "https://generativelanguage.googleapis.com/v1beta/openai",
-              "model": "gemini-3.1-flash-lite-preview",
-              "maxTokensPerBatch": 2000,
-              "timeoutMs": 30000
+              "model": "gemini-2.5-flash",
+              "maxTokensPerBatch": 4000,
+              "timeoutMs": 60000
             }
           },
           "capture": {
             "enabled": true,
-            "maxItemsPerRun": 3,
-            "minChars": 16,
+            "minChars": 20,
             "maxChars": 600,
             "dedupeThreshold": 0.8,
             "candidateQueue": {
               "enabled": true,
-              "intervalMs": 600000,   // 10分钟
+              "intervalMs": 10000,
               "maxBatchSize": 50
             }
           },
@@ -601,9 +654,25 @@ INJECTION_PATTERNS = [
             "flushIntervalMs": 10000
           },
           "sync": {
-            "flushToMarkdown": true,
-            "flushIntervalSec": 300,   // 5分钟
+            "enabled": true,
+            "intervalMs": 300000,
             "memoryFilePath": "MEMORY.md"
+          },
+          "classifier": {
+            "enabled": true,
+            "model": "gemini-2.0-flash-lite",
+            "apiBase": "https://generativelanguage.googleapis.com/v1beta/openai",
+            "cacheTtlMs": 300000,
+            "cacheMaxSize": 200
+          },
+          "smartRouter": {
+            "enabled": false,
+            "tierModels": {
+              "SIMPLE": "gemini-2.0-flash-lite",
+              "MEDIUM": "gemini-2.5-flash",
+              "COMPLEX": "gemini-2.5-pro",
+              "REASONING": "claude-sonnet-4-6"
+            }
           }
         }
       }
@@ -612,15 +681,15 @@ INJECTION_PATTERNS = [
 }
 ```
 
-### 5.2 配置优化建议
+### 5.3 配置优化建议
 
 | 场景 | 参数 | 建议值 | 说明 |
 | --- | --- | --- | --- |
-| 中文召回准确率低 | `recall.scoreThreshold` | 0.20~0.25 | bge-m3 对短句分布偏低 |
-| 记忆积累慢 | `capture.maxItemsPerRun` | 3~5 | 提升每轮捕获上限 |
-| 记忆噪音多 | `llmGate.enabled` | true | 开启 LLM 质量门控 |
-| 人工控制写入 | `humanReviewRequired` | true | 所有 core 候选需审核 |
+| 中文召回准确率低 | `recall.threshold` | 0.20~0.25 | bge-m3 对短句分布偏低 |
+| 记忆噪音多 | `core.llmGate.enabled` | true | 开启 LLM 质量门控 |
+| 人工控制写入 | `core.humanReviewRequired` | true | 所有 core 候选需审核 |
 | 多 Agent 隔离 | `scope.requireAgentId` | true | 默认已开启 |
+| 智能模型路由 | `smartRouter.enabled` | true | 根据查询复杂度选择模型 |
 
 ---
 
@@ -771,4 +840,4 @@ A: 不会。`requireAgentId: true` 确保 Core Memory 和向量检索均按 agen
 
 ---
 
-> 文档基于 memory-mem0 v1.0.0 源码分析，最后更新 2026-03-16
+> 文档基于 memory-mem0 v1.1.0 源码分析，最后更新 2026-03-17
