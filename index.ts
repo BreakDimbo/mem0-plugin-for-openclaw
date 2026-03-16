@@ -203,7 +203,7 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
       });
     }
 
-    api.on("message_received", createMessageReceivedHook(inbound, candidateQueue, coreRepo, config, api.logger), {
+    api.on("message_received", createMessageReceivedHook(inbound, candidateQueue, coreRepo, config, api.logger, metrics), {
       priority: HOOK_PRIORITY.messageReceived,
     });
 

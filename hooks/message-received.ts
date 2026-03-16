@@ -5,6 +5,7 @@ import type { MemuPluginConfig } from "../types.js";
 import { buildDynamicScope } from "../types.js";
 import { shouldCapture } from "../security.js";
 import { extractCoreProposal } from "../core-proposals.js";
+import type { Metrics } from "../metrics.js";
 
 type Logger = { info(msg: string): void; warn(msg: string): void };
 
@@ -50,6 +51,7 @@ export function createMessageReceivedHook(
   coreRepo: CoreMemoryRepository,
   config: MemuPluginConfig,
   logger: Logger,
+  metrics: Metrics,
 ) {
   return async (event: MessageReceivedEvent, ctx: MessageContext) => {
     const content = (event.content ?? "").trim();
@@ -62,26 +64,32 @@ export function createMessageReceivedHook(
     // -- Capture pipeline: lightweight filter → enqueue candidate --
     if (!config.capture.enabled || !config.capture.candidateQueue.enabled) return;
 
+    metrics.captureTotal++;
+
     // Filter: system fragments
     if (isSystemFragment(content)) {
       logger.info(`message-received: filtered (system fragment)`);
+      metrics.captureFiltered++;
       return;
     }
 
     // Filter: length + injection + sensitive checks
     if (!shouldCapture(content, config.capture.minChars, config.capture.maxChars)) {
       logger.info(`message-received: filtered (shouldCapture failed, len=${content.length})`);
+      metrics.captureFiltered++;
       return;
     }
 
     // Filter: low-signal chatter
     if (isLowSignalUserText(content)) {
       logger.info(`message-received: filtered (low signal)`);
+      metrics.captureFiltered++;
       return;
     }
 
     const scope = buildDynamicScope(config.scope, ctx);
     candidateQueue.enqueue(content, scope);
+    metrics.captureCaptured++;
     logger.info(`message-received: enqueued to candidateQueue (len=${content.length})`);
 
     // Ensure candidate queue timer is started (for multi-process environments

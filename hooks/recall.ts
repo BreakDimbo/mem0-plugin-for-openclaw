@@ -649,11 +649,17 @@ export function createRecallHook(
           lastUserText = sanitizePromptQuery(extractTextBlocks(msg.content));
           break;
         }
-        if (lastUserText && shouldCapture(lastUserText, config.capture.minChars, config.capture.maxChars)) {
-          candidateQueue.enqueue(lastUserText, capScope);
-          logger.info(`recall-hook: enqueued last user message to candidateQueue (${lastUserText.slice(0, 40)}...)`);
-          // Ensure timer is started in this process
-          candidateQueue.start().catch(() => {});
+        if (lastUserText) {
+          metrics.captureTotal++;
+          if (shouldCapture(lastUserText, config.capture.minChars, config.capture.maxChars)) {
+            candidateQueue.enqueue(lastUserText, capScope);
+            metrics.captureCaptured++;
+            logger.info(`recall-hook: enqueued last user message to candidateQueue (${lastUserText.slice(0, 40)}...)`);
+            // Ensure timer is started in this process
+            candidateQueue.start().catch(() => {});
+          } else {
+            metrics.captureFiltered++;
+          }
         }
       }
     }
