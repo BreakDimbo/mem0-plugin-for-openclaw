@@ -63,16 +63,30 @@ export function createMessageReceivedHook(
     if (!config.capture.enabled || !config.capture.candidateQueue.enabled) return;
 
     // Filter: system fragments
-    if (isSystemFragment(content)) return;
+    if (isSystemFragment(content)) {
+      logger.info(`message-received: filtered (system fragment)`);
+      return;
+    }
 
     // Filter: length + injection + sensitive checks
-    if (!shouldCapture(content, config.capture.minChars, config.capture.maxChars)) return;
+    if (!shouldCapture(content, config.capture.minChars, config.capture.maxChars)) {
+      logger.info(`message-received: filtered (shouldCapture failed, len=${content.length})`);
+      return;
+    }
 
     // Filter: low-signal chatter
-    if (isLowSignalUserText(content)) return;
+    if (isLowSignalUserText(content)) {
+      logger.info(`message-received: filtered (low signal)`);
+      return;
+    }
 
     const scope = buildDynamicScope(config.scope, ctx);
     candidateQueue.enqueue(content, scope);
+    logger.info(`message-received: enqueued to candidateQueue (len=${content.length})`);
+
+    // Ensure candidate queue timer is started (for multi-process environments
+    // where service.start() may not have been called in this process)
+    candidateQueue.start().catch(() => {});
 
     // Immediate regex core extract for high-confidence patterns (e.g. "我叫X")
     if (config.core.enabled && config.core.autoExtractProposals && !config.core.humanReviewRequired) {

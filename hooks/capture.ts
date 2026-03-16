@@ -113,6 +113,8 @@ export function createCaptureHook(
       if (lastUserText && shouldCapture(lastUserText, config.capture.minChars, config.capture.maxChars) && !isLowSignalUserText(lastUserText)) {
         candidateQueue.enqueue(lastUserText, scope);
         logger.info(`capture-hook: forwarded last user message to candidateQueue (fallback)`);
+        // Ensure timer is started in this process
+        candidateQueue.start().catch(() => {});
       }
       return;
     }
