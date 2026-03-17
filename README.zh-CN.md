@@ -1,6 +1,6 @@
 # memory-mem0 插件技术文档
 
-> 版本 v1.1.0 · 2026-03-17 · 基于源码深度分析
+> 版本 v1.1.1 · 2026-03-17 · 基于源码深度分析
 
 ---
 
@@ -123,7 +123,7 @@ memory-mem0/
 │   ├── recall.ts         # before_prompt_build：召回 + 注入
 │   ├── capture.ts        # agent_end：捕获兜底
 │   └── message-received.ts  # 实时消息过滤 + 入队
-├── classifier.ts         # 统一意图分类器（查询类型、复杂度层级）
+├── classifier.ts         # 统一意图分类器（查询类型、复杂度层级、captureHint）
 ├── smart-router.ts       # 基于查询复杂度的模型路由
 ├── core-repository.ts    # Core Memory CRUD + 合并去重
 ├── core-proposals.ts     # 人工审核队列
@@ -286,6 +286,18 @@ Phase 4: workspace facts（并行补充）
 | `message_received` | 用户消息到达时（主路径） | 最快，实时入队 |
 | `recall hook` | 构建 Prompt 时 | 仅处理最后一条用户消息 |
 | `agent_end` | Agent 回复完成后（兜底） | CandidateQueue 哈希去重 |
+
+**意图分类器 captureHint 流程控制：**
+
+在入队前，统一意图分类器会对消息进行分类，返回 `captureHint` 字段指导捕获行为：
+
+| captureHint | 处理方式 | 适用场景 |
+| --- | --- | --- |
+| `skip` | 完全跳过捕获 | 问候语、代码请求、调试请求 |
+| `light` | 仅写入 free-text | 临时上下文、不值得写入 Core |
+| `full` | 完整处理（含 LLM Gate） | 身份信息、偏好、目标等持久事实 |
+
+分类器使用精简中文 Prompt 和 `response_format: json_object` 确保响应可靠解析。对于截断的 LLM 响应，会回退到正则提取部分字段。
 
 **过滤条件（任一命中即丢弃）：**
 
@@ -575,6 +587,8 @@ v1.1.0 引入了顶层简化配置，减少重复字段：
             "searchThreshold": 0.3,
             "topK": 5,
             "oss": {
+              // historyDbPath 已废弃，改用 historyStore 配置
+              "historyDbPath": "~/.openclaw/data/memory-mem0/memory.db",
               "embedder": {
                 "provider": "ollama",
                 "config": {
@@ -594,6 +608,19 @@ v1.1.0 引入了顶层简化配置，减少重复字段：
                 "provider": "google",
                 "config": {
                   "model": "gemini-2.5-flash"
+                }
+              },
+              // 启用 Graph Memory 时，必须配置 graph_store.llm 覆盖 mem0 默认的 OpenAI
+              "graph_store": {
+                "provider": "neo4j",
+                "config": {
+                  "url": "bolt://localhost:7687",
+                  "username": "neo4j",
+                  "password": "your-password"
+                },
+                "llm": {
+                  "provider": "google",
+                  "config": { "model": "gemini-2.5-flash" }
                 }
               }
             }
@@ -824,6 +851,34 @@ A: `memory_stats()` 中目前不直接显示向量条数，可通过检查 `outb
 
 A: 不会。`requireAgentId: true` 确保 Core Memory 和向量检索均按 agentId 严格隔离。
 
+**Q: mem0 OSS 模式报错 "unable to open database file"？**
+
+A: v1.1.1 修复了此问题。插件内部使用 `historyStore` 配置对象（而非顶层 `historyDbPath`）传递历史记录数据库路径，并自动展开 `~` 为用户主目录。确保 `dataDir` 配置的目录存在且可写。
+
+**Q: 启用 Graph Memory 时报错 "401 Incorrect API key provided"？**
+
+A: mem0 的 ConfigManager 会将默认 OpenAI 配置合并到 `graphStore.llm`。必须在 `oss.graph_store` 中显式配置 `llm` 字段来覆盖默认值：
+
+```jsonc
+"graph_store": {
+  "provider": "neo4j",
+  "config": { ... },
+  "llm": {
+    "provider": "google",
+    "config": { "model": "gemini-2.5-flash" }  // 覆盖 mem0 默认的 OpenAI
+  }
+}
+```
+
+**Q: 意图分类器报错 "failed to parse response"？**
+
+A: 分类器使用 Gemini Flash Lite 进行快速分类，有时响应会被截断。v1.1.1 增加了：
+1. 精简的中文 System Prompt（减少 token 消耗）
+2. `response_format: { type: "json_object" }` 强制 JSON 输出
+3. 回退正则解析（从截断响应中提取 tier/queryType/captureHint）
+
+如果分类失败，会默认返回 `MEDIUM` tier 和 `full` captureHint，不影响主流程。
+
 ---
 
 ## 10. 数据文件速查
@@ -840,4 +895,4 @@ A: 不会。`requireAgentId: true` 确保 Core Memory 和向量检索均按 agen
 
 ---
 
-> 文档基于 memory-mem0 v1.1.0 源码分析，最后更新 2026-03-17
+> 文档基于 memory-mem0 v1.1.1 源码分析，最后更新 2026-03-17

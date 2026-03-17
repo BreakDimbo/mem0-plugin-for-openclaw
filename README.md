@@ -250,7 +250,7 @@ npx tsx scripts/run-agent-plugin-e2e-comparison.ts       # Agent-level compariso
 
 | Package | Version | Purpose |
 |---------|---------|---------|
-| `mem0ai` | ^2.3.0 | Free-text vector memory backend |
+| `mem0ai` | ^2.4.1 | Free-text vector memory backend |
 | OpenClaw SDK | peer | Plugin host runtime |
 
 ## License
