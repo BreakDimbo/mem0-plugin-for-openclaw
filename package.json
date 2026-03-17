@@ -4,7 +4,7 @@
   "type": "module",
   "description": "memU long-term memory integration for OpenClaw",
   "dependencies": {
-    "mem0ai": "^2.4.1"
+    "mem0ai": "^2.4.0"
   },
   "openclaw.extensions": [
     "./index.ts"

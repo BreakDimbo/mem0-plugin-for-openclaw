@@ -683,24 +683,34 @@ export function createRecallHook(
         logger.info("recall-hook: capture side-effect skipped (no candidateQueue ref)");
       } else {
         // Only capture the LAST user message (current turn's input).
-        // event.messages contains full session history; enqueuing all of them
-        // would repeatedly hash the same first message and dedup everything.
-        // Use sanitizePromptQuery to strip timestamps, <relevant-memories>,
-        // and other gateway-injected prefixes from the raw message text.
+        // Use event.prompt to extract the real user query, not event.messages
+        // which contains injected memory content (<core-memory>, <relevant-memories>)
         const capScope = buildDynamicScope(config.scope, ctx);
-        let lastUserText = "";
-        for (let i = event.messages.length - 1; i >= 0; i--) {
-          const msg = event.messages[i];
-          if (msg.role !== "user") continue;
-          lastUserText = sanitizePromptQuery(extractTextBlocks(msg.content));
-          break;
+        
+        // Extract user query from event.prompt (contains the actual user input)
+        const promptRaw = event.prompt ?? "";
+        
+        let lastUserText = sanitizePromptQuery(promptRaw);
+        
+        // If prompt is empty or system startup, fall back to event.messages
+        if (!lastUserText || isSystemStartupPrompt(lastUserText)) {
+          for (let i = event.messages.length - 1; i >= 0; i--) {
+            const msg = event.messages[i];
+            if (msg.role !== "user") continue;
+            const text = extractTextBlocks(msg.content);
+            // Skip injected memory content
+            if (text.includes("<core-memory>") || text.includes("<relevant-memories>")) continue;
+            lastUserText = sanitizePromptQuery(text);
+            break;
+          }
         }
+        
         if (lastUserText) {
           metrics.captureTotal++;
           if (shouldCapture(lastUserText, config.capture.minChars, config.capture.maxChars)) {
             candidateQueue.enqueue(lastUserText, capScope);
             metrics.captureCaptured++;
-            logger.info(`recall-hook: enqueued last user message to candidateQueue (${lastUserText.slice(0, 40)}...)`);
+            logger.info(`recall-hook: enqueued user message to candidateQueue (${lastUserText.slice(0, 40)}...)`);
             // Ensure timer is started in this process
             candidateQueue.start().catch(() => {});
           } else {
