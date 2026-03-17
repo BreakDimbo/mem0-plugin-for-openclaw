@@ -21,41 +21,14 @@ const DEFAULT_RESULT: ClassificationResult = {
   captureHint: "full",
 };
 
-const SYSTEM_PROMPT = `你是意图分类器。分析用户消息，返回单个 JSON 对象。
+const SYSTEM_PROMPT = `你是意图分类器。分析用户消息，返回JSON对象（不要markdown代码块）。
 
-分类维度：
-1. tier: 任务复杂度
-   - SIMPLE: 简单问答（你好/谢谢/时间/天气）
-   - MEDIUM: 单步查询（我的名字/时区/偏好）
-   - COMPLEX: 多步推理（对比/分析/规划）
-   - REASONING: 需要深度思考（设计/架构/复杂调试）
+tier: SIMPLE(问候/感谢) | MEDIUM(单步查询) | COMPLEX(多步推理) | REASONING(深度思考)
+queryType: greeting | code | debug | factual | preference | planning | open
+targetCategories: identity/work/preferences/goals/constraints/relationships/technical/general
+captureHint: skip(不记忆) | light(仅free_text) | full(完整处理)
 
-2. queryType: 查询类型
-   - greeting: 问候/闲聊（你好/早/嗨）
-   - code: 代码相关（检查代码/看逻辑/读文件）
-   - debug: 调试相关（报错/为什么失败/怎么修）
-   - factual: 事实查询（我的名字/时区/在哪）
-   - preference: 偏好查询（喜欢什么/习惯）
-   - planning: 规划任务（帮我设计/制定计划）
-   - open: 开放式/其他
-
-3. targetCategories: 匹配的记忆类别（可多选）
-   - identity: 身份信息（名字/时区/位置）
-   - work: 工作相关
-   - preferences: 偏好习惯
-   - goals: 目标计划
-   - constraints: 约束规则
-   - relationships: 人际关系
-   - technical: 技术配置
-   - general: 通用
-
-4. captureHint: 是否值得记忆
-   - skip: 不需要记忆（问候/纯指令/闲聊）
-   - light: 轻量处理（仅存 free_text）
-   - full: 完整处理（可能有 core memory 价值）
-
-只返回 JSON，不要其他文字：
-{"tier":"MEDIUM","queryType":"factual","targetCategories":["identity"],"captureHint":"full"}`;
+直接返回JSON: {"tier":"MEDIUM","queryType":"factual","targetCategories":["identity"],"captureHint":"full"}`;
 
 function buildUserPrompt(query: string): string {
   return `用户消息: ${query.slice(0, 500)}`;
@@ -77,50 +50,84 @@ function parseClassificationResponse(raw: unknown): ClassificationResult | null 
 
   // Find JSON object
   const jsonMatch = text.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) return null;
 
-  try {
-    const parsed = JSON.parse(jsonMatch[0]) as Record<string, unknown>;
-
-    const tier = parsed.tier;
-    const queryType = parsed.queryType;
-    const targetCategories = parsed.targetCategories;
-    const captureHint = parsed.captureHint;
-
-    // Validate tier
-    if (!["SIMPLE", "MEDIUM", "COMPLEX", "REASONING"].includes(tier as string)) {
-      return null;
+  // Try to parse complete JSON first
+  if (jsonMatch) {
+    try {
+      const parsed = JSON.parse(jsonMatch[0]) as Record<string, unknown>;
+      const result = validateAndBuildResult(parsed);
+      if (result) return result;
+    } catch {
+      // Fall through to fallback parsing
     }
+  }
 
-    // Validate queryType
-    const validQueryTypes: QueryType[] = ["greeting", "code", "debug", "factual", "preference", "planning", "open"];
-    if (!validQueryTypes.includes(queryType as QueryType)) {
-      return null;
-    }
+  // Fallback: try to extract partial values from truncated response
+  return parsePartialResponse(text);
+}
 
-    // Validate captureHint
-    const validCaptureHints: CaptureHint[] = ["skip", "light", "full"];
-    if (!validCaptureHints.includes(captureHint as CaptureHint)) {
-      return null;
-    }
+function validateAndBuildResult(parsed: Record<string, unknown>): ClassificationResult | null {
+  const tier = parsed.tier;
+  const queryType = parsed.queryType;
+  const targetCategories = parsed.targetCategories;
+  const captureHint = parsed.captureHint;
 
-    // Parse targetCategories
-    const categories: string[] = [];
-    if (Array.isArray(targetCategories)) {
-      for (const cat of targetCategories) {
-        if (typeof cat === "string") categories.push(cat);
-      }
-    }
-
-    return {
-      tier: tier as ClassificationResult["tier"],
-      queryType: queryType as QueryType,
-      targetCategories: categories,
-      captureHint: captureHint as CaptureHint,
-    };
-  } catch {
+  // Validate tier
+  if (!["SIMPLE", "MEDIUM", "COMPLEX", "REASONING"].includes(tier as string)) {
     return null;
   }
+
+  // Validate queryType
+  const validQueryTypes: QueryType[] = ["greeting", "code", "debug", "factual", "preference", "planning", "open"];
+  if (!validQueryTypes.includes(queryType as QueryType)) {
+    return null;
+  }
+
+  // Validate captureHint
+  const validCaptureHints: CaptureHint[] = ["skip", "light", "full"];
+  if (!validCaptureHints.includes(captureHint as CaptureHint)) {
+    return null;
+  }
+
+  // Parse targetCategories
+  const categories: string[] = [];
+  if (Array.isArray(targetCategories)) {
+    for (const cat of targetCategories) {
+      if (typeof cat === "string") categories.push(cat);
+    }
+  }
+
+  return {
+    tier: tier as ClassificationResult["tier"],
+    queryType: queryType as QueryType,
+    targetCategories: categories,
+    captureHint: captureHint as CaptureHint,
+  };
+}
+
+// Fallback parser for truncated responses - extract what we can
+function parsePartialResponse(text: string): ClassificationResult | null {
+  // Try to extract tier from partial text like `"tier": "COMP` or `"tier":"COMPLEX`
+  const tierMatch = text.match(/"tier"\s*:\s*"(SIMPLE|MEDIUM|COMPLEX|REASONING)/i);
+  if (!tierMatch) return null;
+
+  const tier = tierMatch[1].toUpperCase() as ClassificationResult["tier"];
+
+  // Try to extract queryType
+  const queryTypeMatch = text.match(/"queryType"\s*:\s*"(greeting|code|debug|factual|preference|planning|open)/i);
+  const queryType = (queryTypeMatch?.[1]?.toLowerCase() || "open") as QueryType;
+
+  // Try to extract captureHint
+  const captureHintMatch = text.match(/"captureHint"\s*:\s*"(skip|light|full)/i);
+  const captureHint = (captureHintMatch?.[1]?.toLowerCase() || "full") as CaptureHint;
+
+  // targetCategories is optional, default to empty
+  return {
+    tier,
+    queryType,
+    targetCategories: [],
+    captureHint,
+  };
 }
 
 export class UnifiedIntentClassifier {
@@ -187,8 +194,10 @@ export class UnifiedIntentClassifier {
           { role: "system", content: SYSTEM_PROMPT },
           { role: "user", content: buildUserPrompt(query) },
         ],
-        max_tokens: 300,
+        max_tokens: 150,
         temperature: 0.1,
+        // Request compact JSON without markdown wrapper
+        response_format: { type: "json_object" },
       };
 
       const controller = new AbortController();
