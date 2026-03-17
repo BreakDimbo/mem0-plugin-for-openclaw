@@ -65,9 +65,15 @@ function parseClassificationResponse(raw: unknown): ClassificationResult | null 
   let text = typeof raw === "string" ? raw : "";
   if (!text) return null;
 
-  // Extract JSON from markdown code blocks if present
-  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
-  if (fenced?.[1]) text = fenced[1];
+  // Extract JSON from markdown code blocks if present (handle both complete and incomplete blocks)
+  const fencedComplete = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  if (fencedComplete?.[1]) {
+    text = fencedComplete[1];
+  } else {
+    // Handle incomplete code block (no closing ```)
+    const fencedIncomplete = text.match(/```(?:json)?\s*([\s\S]*)/i);
+    if (fencedIncomplete?.[1]) text = fencedIncomplete[1];
+  }
 
   // Find JSON object
   const jsonMatch = text.match(/\{[\s\S]*\}/);
@@ -181,7 +187,7 @@ export class UnifiedIntentClassifier {
           { role: "system", content: SYSTEM_PROMPT },
           { role: "user", content: buildUserPrompt(query) },
         ],
-        max_tokens: 200,
+        max_tokens: 300,
         temperature: 0.1,
       };
 
