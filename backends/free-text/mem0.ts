@@ -1,7 +1,14 @@
 import { pathToFileURL } from "node:url";
+import { homedir } from "node:os";
 import type { FreeTextMemoryMetadata, MemoryScope, MemuMemoryRecord, MemuPluginConfig } from "../../types.js";
 import type { FreeTextBackend, FreeTextBackendStatus, FreeTextForgetOptions, FreeTextSearchOptions, FreeTextStoreOptions } from "./base.js";
 import { matchesMetadataFilters } from "../../metadata.js";
+
+function expandTilde(p: string): string {
+  if (p.startsWith("~/")) return homedir() + p.slice(1);
+  if (p === "~") return homedir();
+  return p;
+}
 
 type Logger = { info(msg: string): void; warn(msg: string): void };
 
@@ -169,12 +176,29 @@ export class Mem0FreeTextBackend implements FreeTextBackend {
     try {
       const imported = await import("mem0ai/oss");
       const MemoryCtor = (imported as Record<string, unknown>).Memory as new (cfg: Record<string, unknown>) => any;
+      const resolvedHistoryDbPath = cfg.oss?.historyDbPath ? expandTilde(cfg.oss.historyDbPath) : undefined;
+      // Build graphStore config: must explicitly set llm to override mem0's default OpenAI
+      const graphStoreConfig = cfg.enableGraph && cfg.oss?.graph_store
+        ? {
+            graphStore: {
+              ...cfg.oss.graph_store,
+              // IMPORTANT: explicitly set llm to use main llm config, overriding mem0's default OpenAI
+              llm: cfg.oss.graph_store.llm ?? cfg.oss?.llm ?? { provider: "openai", config: {} },
+            },
+          }
+        : {};
       const memory = new MemoryCtor({
         version: "v1.1",
         ...(cfg.oss?.embedder ? { embedder: cfg.oss.embedder } : {}),
         ...(cfg.oss?.vectorStore ? { vectorStore: cfg.oss.vectorStore } : {}),
         ...(cfg.oss?.llm ? { llm: cfg.oss.llm } : {}),
-        ...(cfg.oss?.historyDbPath ? { historyDbPath: cfg.oss.historyDbPath } : {}),
+        // Use historyStore config (not top-level historyDbPath) to ensure proper db path resolution
+        historyStore: {
+          provider: "sqlite",
+          config: { historyDbPath: resolvedHistoryDbPath || ":memory:" },
+        },
+        ...(cfg.enableGraph ? { enableGraph: true } : {}),
+        ...graphStoreConfig,
         customPrompt: cfg.customPrompt || DEFAULT_LONG_TERM_CAPTURE_INSTRUCTIONS,
       });
       patchOssMemoryLlm(memory as Record<string, unknown>);
@@ -185,26 +209,12 @@ export class Mem0FreeTextBackend implements FreeTextBackend {
         delete: (memoryId) => memory.delete(memoryId),
       };
     } catch (err) {
-      // Helpful fallback for local-source setups when mem0ai isn't installed as a package.
-      const localOssEntry = "<configure path to local mem0 OSS>";
-      const imported = await import(toPathHref(localOssEntry));
-      const MemoryCtor = (imported as Record<string, unknown>).Memory as new (cfg: Record<string, unknown>) => any;
-      const memory = new MemoryCtor({
-        version: "v1.1",
-        ...(cfg.oss?.embedder ? { embedder: cfg.oss.embedder } : {}),
-        ...(cfg.oss?.vectorStore ? { vectorStore: cfg.oss.vectorStore } : {}),
-        ...(cfg.oss?.llm ? { llm: cfg.oss.llm } : {}),
-        ...(cfg.oss?.historyDbPath ? { historyDbPath: cfg.oss.historyDbPath } : {}),
-        customPrompt: cfg.customPrompt || DEFAULT_LONG_TERM_CAPTURE_INSTRUCTIONS,
-      });
-      patchOssMemoryLlm(memory as Record<string, unknown>);
-      this.logger.info(`mem0-backend: loaded OSS Memory from local source after package import failed: ${String(err)}`);
-      return {
-        add: (messages, options) => memory.add(messages, options),
-        search: async (query, options) => normalizeArray(await memory.search(query, options)),
-        getAll: async (options) => normalizeArray(await memory.getAll(options)),
-        delete: (memoryId) => memory.delete(memoryId),
-      };
+      // Re-throw with helpful message instead of attempting broken fallback path
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `Failed to load mem0ai/oss: ${msg}. ` +
+        `Ensure mem0ai is installed: npm install mem0ai`
+      );
     }
   }
 
