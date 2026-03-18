@@ -79,7 +79,7 @@ export class MarkdownSync {
    * Called by hooks/tools at runtime to register an agent's workspaceDir.
    * This enables sync to resolve memoryFilePath per-agent.
    */
-  registerAgent(agentId: string, workspaceDir: string): void {
+  registerAgent(agentId: string, workspaceDir: string, options?: { schedule?: boolean }): void {
     const previous = this.agentWorkspaces.get(agentId);
     this.agentWorkspaces.set(agentId, workspaceDir);
     if (!previous) {
@@ -87,7 +87,9 @@ export class MarkdownSync {
     } else if (previous !== workspaceDir) {
       this.logger.info(`markdown-sync: updated agent "${agentId}" workspace -> ${workspaceDir}`);
     }
-    this.scheduleSync(agentId);
+    if (options?.schedule !== false) {
+      this.scheduleSync(agentId);
+    }
   }
 
   /**

@@ -217,7 +217,7 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
     // periodic sync loop can resolve MEMORY.md before any hook fires.
     // Hooks still override this with runtime ctx.workspaceDir when available.
     const bootstrapAgentId = config.scope.agentId || "main";
-    sync.registerAgent(bootstrapAgentId, resolveWorkspaceDir(bootstrapAgentId));
+    sync.registerAgent(bootstrapAgentId, resolveWorkspaceDir(bootstrapAgentId), { schedule: false });
 
     api.logger.info(
       `memory-mem0: registered (core=local, freeText=${config.backend.freeText.provider}, userId: ${config.scope.userId}, agentId: ${config.scope.agentId}, recall: ${config.recall.enabled}, capture: ${config.capture.enabled}, classifier: ${config.classifier.enabled !== false})`,
