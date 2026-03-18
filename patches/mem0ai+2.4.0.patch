@@ -1,0 +1,15 @@
+diff --git a/node_modules/mem0ai/dist/oss/index.js b/node_modules/mem0ai/dist/oss/index.js
+index 9395077..0c5d7f2 100644
+--- a/node_modules/mem0ai/dist/oss/index.js
++++ b/node_modules/mem0ai/dist/oss/index.js
+@@ -4269,8 +4269,8 @@ Text: ${data}`
+     try {
+       for (const item of toBeAdded) {
+         const { source, destination, relationship } = item;
+-        const sourceType = entityTypeMap[source] || "unknown";
+-        const destinationType = entityTypeMap[destination] || "unknown";
++        const sourceType = (entityTypeMap[source] || "unknown").replace(/[^a-zA-Z0-9_]/g, "_");
++        const destinationType = (entityTypeMap[destination] || "unknown").replace(/[^a-zA-Z0-9_]/g, "_");
+         const sourceEmbedding = await this.embeddingModel.embed(source);
+         const destEmbedding = await this.embeddingModel.embed(destination);
+         const sourceNodeSearchResult = await this._searchSourceNode(
