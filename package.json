@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "type": "module",
   "description": "memU long-term memory integration for OpenClaw",
+  "scripts": {
+    "test:regression": "rm -rf /tmp/memu-regression && mkdir -p /tmp/memu-regression && npx tsc --outDir /tmp/memu-regression --module Node16 --moduleResolution Node16 --target ES2022 --skipLibCheck candidate-queue.ts outbox.ts hooks/capture.ts hooks/recall.ts tests/capture-fallback.test.ts tests/capture-e2e.test.ts tests/e2e-lifecycle.test.ts tests/outbox.test.ts tests/candidate-queue.test.ts && node /tmp/memu-regression/tests/outbox.test.js && node /tmp/memu-regression/tests/candidate-queue.test.js && node /tmp/memu-regression/tests/capture-e2e.test.js && node /tmp/memu-regression/tests/capture-fallback.test.js && node /tmp/memu-regression/tests/e2e-lifecycle.test.js"
+  },
   "dependencies": {
     "mem0ai": "^2.4.0"
   },

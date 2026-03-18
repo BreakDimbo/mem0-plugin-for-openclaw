@@ -8,15 +8,23 @@ import { createHash } from "node:crypto";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { homedir } from "node:os";
-import type { MemoryScope } from "./types.js";
+import type { MemoryScope, ConversationMessage } from "./types.js";
 
 type Logger = { info(msg: string): void; warn(msg: string): void };
 
 export type CandidateItem = {
   id: string;
-  text: string;
+  messages: ConversationMessage[];
   scope: MemoryScope;
   receivedAt: number;
+  metadata?: Record<string, unknown>;
+};
+
+type LegacyCandidateItem = {
+  id?: string;
+  text?: string;
+  scope?: MemoryScope;
+  receivedAt?: number;
   metadata?: Record<string, unknown>;
 };
 
@@ -63,8 +71,45 @@ export class CandidateQueue {
     return this.persistPath ? `${this.persistPath}/candidate-queue.json` : "";
   }
 
-  private makeId(text: string, scope: MemoryScope): string {
-    const input = `${scope.userId}:${scope.agentId}:${text}`;
+  private normalizePersistedItem(item: unknown): CandidateItem | null {
+    if (!item || typeof item !== "object") return null;
+    const record = item as Partial<CandidateItem> & LegacyCandidateItem;
+    const scope = record.scope;
+    if (!scope || typeof scope.userId !== "string" || typeof scope.agentId !== "string" || typeof scope.sessionKey !== "string") {
+      return null;
+    }
+
+    const messages = Array.isArray(record.messages)
+      ? record.messages.filter(
+          (msg): msg is ConversationMessage =>
+            !!msg &&
+            (msg.role === "user" || msg.role === "assistant") &&
+            typeof msg.content === "string" &&
+            msg.content.trim().length > 0,
+        )
+      : typeof record.text === "string" && record.text.trim().length > 0
+        ? [{ role: "user" as const, content: record.text.trim() }]
+        : [];
+
+    if (messages.length === 0) return null;
+
+    const id = typeof record.id === "string" && record.id.trim()
+      ? record.id
+      : this.makeId(messages, scope);
+
+    return {
+      id,
+      messages,
+      scope,
+      receivedAt: typeof record.receivedAt === "number" ? record.receivedAt : Date.now(),
+      metadata: record.metadata,
+    };
+  }
+
+  private makeId(messages: ConversationMessage[], scope: MemoryScope): string {
+    // Hash concatenation of message contents for dedup
+    const content = messages.map(m => `${m.role}:${m.content}`).join("|");
+    const input = `${scope.userId}:${scope.agentId}:${content}`;
     return createHash("sha256").update(input).digest("hex").slice(0, 16);
   }
 
@@ -77,10 +122,10 @@ export class CandidateQueue {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed)) {
         for (const item of parsed) {
-          if (item && typeof item === "object" && typeof item.id === "string" && typeof item.text === "string") {
-            this.queue.push(item as CandidateItem);
-            this.recentHashes.add(item.id);
-          }
+          const normalized = this.normalizePersistedItem(item);
+          if (!normalized) continue;
+          this.queue.push(normalized);
+          this.recentHashes.add(normalized.id);
         }
       }
       this.logger.info(`candidate-queue: loaded ${this.queue.length} items from disk`);
@@ -105,8 +150,9 @@ export class CandidateQueue {
 
   // -- Enqueue --
 
-  enqueue(text: string, scope: MemoryScope, metadata?: Record<string, unknown>): void {
-    const id = this.makeId(text, scope);
+  enqueue(messages: ConversationMessage[], scope: MemoryScope, metadata?: Record<string, unknown>): void {
+    if (messages.length === 0) return;
+    const id = this.makeId(messages, scope);
 
     // Dedup
     if (this.recentHashes.has(id)) {
@@ -116,7 +162,7 @@ export class CandidateQueue {
 
     this.queue.push({
       id,
-      text,
+      messages,
       scope,
       receivedAt: Date.now(),
       metadata,

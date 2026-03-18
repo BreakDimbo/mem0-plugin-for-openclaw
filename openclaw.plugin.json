@@ -15,31 +15,6 @@
       "advanced": true,
       "help": "Optional agentId -> userId mapping for multi-agent isolation"
     },
-    "autoCapture": {
-      "label": "Auto-Capture",
-      "help": "Automatically capture durable facts from user messages"
-    },
-    "autoRecall": {
-      "label": "Auto-Recall",
-      "help": "Automatically inject relevant memories into agent context"
-    },
-    "scoreThreshold": {
-      "label": "Relevance Threshold",
-      "placeholder": "0.30",
-      "advanced": true,
-      "help": "Minimum relevance score for memory injection (0.0-1.0)"
-    },
-    "recall.hybrid.enabled": {
-      "label": "Hybrid Recall",
-      "advanced": true,
-      "help": "Use /retrieve/hybrid for recall when available"
-    },
-    "recall.hybrid.alpha": {
-      "label": "Hybrid Alpha",
-      "placeholder": "0.7",
-      "advanced": true,
-      "help": "Vector weight in hybrid retrieval (0.0-1.0)"
-    },
     "backend.freeText.provider": {
       "label": "Free-Text Backend",
       "advanced": true,
@@ -94,7 +69,10 @@
               "vectorStore": { "type": "object" },
               "llm": { "type": "object" },
               "historyDbPath": { "type": "string" },
-              "graph_store": { "type": "object" }
+              "graph_store": {
+                "type": "object",
+                "description": "Neo4j graph store config. A separate graph_store.llm override is usually unnecessary; when enableGraph=true and llm provider is google/gemini, the plugin rewrites it to Google's OpenAI-compatible endpoint automatically."
+              }
             }
           }
         }
@@ -108,9 +86,7 @@
             "additionalProperties": { "type": "string" }
           },
           "agentId": { "type": "string", "default": "main" },
-          "tenantId": { "type": "string" },
-          "requireUserId": { "type": "boolean", "default": true },
-          "requireAgentId": { "type": "boolean", "default": true }
+          "tenantId": { "type": "string" }
         }
       },
       "recall": {
@@ -121,8 +97,7 @@
           "threshold": { "type": "number", "default": 0.25, "minimum": 0, "maximum": 1, "description": "Minimum relevance score (renamed from scoreThreshold)" },
           "maxChars": { "type": "number", "default": 1500, "minimum": 200, "maximum": 5000, "description": "Max injection chars (renamed from maxContextChars)" },
           "cacheTtlMs": { "type": "number", "default": 60000, "minimum": 0, "maximum": 600000 },
-          "cacheMaxSize": { "type": "number", "default": 100 },
-          "alwaysInjectCategories": { "type": "array", "items": { "type": "string" }, "default": [] }
+          "cacheMaxSize": { "type": "number", "default": 100 }
         }
       },
       "core": {
@@ -165,6 +140,7 @@
           "enabled": { "type": "boolean", "default": true },
           "minChars": { "type": "number", "default": 20 },
           "maxChars": { "type": "number", "default": 600 },
+          "maxConversationTurns": { "type": "number", "default": 6, "minimum": 1, "maximum": 20, "description": "How many recent user turns to capture as a conversation window" },
           "dedupeThreshold": { "type": "number", "default": 0.8 },
           "candidateQueue": {
             "type": "object",

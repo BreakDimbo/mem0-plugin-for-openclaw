@@ -7,7 +7,7 @@ import { createHash } from "node:crypto";
 import { readFile, writeFile, mkdir, readdir } from "node:fs/promises";
 import { dirname, basename } from "node:path";
 import { homedir } from "node:os";
-import type { OutboxItem, DeadLetterItem, MemoryScope } from "./types.js";
+import type { OutboxItem, DeadLetterItem, MemoryScope, ConversationMessage } from "./types.js";
 import type { FreeTextBackend } from "./backends/free-text/base.js";
 
 type Logger = { info(msg: string): void; warn(msg: string): void };
@@ -24,6 +24,16 @@ type OutboxRecentEvent = {
 };
 
 const BACKOFF_DELAYS = [1_000, 5_000, 30_000, 120_000];
+
+type LegacyOutboxPayload = {
+  text?: string;
+  messages?: ConversationMessage[];
+  metadata?: Record<string, unknown>;
+};
+
+type PersistedOutboxItem = Omit<OutboxItem, "payload"> & {
+  payload?: LegacyOutboxPayload;
+};
 
 export class OutboxWorker {
   private queue: OutboxItem[] = [];
@@ -72,9 +82,11 @@ export class OutboxWorker {
     this.flushIntervalMs = opts.flushIntervalMs ?? 10_000;
   }
 
-  private makeId(text: string, scope: MemoryScope): string {
+  private makeId(messages: ConversationMessage[], scope: MemoryScope): string {
     const bucket = Math.floor(Date.now() / 60_000);
-    const input = `${scope.sessionKey}:${text}:${bucket}`;
+    // Hash concatenation of message contents
+    const content = messages.map(m => `${m.role}:${m.content}`).join("|");
+    const input = `${scope.sessionKey}:${content}:${bucket}`;
     return createHash("sha256").update(input).digest("hex").slice(0, 16);
   }
 
@@ -88,11 +100,57 @@ export class OutboxWorker {
     return this.persistPath ? `${this.persistPath}/outbox-deadletter.json` : "";
   }
 
+  private normalizeMessages(messages: unknown): ConversationMessage[] {
+    if (!Array.isArray(messages)) return [];
+    return messages.filter(
+      (message): message is ConversationMessage =>
+        !!message &&
+        (message.role === "user" || message.role === "assistant") &&
+        typeof message.content === "string" &&
+        message.content.trim().length > 0,
+    );
+  }
+
+  private normalizeOutboxItem(item: unknown): OutboxItem | null {
+    if (!item || typeof item !== "object") return null;
+    const record = item as Partial<PersistedOutboxItem>;
+    if (typeof record.id !== "string" || !record.scope) return null;
+
+    const scope = record.scope as MemoryScope;
+    if (typeof scope.userId !== "string" || typeof scope.agentId !== "string" || typeof scope.sessionKey !== "string") {
+      return null;
+    }
+
+    const payload = record.payload as LegacyOutboxPayload | undefined;
+    const messages = this.normalizeMessages(payload?.messages);
+    const normalizedMessages = messages.length > 0
+      ? messages
+      : typeof payload?.text === "string" && payload.text.trim().length > 0
+        ? [{ role: "user" as const, content: payload.text.trim() }]
+        : [];
+    if (normalizedMessages.length === 0) return null;
+
+    return {
+      id: record.id,
+      createdAt: typeof record.createdAt === "number" ? record.createdAt : Date.now(),
+      scope,
+      payload: {
+        messages: normalizedMessages,
+        metadata: payload?.metadata,
+      },
+      retryCount: typeof record.retryCount === "number" ? record.retryCount : 0,
+      nextRetryAt: typeof record.nextRetryAt === "number" ? record.nextRetryAt : 0,
+    };
+  }
+
   private async readQueueFile(filePath: string): Promise<OutboxItem[]> {
     try {
       const data = await readFile(filePath, "utf-8");
       const parsed = JSON.parse(data);
-      return Array.isArray(parsed) ? parsed : [];
+      if (!Array.isArray(parsed)) return [];
+      return parsed
+        .map((item) => this.normalizeOutboxItem(item))
+        .filter((item): item is OutboxItem => !!item);
     } catch {
       return [];
     }
@@ -195,8 +253,9 @@ export class OutboxWorker {
 
   // -- Enqueue --
 
-  enqueue(text: string, scope: MemoryScope, metadata?: Record<string, unknown>): void {
-    const id = this.makeId(text, scope);
+  enqueue(messages: ConversationMessage[], scope: MemoryScope, metadata?: Record<string, unknown>): void {
+    if (messages.length === 0) return;
+    const id = this.makeId(messages, scope);
 
     // Dedup: skip if already queued with same id
     if (this.queue.some((item) => item.id === id)) {
@@ -208,7 +267,7 @@ export class OutboxWorker {
       id,
       createdAt: Date.now(),
       scope,
-      payload: { text, metadata },
+      payload: { messages, metadata },
       retryCount: 0,
       nextRetryAt: 0,
     });
@@ -255,13 +314,13 @@ export class OutboxWorker {
 
         const results = await Promise.allSettled(
           chunk.map(async (item) => {
-            const ok = await this.primaryBackend.store(item.payload.text, item.scope, {
+            const ok = await this.primaryBackend.store(item.payload.messages, item.scope, {
               metadata: item.payload.metadata,
               sessionScoped: false,
             });
             if (!ok) throw new Error("memorize returned false");
             if (this.secondaryBackend) {
-              const secondaryOk = await this.secondaryBackend.store(item.payload.text, item.scope, {
+              const secondaryOk = await this.secondaryBackend.store(item.payload.messages, item.scope, {
                 metadata: item.payload.metadata,
                 sessionScoped: false,
               });

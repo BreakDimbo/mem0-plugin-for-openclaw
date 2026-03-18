@@ -1,4 +1,4 @@
-import { Mem0FreeTextBackend, effectiveUserId, sanitizeJsonLikeResponse } from "../backends/free-text/mem0.js";
+import { Mem0FreeTextBackend, effectiveUserId, resolveOssLlmConfigForTests, sanitizeJsonLikeResponse } from "../backends/free-text/mem0.js";
 import { loadConfig } from "../types.js";
 
 type TestResult = { name: string; passed: boolean; error?: string };
@@ -58,6 +58,109 @@ await test("loadConfig parses mem0 backend options", () => {
   assertEqual(cfg.mem0.customPrompt, "extract facts", "customPrompt");
 });
 
+await test("graph config rewrites google llm to OpenAI-compatible config", () => {
+  const cfg = loadConfig({
+    geminiApiKey: "gemini-key",
+    mem0: {
+      mode: "open-source",
+      enableGraph: true,
+      oss: {
+        llm: {
+          provider: "google",
+          config: { model: "gemini-2.5-flash" },
+        },
+        graph_store: {
+          provider: "neo4j",
+          config: { url: "bolt://localhost:7687", username: "neo4j", password: "password" },
+        },
+      },
+    },
+  });
+
+  const resolved = resolveOssLlmConfigForTests(cfg.mem0);
+  assertEqual(resolved.topLevelLlm?.provider, "openai", "top-level provider should be rewritten");
+  assertEqual(resolved.graphStoreLlm?.provider, "openai", "graph provider should be rewritten");
+  assertEqual(resolved.topLevelLlm?.config.baseURL, "https://generativelanguage.googleapis.com/v1beta/openai", "should inject Google OpenAI-compatible baseURL");
+  assertEqual(resolved.graphStoreLlm?.config.apiKey, "gemini-key", "should inherit gemini api key");
+  assertEqual(resolved.graphStoreLlm?.config.model, "gemini-2.5-flash", "should preserve model");
+});
+
+await test("loadConfig inherits gemini api key for graph_store llm", () => {
+  const cfg = loadConfig({
+    geminiApiKey: "gemini-key",
+    mem0: {
+      mode: "open-source",
+      enableGraph: true,
+      oss: {
+        llm: {
+          provider: "google",
+          config: { model: "gemini-2.5-flash" },
+        },
+        graph_store: {
+          provider: "neo4j",
+          config: { url: "bolt://localhost:7687", username: "neo4j", password: "password" },
+          llm: {
+            provider: "google",
+            config: { model: "gemini-2.5-pro" },
+          },
+        },
+      },
+    },
+  });
+
+  assertEqual(cfg.mem0.oss?.graph_store?.llm?.config.apiKey, "gemini-key", "graph_store llm should inherit gemini api key");
+});
+
+await test("graph config preserves explicit OpenAI-compatible baseURL", () => {
+  const cfg = loadConfig({
+    mem0: {
+      mode: "open-source",
+      enableGraph: true,
+      oss: {
+        llm: {
+          provider: "google",
+          config: {
+            model: "gemini-2.5-flash",
+            apiKey: "explicit-key",
+            baseURL: "https://example.test/openai",
+          },
+        },
+        graph_store: {
+          provider: "neo4j",
+          config: { url: "bolt://localhost:7687", username: "neo4j", password: "password" },
+        },
+      },
+    },
+  });
+
+  const resolved = resolveOssLlmConfigForTests(cfg.mem0);
+  assertEqual(resolved.topLevelLlm?.config.baseURL, "https://example.test/openai", "should preserve explicit baseURL");
+  assertEqual(resolved.topLevelLlm?.config.apiKey, "explicit-key", "should preserve explicit apiKey");
+});
+
+await test("graph config keeps non-google provider unchanged", () => {
+  const cfg = loadConfig({
+    mem0: {
+      mode: "open-source",
+      enableGraph: true,
+      oss: {
+        llm: {
+          provider: "openai",
+          config: { model: "gpt-4.1-mini", apiKey: "sk-test", baseURL: "https://api.openai.com/v1" },
+        },
+        graph_store: {
+          provider: "neo4j",
+          config: { url: "bolt://localhost:7687", username: "neo4j", password: "password" },
+        },
+      },
+    },
+  });
+
+  const resolved = resolveOssLlmConfigForTests(cfg.mem0);
+  assertEqual(resolved.topLevelLlm?.provider, "openai", "provider should remain openai");
+  assertEqual(resolved.topLevelLlm?.config.baseURL, "https://api.openai.com/v1", "baseURL should remain unchanged");
+});
+
 await test("store maps non-main agents to namespaced user and preserves session scope", async () => {
   let capturedMessages: Array<{ role: string; content: string }> | null = null;
   let capturedOptions: Record<string, unknown> | null = null;
@@ -80,7 +183,7 @@ await test("store maps non-main agents to namespaced user and preserves session 
   );
 
   const ok = await backend.store(
-    "remember this preference",
+    [{ role: "user", content: "remember this preference" }],
     { userId: "alice", agentId: "researcher", sessionKey: "agent:researcher:main" },
     { sessionScoped: true, metadata: { capture_kind: "explicit", tag: "demo" } },
   );
@@ -116,7 +219,7 @@ await test("store injects default long-term instructions for platform mode", asy
   );
 
   await backend.store(
-    "记住这个长期结论",
+    [{ role: "user", content: "记住这个长期结论" }],
     { userId: "alice", agentId: "main", sessionKey: "agent:main:main" },
     { metadata: { capture_kind: "explicit" } },
   );

@@ -1,5 +1,10 @@
 import type { MemoryScope, MemuMemoryRecord } from "../../types.js";
 
+export type ConversationMessage = {
+  role: "user" | "assistant";
+  content: string;
+};
+
 export type FreeTextSearchOptions = {
   maxItems?: number;
   maxContextChars?: number;
@@ -31,7 +36,7 @@ export type FreeTextBackendStatus = {
 export interface FreeTextBackend {
   readonly provider: string;
   healthCheck(): Promise<FreeTextBackendStatus>;
-  store(text: string, scope: MemoryScope, options?: FreeTextStoreOptions): Promise<boolean>;
+  store(messages: ConversationMessage[], scope: MemoryScope, options?: FreeTextStoreOptions): Promise<boolean>;
   search(query: string, scope: MemoryScope, options?: FreeTextSearchOptions): Promise<MemuMemoryRecord[]>;
   list(scope: MemoryScope, options?: { limit?: number; includeSessionScope?: boolean }): Promise<MemuMemoryRecord[]>;
   forget(scope: MemoryScope, options?: FreeTextForgetOptions): Promise<{

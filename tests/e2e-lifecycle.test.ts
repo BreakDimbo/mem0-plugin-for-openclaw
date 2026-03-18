@@ -16,9 +16,10 @@ import { CoreProposalQueue, extractCoreProposal } from "../core-proposals.js";
 import { LRUCache } from "../cache.js";
 import { Metrics } from "../metrics.js";
 import { createMessageReceivedHook } from "../hooks/message-received.js";
+import { createCaptureHook } from "../hooks/capture.js";
 import { createRecallHook } from "../hooks/recall.js";
 import { DEFAULT_CONFIG } from "../types.js";
-import type { MemuPluginConfig, MemuMemoryRecord, MemoryScope } from "../types.js";
+import type { MemuPluginConfig, MemuMemoryRecord, MemoryScope, ConversationMessage } from "../types.js";
 import type { FreeTextBackend, FreeTextBackendStatus, FreeTextSearchOptions, FreeTextStoreOptions, FreeTextForgetOptions } from "../backends/free-text/base.js";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -53,7 +54,13 @@ const logger = {
 
 // ── InMemoryFreeTextBackend ──────────────────────────────────────────────────
 
-type StoredFreeText = { text: string; scope: MemoryScope; metadata?: Record<string, unknown> };
+type StoredFreeText = { messages: ConversationMessage[]; scope: MemoryScope; metadata?: Record<string, unknown> };
+
+// Helper to extract text from messages
+function getTextFromMessages(messages: ConversationMessage[]): string {
+  const lastUser = [...messages].reverse().find(m => m.role === "user");
+  return lastUser?.content ?? "";
+}
 
 class InMemoryFreeTextBackend implements FreeTextBackend {
   readonly provider = "in-memory-test";
@@ -63,8 +70,8 @@ class InMemoryFreeTextBackend implements FreeTextBackend {
     return { provider: this.provider, healthy: true };
   }
 
-  async store(text: string, scope: MemoryScope, options?: FreeTextStoreOptions): Promise<boolean> {
-    this.items.push({ text, scope, metadata: options?.metadata });
+  async store(messages: ConversationMessage[], scope: MemoryScope, options?: FreeTextStoreOptions): Promise<boolean> {
+    this.items.push({ messages, scope, metadata: options?.metadata });
     return true;
   }
 
@@ -78,7 +85,7 @@ class InMemoryFreeTextBackend implements FreeTextBackend {
     return this.items
       .filter((item) => item.scope.userId === scope.userId && item.scope.agentId === scope.agentId)
       .filter((item) => {
-        const text = item.text.toLowerCase();
+        const text = getTextFromMessages(item.messages).toLowerCase();
         // Direct substring match
         if (text.includes(q)) return true;
         // Token-based match (whitespace split)
@@ -95,7 +102,7 @@ class InMemoryFreeTextBackend implements FreeTextBackend {
       })
       .map((item, i) => ({
         id: `ft-${i}`,
-        text: item.text,
+        text: getTextFromMessages(item.messages),
         category: (item.metadata?.memory_kind as string) ?? "general",
         score: 0.8,
         source: "memu_item" as const,
@@ -109,7 +116,7 @@ class InMemoryFreeTextBackend implements FreeTextBackend {
       .filter((item) => item.scope.userId === scope.userId && item.scope.agentId === scope.agentId)
       .map((item, i) => ({
         id: `ft-${i}`,
-        text: item.text,
+        text: getTextFromMessages(item.messages),
         category: "general",
         source: "memu_item" as const,
         scope: item.scope,
@@ -203,18 +210,9 @@ console.log("\nE2E Lifecycle Tests\n");
 await test("1. Message → InboundCache", async () => {
   const tmpDir = await mkdtemp(join(tmpdir(), "e2e-1-"));
   try {
-    const config = buildTestConfig(tmpDir);
     const inbound = new InboundMessageCache(join(tmpDir, "inbound.json"));
-    const mockBackend = new InMemoryFreeTextBackend();
-    const coreRepo = new CoreMemoryRepository(tmpDir, logger, config.core.maxItemChars);
 
-    const candidateQueue = new CandidateQueue(async () => {}, logger, {
-      intervalMs: 999_999,
-      maxBatchSize: 50,
-      persistPath: tmpDir,
-    });
-
-    const hook = createMessageReceivedHook(inbound, candidateQueue, coreRepo, config, logger, new Metrics());
+    const hook = createMessageReceivedHook(inbound, logger);
     await hook({ from: "user1", content: "我在字节跳动做后端开发，主要用Go语言，负责推荐系统的核心服务" }, baseCtx);
 
     const cached = await inbound.getBySender("ch_e2e", "user1");
@@ -225,12 +223,19 @@ await test("1. Message → InboundCache", async () => {
   }
 });
 
-await test("2. Message → CandidateQueue filtering", async () => {
+await test("2. Capture hook → CandidateQueue filtering", async () => {
   const tmpDir = await mkdtemp(join(tmpdir(), "e2e-2-"));
   try {
     const config = buildTestConfig(tmpDir);
     const inbound = new InboundMessageCache(join(tmpDir, "inbound.json"));
     const coreRepo = new CoreMemoryRepository(tmpDir, logger, config.core.maxItemChars);
+    const proposalQueue = new CoreProposalQueue(tmpDir, 100, logger);
+    const mockBackend = new InMemoryFreeTextBackend();
+    const outbox = new OutboxWorker(mockBackend, logger, {
+      concurrency: 1, batchSize: 10, maxRetries: 3,
+      persistPath: tmpDir, flushIntervalMs: 999_999,
+    });
+    const cache = new LRUCache<MemuMemoryRecord[]>(100, 60_000);
 
     const candidateQueue = new CandidateQueue(async () => {}, logger, {
       intervalMs: 999_999,
@@ -239,16 +244,61 @@ await test("2. Message → CandidateQueue filtering", async () => {
     });
 
     const testMetrics = new Metrics();
-    const hook = createMessageReceivedHook(inbound, candidateQueue, coreRepo, config, logger, testMetrics);
+    const hook = createCaptureHook(
+      outbox, coreRepo, proposalQueue, cache, config, logger, testMetrics, syncStub, candidateQueue, inbound,
+    );
 
-    // Valid message should be captured
-    await hook({ from: "user1", content: "我在字节跳动做后端开发，主要用Go语言，负责推荐系统的核心服务" }, baseCtx);
+    // Valid message should be captured (via event.messages since no event.prompt)
+    await hook(
+      { messages: [{ role: "user", content: "我在字节跳动做后端开发，主要用Go语言，负责推荐系统的核心服务" }] },
+      baseCtx,
+    );
     assertEqual(testMetrics.captureCaptured, 1, "valid message should be captured");
 
     // Low-signal message should be filtered (not captured)
-    await hook({ from: "user1", content: "好的" }, baseCtx);
+    await hook(
+      { messages: [{ role: "user", content: "好的" }] },
+      baseCtx,
+    );
     assertEqual(testMetrics.captureCaptured, 1, "low-signal '好的' should not be captured");
     assertEqual(testMetrics.captureFiltered, 1, "low-signal '好的' should be filtered");
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
+await test("2b. Capture hook skips unsuccessful agent_end", async () => {
+  const tmpDir = await mkdtemp(join(tmpdir(), "e2e-2b-"));
+  try {
+    const config = buildTestConfig(tmpDir);
+    const inbound = new InboundMessageCache(join(tmpDir, "inbound.json"));
+    const coreRepo = new CoreMemoryRepository(tmpDir, logger, config.core.maxItemChars);
+    const proposalQueue = new CoreProposalQueue(tmpDir, 100, logger);
+    const mockBackend = new InMemoryFreeTextBackend();
+    const outbox = new OutboxWorker(mockBackend, logger, {
+      concurrency: 1, batchSize: 10, maxRetries: 3,
+      persistPath: tmpDir, flushIntervalMs: 999_999,
+    });
+    const cache = new LRUCache<MemuMemoryRecord[]>(100, 60_000);
+
+    const candidateQueue = new CandidateQueue(async () => {}, logger, {
+      intervalMs: 999_999,
+      maxBatchSize: 50,
+      persistPath: tmpDir,
+    });
+
+    const testMetrics = new Metrics();
+    const hook = createCaptureHook(
+      outbox, coreRepo, proposalQueue, cache, config, logger, testMetrics, syncStub, candidateQueue, inbound,
+    );
+
+    await hook(
+      { success: false, messages: [{ role: "user", content: "我在字节跳动做后端开发，主要用Go语言，负责推荐系统的核心服务" }] },
+      baseCtx,
+    );
+
+    assertEqual(testMetrics.captureCaptured, 0, "failed agent_end should not be captured");
+    assertEqual(candidateQueue.enqueued, 0, "failed agent_end should not enqueue candidate");
   } finally {
     await rm(tmpDir, { recursive: true, force: true });
   }
@@ -273,14 +323,14 @@ await test("3. CandidateQueue batch → Outbox", async () => {
       async (batch) => {
         processorCalled = true;
         for (const item of batch) {
-          outbox.enqueue(item.text, item.scope, { memory_kind: "general", quality: "durable" });
+          outbox.enqueue(item.messages, item.scope, { memory_kind: "general", quality: "durable" });
         }
       },
       logger,
       { intervalMs: 999_999, maxBatchSize: 50, persistPath: tmpDir },
     );
 
-    candidateQueue.enqueue("我在字节跳动做后端开发，主要用Go语言，负责推荐系统的核心服务", testScope);
+    candidateQueue.enqueue([{ role: "user", content: "我在字节跳动做后端开发，主要用Go语言，负责推荐系统的核心服务" }], testScope);
     assert(candidateQueue.pending === 1, "should have 1 pending");
 
     await candidateQueue.drain(3_000);
@@ -295,23 +345,40 @@ await test("3. CandidateQueue batch → Outbox", async () => {
   }
 });
 
-await test("4. Core regex extraction (我叫小明)", async () => {
+await test("4. Core regex extraction via CandidateQueue (我叫小明)", async () => {
   const tmpDir = await mkdtemp(join(tmpdir(), "e2e-4-"));
   try {
     const config = buildTestConfig(tmpDir);
-    const inbound = new InboundMessageCache(join(tmpDir, "inbound.json"));
     const coreRepo = new CoreMemoryRepository(tmpDir, logger, config.core.maxItemChars);
-    const candidateQueue = new CandidateQueue(async () => {}, logger, {
-      intervalMs: 999_999,
-      maxBatchSize: 50,
-      persistPath: tmpDir,
-    });
 
-    const hook = createMessageReceivedHook(inbound, candidateQueue, coreRepo, config, logger, new Metrics());
+    // CandidateQueue with core extraction processor
+    const candidateQueue = new CandidateQueue(
+      async (batch) => {
+        for (const item of batch) {
+          if (config.core.enabled && config.core.autoExtractProposals) {
+            const itemText = getTextFromMessages(item.messages);
+            const draft = extractCoreProposal(itemText, item.scope);
+            if (draft) {
+              await coreRepo.upsert(item.scope, {
+                key: draft.key,
+                value: draft.value,
+                source: "capture-batch",
+                metadata: { reason: draft.reason },
+              });
+            }
+          }
+        }
+      },
+      logger,
+      { intervalMs: 999_999, maxBatchSize: 50, persistPath: tmpDir },
+    );
 
-    // "我叫小明" matches the extractCoreProposal regex
-    // Must be >= minChars (24) to pass shouldCapture
-    await hook({ from: "user1", content: "我叫小明，是一个在字节跳动工作的前端工程师，主要做React开发" }, baseCtx);
+    // Enqueue message with identity pattern
+    const msg = "我叫小明，是一个在字节跳动工作的前端工程师，主要做React开发";
+    candidateQueue.enqueue([{ role: "user", content: msg }], testScope);
+
+    // Drain to trigger processor
+    await candidateQueue.drain(3_000);
 
     const coreItems = await coreRepo.list(testScope);
     assert(coreItems.length >= 1, `core should have at least 1 item, got ${coreItems.length}`);
@@ -336,7 +403,7 @@ await test("5. Outbox flush → FreeTextBackend", async () => {
     });
     await outbox.loadFromDisk();
 
-    outbox.enqueue("用户偏好使用深色主题进行编程开发工作", testScope, {
+    outbox.enqueue([{ role: "user", content: "用户偏好使用深色主题进行编程开发工作" }], testScope, {
       source: "memory-mem0",
       memory_kind: "preference",
       quality: "durable",
@@ -349,7 +416,7 @@ await test("5. Outbox flush → FreeTextBackend", async () => {
 
     assertEqual(outbox.pending, 0, "outbox should be empty after drain");
     assert(mockBackend.items.length >= 1, `backend should have at least 1 item, got ${mockBackend.items.length}`);
-    assert(mockBackend.items[0].text.includes("深色主题"), "stored text should match");
+    assert(getTextFromMessages(mockBackend.items[0].messages).includes("深色主题"), "stored text should match");
     assertEqual(mockBackend.items[0].scope.userId, testScope.userId, "scope userId should match");
   } finally {
     await rm(tmpDir, { recursive: true, force: true });
@@ -451,7 +518,7 @@ await test("8. Recall: free-text injection", async () => {
     };
 
     // Pre-populate free-text backend
-    await mockBackend.store("用户偏好深色主题和Vim键绑定进行代码编辑", testScope, {
+    await mockBackend.store([{ role: "user", content: "用户偏好深色主题和Vim键绑定进行代码编辑" }], testScope, {
       memory_kind: "preference",
     });
 
@@ -553,14 +620,15 @@ await test("10. Full round-trip: message → queue → capture → recall", asyn
     const candidateQueue = new CandidateQueue(
       async (batch) => {
         for (const item of batch) {
-          outbox.enqueue(item.text, item.scope, {
+          outbox.enqueue(item.messages, item.scope, {
             source: "memory-mem0",
             memory_kind: "general",
             quality: "durable",
           });
           // Also attempt core extraction
           if (config.core.enabled && config.core.autoExtractProposals) {
-            const draft = extractCoreProposal(item.text, item.scope);
+            const itemText = getTextFromMessages(item.messages);
+            const draft = extractCoreProposal(itemText, item.scope);
             if (draft) {
               await coreRepo.upsert(item.scope, {
                 key: draft.key,
@@ -576,7 +644,11 @@ await test("10. Full round-trip: message → queue → capture → recall", asyn
       { intervalMs: 999_999, maxBatchSize: 50, persistPath: tmpDir },
     );
 
-    const messageHook = createMessageReceivedHook(inbound, candidateQueue, coreRepo, config, logger, new Metrics());
+    const messageHook = createMessageReceivedHook(inbound, logger);
+    const proposalQueue = new CoreProposalQueue(tmpDir, 100, logger);
+    const captureHook = createCaptureHook(
+      outbox, coreRepo, proposalQueue, cache, config, logger, metrics, syncStub, candidateQueue, inbound,
+    );
     const recallHook = createRecallHook(
       mockBackend,
       scopeResolver,
@@ -589,9 +661,15 @@ await test("10. Full round-trip: message → queue → capture → recall", asyn
       syncStub,
     );
 
-    // Step 1: Send a message with identity info
+    // Step 1: Send a message with identity info (cache it first)
     const userMessage = "我叫小明，是一个在字节跳动工作的前端工程师，主要做React开发";
     await messageHook({ from: "user1", content: userMessage }, baseCtx);
+
+    // Step 1b: Capture hook processes the message (simulates agent_end)
+    await captureHook(
+      { messages: [{ role: "user", content: userMessage }] },
+      baseCtx,
+    );
 
     // Step 2: Drain candidate queue → outbox
     await candidateQueue.drain(3_000);
@@ -602,7 +680,7 @@ await test("10. Full round-trip: message → queue → capture → recall", asyn
     // Verify: free-text backend received the memory
     assert(mockBackend.items.length >= 1, `free-text backend should have items, got ${mockBackend.items.length}`);
 
-    // Verify: core memory was extracted (immediate extract in message-received hook)
+    // Verify: core memory was extracted (via CandidateQueue batch processor)
     const coreItems = await coreRepo.list(testScope);
     assert(coreItems.length >= 1, `core repo should have items, got ${coreItems.length}`);
 

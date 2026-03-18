@@ -297,7 +297,7 @@ ls ~/.openclaw/extensions/memory-mem0/
             "searchThreshold": 0.25,      // 召回阈值（中文建议 0.20-0.25）
             "topK": 10,
             "oss": {
-              // LLM 配置（用于 mem0 内部处理）
+              // LLM 配置（用于 mem0 内部处理；启用 Graph 时插件会自动转为 Google OpenAI-compatible 形态）
               "llm": {
                 "provider": "google",
                 "config": { "model": "gemini-2.5-flash" }
@@ -329,11 +329,6 @@ ls ~/.openclaw/extensions/memory-mem0/
                   "url": "bolt://localhost:7687",
                   "username": "neo4j",
                   "password": "your-password"
-                },
-                // 重要：显式配置 LLM 覆盖 mem0 默认的 OpenAI
-                "llm": {
-                  "provider": "google",
-                  "config": { "model": "gemini-2.5-flash" }
                 }
               }
             },
@@ -345,9 +340,7 @@ ls ~/.openclaw/extensions/memory-mem0/
           // 作用域隔离
           // =====================
           "scope": {
-            "userId": "your-user-id",
-            "requireUserId": true,
-            "requireAgentId": true
+            "userId": "your-user-id"
           },
 
           // =====================
@@ -393,6 +386,7 @@ ls ~/.openclaw/extensions/memory-mem0/
             "enabled": true,
             "minChars": 20,
             "maxChars": 600,
+            "maxConversationTurns": 4,
             "dedupeThreshold": 0.8,
             "candidateQueue": {
               "enabled": true,
@@ -614,7 +608,7 @@ openclaw agent --agent main --message "我的技术栈是什么？"
 | `Connection refused :6333` | Qdrant 未启动 | `docker start qdrant` |
 | `Connection refused :11434` | Ollama 未启动 | `ollama serve` 或 `brew services start ollama` |
 | `unable to open database file` | historyDbPath 路径无效 | 确保 `dataDir` 目录存在且有写权限 |
-| `401 Incorrect API key` (Graph) | mem0 使用默认 OpenAI | 在 `graph_store` 中显式配置 `llm` |
+| `401 Incorrect API key` (Graph) | Graph 路径落到了 mem0 默认 OpenAI 配置 | 优先检查插件是否为最新版；若需手动覆盖，改成 `provider=openai` 并设置 Google OpenAI-compatible `baseURL` |
 | `dimension mismatch` | Embedding 维度不匹配 | 检查 `embeddingDims` 与模型一致 |
 | `plugin id mismatch` | 插件名不匹配 | 在 openclaw.json 的 installs 中添加 `resolvedName` |
 

@@ -5,7 +5,7 @@
 
 import { CandidateQueue } from "../candidate-queue.js";
 import type { CandidateItem } from "../candidate-queue.js";
-import type { MemoryScope } from "../types.js";
+import type { MemoryScope, ConversationMessage } from "../types.js";
 import { mkdtemp } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -44,6 +44,17 @@ const testScope: MemoryScope = {
   sessionKey: "agent:test_agent",
 };
 
+// Helper to wrap text in message array
+function msg(text: string): ConversationMessage[] {
+  return [{ role: "user", content: text }];
+}
+
+// Helper to get text from messages
+function getText(item: CandidateItem): string {
+  const lastUser = [...item.messages].reverse().find(m => m.role === "user");
+  return lastUser?.content ?? "";
+}
+
 console.log("\nCandidateQueue Tests\n");
 
 await test("enqueue adds items and updates pending count", async () => {
@@ -55,8 +66,8 @@ await test("enqueue adds items and updates pending count", async () => {
     { intervalMs: 60_000, maxBatchSize: 10, persistPath: tmpDir },
   );
 
-  cq.enqueue("我叫小明", testScope);
-  cq.enqueue("我在字节跳动工作", testScope);
+  cq.enqueue(msg("我叫小明"), testScope);
+  cq.enqueue(msg("我在字节跳动工作"), testScope);
 
   assertEqual(cq.pending, 2, "pending count");
   assertEqual(cq.enqueued, 2, "enqueued count");
@@ -72,8 +83,8 @@ await test("enqueue deduplicates same text+scope", async () => {
     { intervalMs: 60_000, maxBatchSize: 10, persistPath: tmpDir },
   );
 
-  cq.enqueue("我叫小明", testScope);
-  cq.enqueue("我叫小明", testScope); // duplicate
+  cq.enqueue(msg("我叫小明"), testScope);
+  cq.enqueue(msg("我叫小明"), testScope); // duplicate
 
   assertEqual(cq.pending, 1, "pending should be 1 after dedup");
   assertEqual(cq.enqueued, 1, "enqueued should be 1");
@@ -91,8 +102,8 @@ await test("enqueue allows same text with different scope", async () => {
   );
 
   const scope2: MemoryScope = { ...testScope, userId: "other_user" };
-  cq.enqueue("我叫小明", testScope);
-  cq.enqueue("我叫小明", scope2);
+  cq.enqueue(msg("我叫小明"), testScope);
+  cq.enqueue(msg("我叫小明"), scope2);
 
   assertEqual(cq.pending, 2, "different scopes should not dedup");
 
@@ -108,14 +119,14 @@ await test("processBatch calls processor with all items", async () => {
     { intervalMs: 60_000, maxBatchSize: 10, persistPath: tmpDir },
   );
 
-  cq.enqueue("fact one", testScope);
-  cq.enqueue("fact two", testScope);
+  cq.enqueue(msg("fact one"), testScope);
+  cq.enqueue(msg("fact two"), testScope);
   await cq.processBatch();
 
   assertEqual(batches.length, 1, "should have 1 batch");
   assertEqual(batches[0].length, 2, "batch should have 2 items");
-  assertEqual(batches[0][0].text, "fact one", "first item text");
-  assertEqual(batches[0][1].text, "fact two", "second item text");
+  assertEqual(getText(batches[0][0]), "fact one", "first item text");
+  assertEqual(getText(batches[0][1]), "fact two", "second item text");
   assertEqual(cq.pending, 0, "pending should be 0 after processing");
   assertEqual(cq.processed, 2, "processed count");
 
@@ -131,9 +142,9 @@ await test("processBatch respects maxBatchSize", async () => {
     { intervalMs: 60_000, maxBatchSize: 2, persistPath: tmpDir },
   );
 
-  cq.enqueue("fact one", testScope);
-  cq.enqueue("fact two", testScope);
-  cq.enqueue("fact three", testScope);
+  cq.enqueue(msg("fact one"), testScope);
+  cq.enqueue(msg("fact two"), testScope);
+  cq.enqueue(msg("fact three"), testScope);
 
   await cq.processBatch();
   assertEqual(batches.length, 1, "first batch call");
@@ -167,14 +178,14 @@ await test("drain processes all pending items", async () => {
   const tmpDir = await mkdtemp(join(tmpdir(), "cq-test-"));
   const processed: string[] = [];
   const cq = new CandidateQueue(
-    async (batch) => { for (const item of batch) processed.push(item.text); },
+    async (batch) => { for (const item of batch) processed.push(getText(item)); },
     testLogger,
     { intervalMs: 60_000, maxBatchSize: 2, persistPath: tmpDir },
   );
 
-  cq.enqueue("a", testScope);
-  cq.enqueue("b", testScope);
-  cq.enqueue("c", testScope);
+  cq.enqueue(msg("a"), testScope);
+  cq.enqueue(msg("b"), testScope);
+  cq.enqueue(msg("c"), testScope);
 
   await cq.drain(5_000);
 
@@ -188,16 +199,16 @@ await test("start loads persisted items and processes them", async () => {
   const tmpDir = await mkdtemp(join(tmpdir(), "cq-test-"));
   const persistFile = join(tmpDir, "candidate-queue.json");
 
-  // Pre-seed persistence file
+  // Pre-seed persistence file with new format
   const seeded: CandidateItem[] = [
-    { id: "abc123", text: "persisted fact", scope: testScope, receivedAt: Date.now() },
+    { id: "abc123", messages: [{ role: "user", content: "persisted fact" }], scope: testScope, receivedAt: Date.now() },
   ];
   const { writeFile } = await import("node:fs/promises");
   await writeFile(persistFile, JSON.stringify(seeded), "utf-8");
 
   const processed: string[] = [];
   const cq = new CandidateQueue(
-    async (batch) => { for (const item of batch) processed.push(item.text); },
+    async (batch) => { for (const item of batch) processed.push(getText(item)); },
     testLogger,
     { intervalMs: 60_000, maxBatchSize: 10, persistPath: tmpDir },
   );
@@ -207,6 +218,34 @@ await test("start loads persisted items and processes them", async () => {
   // start() should load and process persisted items immediately
   assertEqual(processed.length, 1, "persisted item should be processed on start");
   assertEqual(processed[0], "persisted fact", "correct text");
+
+  cq.stop();
+});
+
+await test("start migrates legacy persisted text items", async () => {
+  const tmpDir = await mkdtemp(join(tmpdir(), "cq-test-"));
+  const persistFile = join(tmpDir, "candidate-queue.json");
+
+  const { writeFile } = await import("node:fs/promises");
+  await writeFile(
+    persistFile,
+    JSON.stringify([
+      { id: "legacy-1", text: "legacy persisted fact", scope: testScope, receivedAt: Date.now() },
+    ]),
+    "utf-8",
+  );
+
+  const processed: string[] = [];
+  const cq = new CandidateQueue(
+    async (batch) => { for (const item of batch) processed.push(getText(item)); },
+    testLogger,
+    { intervalMs: 60_000, maxBatchSize: 10, persistPath: tmpDir },
+  );
+
+  await cq.start();
+
+  assertEqual(processed.length, 1, "legacy item should be processed on start");
+  assertEqual(processed[0], "legacy persisted fact", "legacy text should be migrated into messages");
 
   cq.stop();
 });
@@ -221,7 +260,7 @@ await test("persistence survives stop/start cycle", async () => {
     { intervalMs: 60_000, maxBatchSize: 10, persistPath: tmpDir },
   );
   await cq1.start(); // load (empty), start timer
-  cq1.enqueue("surviving fact", testScope);
+  cq1.enqueue(msg("surviving fact"), testScope);
   // drain calls saveToDisk, but also processes — we need items to persist.
   // Instead, wait briefly for the fire-and-forget saveToDisk from enqueue.
   await new Promise((r) => setTimeout(r, 100));
@@ -235,7 +274,7 @@ await test("persistence survives stop/start cycle", async () => {
   // Phase 2: new instance loads persisted items
   const processed: string[] = [];
   const cq2 = new CandidateQueue(
-    async (batch) => { for (const item of batch) processed.push(item.text); },
+    async (batch) => { for (const item of batch) processed.push(getText(item)); },
     testLogger,
     { intervalMs: 60_000, maxBatchSize: 10, persistPath: tmpDir },
   );
@@ -255,7 +294,7 @@ await test("enqueue preserves metadata", async () => {
     { intervalMs: 60_000, maxBatchSize: 10, persistPath: tmpDir },
   );
 
-  cq.enqueue("some fact", testScope, { channel: "feishu", extra: 42 });
+  cq.enqueue(msg("some fact"), testScope, { channel: "feishu", extra: 42 });
   await cq.processBatch();
 
   assertEqual(batches[0][0].metadata?.channel, "feishu", "metadata preserved");

@@ -134,7 +134,7 @@ await test("createRecallHook loads session core cache once and reranks against c
     { get: () => null, set: () => {} } as any,
     { getBySender: async () => "" } as any,
     {
-      scope: { userId: "u", agentId: "a", requireUserId: false, requireAgentId: false },
+      scope: { userId: "u", agentId: "a" },
       recall: {
         enabled: true,
         method: "rag",
@@ -152,7 +152,7 @@ await test("createRecallHook loads session core cache once and reranks against c
       core: { enabled: true, topK: 5, maxItemChars: 240, autoExtractProposals: false, humanReviewRequired: false, touchOnRecall: false, proposalQueueMax: 10, alwaysInjectTiers: ["profile", "general"], retrievalOnlyTiers: ["technical"], maxAlwaysInjectChars: 600 },
       backend: { freeText: { provider: "mem0" } },
       mem0: { mode: "open-source", enableGraph: false, searchThreshold: 0.3, topK: 5 },
-      capture: { enabled: false, maxItemsPerRun: 0, minChars: 0, maxChars: 0, dedupeThreshold: 0.8 },
+      capture: { enabled: false, maxItemsPerRun: 0, minChars: 0, maxChars: 0, maxConversationTurns: 1, dedupeThreshold: 0.8 },
       outbox: { enabled: false, concurrency: 1, batchSize: 1, maxRetries: 1, drainTimeoutMs: 1000, persistPath: "", flushIntervalMs: 1000 },
       sync: { flushToMarkdown: false, flushIntervalSec: 300, memoryFilePath: "MEMORY.md" },
     } as any,
@@ -195,7 +195,7 @@ await test("createRecallHook always-injects profile-tier facts and scores techni
     { get: () => null, set: () => {} } as any,
     { getBySender: async () => "" } as any,
     {
-      scope: { userId: "u", agentId: "a", requireUserId: false, requireAgentId: false },
+      scope: { userId: "u", agentId: "a" },
       recall: {
         enabled: true,
         method: "rag",
@@ -213,7 +213,7 @@ await test("createRecallHook always-injects profile-tier facts and scores techni
       core: { enabled: true, topK: 5, maxItemChars: 240, autoExtractProposals: false, humanReviewRequired: false, touchOnRecall: false, proposalQueueMax: 10, alwaysInjectTiers: ["profile", "general"], retrievalOnlyTiers: ["technical"], maxAlwaysInjectChars: 600 },
       backend: { freeText: { provider: "mem0" } },
       mem0: { mode: "open-source", enableGraph: false, searchThreshold: 0.3, topK: 5 },
-      capture: { enabled: false, maxItemsPerRun: 0, minChars: 0, maxChars: 0, dedupeThreshold: 0.8 },
+      capture: { enabled: false, maxItemsPerRun: 0, minChars: 0, maxChars: 0, maxConversationTurns: 1, dedupeThreshold: 0.8 },
       outbox: { enabled: false, concurrency: 1, batchSize: 1, maxRetries: 1, drainTimeoutMs: 1000, persistPath: "", flushIntervalMs: 1000 },
       sync: { flushToMarkdown: false, flushIntervalSec: 300, memoryFilePath: "MEMORY.md" },
     } as any,
@@ -251,7 +251,7 @@ await test("createRecallHook prefers the stronger lexical core match for a focus
     { get: () => null, set: () => {} } as any,
     { getBySender: async () => "" } as any,
     {
-      scope: { userId: "u", agentId: "a", requireUserId: false, requireAgentId: false },
+      scope: { userId: "u", agentId: "a" },
       recall: {
         enabled: true,
         method: "rag",
@@ -269,7 +269,7 @@ await test("createRecallHook prefers the stronger lexical core match for a focus
       core: { enabled: true, topK: 5, maxItemChars: 240, autoExtractProposals: false, humanReviewRequired: false, touchOnRecall: false, proposalQueueMax: 10, alwaysInjectTiers: ["profile", "general"], retrievalOnlyTiers: ["technical"], maxAlwaysInjectChars: 600 },
       backend: { freeText: { provider: "mem0" } },
       mem0: { mode: "open-source", enableGraph: false, searchThreshold: 0.3, topK: 5 },
-      capture: { enabled: false, maxItemsPerRun: 0, minChars: 0, maxChars: 0, dedupeThreshold: 0.8 },
+      capture: { enabled: false, maxItemsPerRun: 0, minChars: 0, maxChars: 0, maxConversationTurns: 1, dedupeThreshold: 0.8 },
       outbox: { enabled: false, concurrency: 1, batchSize: 1, maxRetries: 1, drainTimeoutMs: 1000, persistPath: "", flushIntervalMs: 1000 },
       sync: { flushToMarkdown: false, flushIntervalSec: 300, memoryFilePath: "MEMORY.md" },
     } as any,
@@ -303,7 +303,7 @@ await test("createRecallHook always-injects profile tier even when not directly 
     { get: () => null, set: () => {} } as any,
     { getBySender: async () => "" } as any,
     {
-      scope: { userId: "u", agentId: "a", requireUserId: false, requireAgentId: false },
+      scope: { userId: "u", agentId: "a" },
       recall: {
         enabled: true,
         method: "rag",
@@ -321,7 +321,7 @@ await test("createRecallHook always-injects profile tier even when not directly 
       core: { enabled: true, topK: 5, maxItemChars: 240, autoExtractProposals: false, humanReviewRequired: false, touchOnRecall: false, proposalQueueMax: 10, alwaysInjectTiers: ["profile", "general"], retrievalOnlyTiers: ["technical"], maxAlwaysInjectChars: 600 },
       backend: { freeText: { provider: "mem0" } },
       mem0: { mode: "open-source", enableGraph: false, searchThreshold: 0.3, topK: 5 },
-      capture: { enabled: false, maxItemsPerRun: 0, minChars: 0, maxChars: 0, dedupeThreshold: 0.8 },
+      capture: { enabled: false, maxItemsPerRun: 0, minChars: 0, maxChars: 0, maxConversationTurns: 1, dedupeThreshold: 0.8 },
       outbox: { enabled: false, concurrency: 1, batchSize: 1, maxRetries: 1, drainTimeoutMs: 1000, persistPath: "", flushIntervalMs: 1000 },
       sync: { flushToMarkdown: false, flushIntervalSec: 300, memoryFilePath: "MEMORY.md" },
     } as any,
@@ -355,7 +355,7 @@ await test("createRecallHook always-injects all profile-tier facts including bac
     { get: () => null, set: () => {} } as any,
     { getBySender: async () => "" } as any,
     {
-      scope: { userId: "u", agentId: "a", requireUserId: false, requireAgentId: false },
+      scope: { userId: "u", agentId: "a" },
       recall: {
         enabled: true,
         method: "rag",
@@ -373,7 +373,7 @@ await test("createRecallHook always-injects all profile-tier facts including bac
       core: { enabled: true, topK: 5, maxItemChars: 240, autoExtractProposals: false, humanReviewRequired: false, touchOnRecall: false, proposalQueueMax: 10, alwaysInjectTiers: ["profile", "general"], retrievalOnlyTiers: ["technical"], maxAlwaysInjectChars: 600 },
       backend: { freeText: { provider: "mem0" } },
       mem0: { mode: "open-source", enableGraph: false, searchThreshold: 0.3, topK: 5 },
-      capture: { enabled: false, maxItemsPerRun: 0, minChars: 0, maxChars: 0, dedupeThreshold: 0.8 },
+      capture: { enabled: false, maxItemsPerRun: 0, minChars: 0, maxChars: 0, maxConversationTurns: 1, dedupeThreshold: 0.8 },
       outbox: { enabled: false, concurrency: 1, batchSize: 1, maxRetries: 1, drainTimeoutMs: 1000, persistPath: "", flushIntervalMs: 1000 },
       sync: { flushToMarkdown: false, flushIntervalSec: 300, memoryFilePath: "MEMORY.md" },
     } as any,
@@ -412,7 +412,7 @@ await test("createRecallHook caches core memory per session and reranks locally"
     { get: () => null, set: () => {} } as any,
     { getBySender: async () => "" } as any,
     {
-      scope: { userId: "u", agentId: "a", requireUserId: false, requireAgentId: false },
+      scope: { userId: "u", agentId: "a" },
       recall: {
         enabled: true,
         method: "rag",
@@ -430,7 +430,7 @@ await test("createRecallHook caches core memory per session and reranks locally"
       core: { enabled: true, topK: 5, maxItemChars: 240, autoExtractProposals: false, humanReviewRequired: false, touchOnRecall: false, proposalQueueMax: 10, alwaysInjectTiers: ["profile", "general"], retrievalOnlyTiers: ["technical"], maxAlwaysInjectChars: 600 },
       backend: { freeText: { provider: "mem0" } },
       mem0: { mode: "open-source", enableGraph: false, searchThreshold: 0.3, topK: 5 },
-      capture: { enabled: false, maxItemsPerRun: 0, minChars: 0, maxChars: 0, dedupeThreshold: 0.8 },
+      capture: { enabled: false, maxItemsPerRun: 0, minChars: 0, maxChars: 0, maxConversationTurns: 1, dedupeThreshold: 0.8 },
       outbox: { enabled: false, concurrency: 1, batchSize: 1, maxRetries: 1, drainTimeoutMs: 1000, persistPath: "", flushIntervalMs: 1000 },
       sync: { flushToMarkdown: false, flushIntervalSec: 300, memoryFilePath: "MEMORY.md" },
     } as any,
@@ -470,7 +470,7 @@ await test("createRecallHook includes both core and relevant memories when core 
     { get: () => null, set: () => {} } as any,
     { getBySender: async () => "" } as any,
     {
-      scope: { userId: "u", agentId: "a", requireUserId: false, requireAgentId: false },
+      scope: { userId: "u", agentId: "a" },
       recall: {
         enabled: true,
         method: "rag",
@@ -488,7 +488,7 @@ await test("createRecallHook includes both core and relevant memories when core 
       core: { enabled: true, topK: 5, maxItemChars: 240, autoExtractProposals: false, humanReviewRequired: false, touchOnRecall: false, proposalQueueMax: 10, alwaysInjectTiers: ["profile", "general"], retrievalOnlyTiers: ["technical"], maxAlwaysInjectChars: 600 },
       backend: { freeText: { provider: "mem0" } },
       mem0: { mode: "open-source", enableGraph: false, searchThreshold: 0.3, topK: 5 },
-      capture: { enabled: false, maxItemsPerRun: 0, minChars: 0, maxChars: 0, dedupeThreshold: 0.8 },
+      capture: { enabled: false, maxItemsPerRun: 0, minChars: 0, maxChars: 0, maxConversationTurns: 1, dedupeThreshold: 0.8 },
       outbox: { enabled: false, concurrency: 1, batchSize: 1, maxRetries: 1, drainTimeoutMs: 1000, persistPath: "", flushIntervalMs: 1000 },
       sync: { flushToMarkdown: false, flushIntervalSec: 300, memoryFilePath: "MEMORY.md" },
     } as any,
@@ -523,7 +523,7 @@ await test("createRecallHook skips duplicate injection inside the same session",
     { get: () => null, set: () => {} } as any,
     { getBySender: async () => "" } as any,
     {
-      scope: { userId: "u", agentId: "a", requireUserId: false, requireAgentId: false },
+      scope: { userId: "u", agentId: "a" },
       recall: {
         enabled: true,
         method: "rag",
@@ -541,7 +541,7 @@ await test("createRecallHook skips duplicate injection inside the same session",
       core: { enabled: true, topK: 5, maxItemChars: 240, autoExtractProposals: false, humanReviewRequired: false, touchOnRecall: false, proposalQueueMax: 10, alwaysInjectTiers: ["profile", "general"], retrievalOnlyTiers: ["technical"], maxAlwaysInjectChars: 600 },
       backend: { freeText: { provider: "mem0" } },
       mem0: { mode: "open-source", enableGraph: false, searchThreshold: 0.3, topK: 5 },
-      capture: { enabled: false, maxItemsPerRun: 0, minChars: 0, maxChars: 0, dedupeThreshold: 0.8 },
+      capture: { enabled: false, maxItemsPerRun: 0, minChars: 0, maxChars: 0, maxConversationTurns: 1, dedupeThreshold: 0.8 },
       outbox: { enabled: false, concurrency: 1, batchSize: 1, maxRetries: 1, drainTimeoutMs: 1000, persistPath: "", flushIntervalMs: 1000 },
       sync: { flushToMarkdown: false, flushIntervalSec: 300, memoryFilePath: "MEMORY.md" },
     } as any,
@@ -589,7 +589,7 @@ await test("createRecallHook avoids re-injecting the same stable core facts acro
     { get: () => null, set: () => {} } as any,
     { getBySender: async () => "" } as any,
     {
-      scope: { userId: "u", agentId: "a", requireUserId: false, requireAgentId: false },
+      scope: { userId: "u", agentId: "a" },
       recall: {
         enabled: true,
         method: "rag",
@@ -607,7 +607,7 @@ await test("createRecallHook avoids re-injecting the same stable core facts acro
       core: { enabled: true, topK: 5, maxItemChars: 240, autoExtractProposals: false, humanReviewRequired: false, touchOnRecall: false, proposalQueueMax: 10, alwaysInjectTiers: ["profile", "general"], retrievalOnlyTiers: ["technical"], maxAlwaysInjectChars: 600 },
       backend: { freeText: { provider: "mem0" } },
       mem0: { mode: "open-source", enableGraph: false, searchThreshold: 0.3, topK: 5 },
-      capture: { enabled: false, maxItemsPerRun: 0, minChars: 0, maxChars: 0, dedupeThreshold: 0.8 },
+      capture: { enabled: false, maxItemsPerRun: 0, minChars: 0, maxChars: 0, maxConversationTurns: 1, dedupeThreshold: 0.8 },
       outbox: { enabled: false, concurrency: 1, batchSize: 1, maxRetries: 1, drainTimeoutMs: 1000, persistPath: "", flushIntervalMs: 1000 },
       sync: { flushToMarkdown: false, flushIntervalSec: 300, memoryFilePath: "MEMORY.md" },
     } as any,
@@ -659,7 +659,7 @@ await test("createRecallHook reuses relevant selections for similar session quer
     { get: () => null, set: () => {} } as any,
     { getBySender: async () => "" } as any,
     {
-      scope: { userId: "u", agentId: "a", requireUserId: false, requireAgentId: false },
+      scope: { userId: "u", agentId: "a" },
       recall: {
         enabled: true,
         method: "rag",
@@ -677,7 +677,7 @@ await test("createRecallHook reuses relevant selections for similar session quer
       core: { enabled: false, topK: 5, maxItemChars: 240, autoExtractProposals: false, humanReviewRequired: false, touchOnRecall: false, proposalQueueMax: 10, alwaysInjectTiers: ["profile", "general"], retrievalOnlyTiers: ["technical"], maxAlwaysInjectChars: 600 },
       backend: { freeText: { provider: "mem0" } },
       mem0: { mode: "open-source", enableGraph: false, searchThreshold: 0.3, topK: 5 },
-      capture: { enabled: false, maxItemsPerRun: 0, minChars: 0, maxChars: 0, dedupeThreshold: 0.8 },
+      capture: { enabled: false, maxItemsPerRun: 0, minChars: 0, maxChars: 0, maxConversationTurns: 1, dedupeThreshold: 0.8 },
       outbox: { enabled: false, concurrency: 1, batchSize: 1, maxRetries: 1, drainTimeoutMs: 1000, persistPath: "", flushIntervalMs: 1000 },
       sync: { flushToMarkdown: false, flushIntervalSec: 300, memoryFilePath: "MEMORY.md" },
     } as any,
@@ -717,7 +717,7 @@ await test("createRecallHook returns early for startup prompt (no injection)", a
     { get: () => null, set: () => {} } as any,
     { getBySender: async () => "" } as any,
     {
-      scope: { userId: "u", agentId: "a", requireUserId: false, requireAgentId: false },
+      scope: { userId: "u", agentId: "a" },
       recall: {
         enabled: true, method: "rag", hybrid: { enabled: false, alpha: 0.5, fallbackToRag: false },
         topK: 2, scoreThreshold: 0.3, maxContextChars: 1200, injectionBudgetChars: 1200,
@@ -726,7 +726,7 @@ await test("createRecallHook returns early for startup prompt (no injection)", a
       core: { enabled: true, topK: 5, maxItemChars: 240, autoExtractProposals: false, humanReviewRequired: false, touchOnRecall: false, proposalQueueMax: 10, alwaysInjectTiers: ["profile", "general"], retrievalOnlyTiers: ["technical"], maxAlwaysInjectChars: 600 },
       backend: { freeText: { provider: "mem0" } },
       mem0: { mode: "open-source", enableGraph: false, searchThreshold: 0.3, topK: 5 },
-      capture: { enabled: false, maxItemsPerRun: 0, minChars: 0, maxChars: 0, dedupeThreshold: 0.8 },
+      capture: { enabled: false, maxItemsPerRun: 0, minChars: 0, maxChars: 0, maxConversationTurns: 1, dedupeThreshold: 0.8 },
       outbox: { enabled: false, concurrency: 1, batchSize: 1, maxRetries: 1, drainTimeoutMs: 1000, persistPath: "", flushIntervalMs: 1000 },
       sync: { flushToMarkdown: false, flushIntervalSec: 300, memoryFilePath: "MEMORY.md" },
     } as any,
@@ -758,7 +758,7 @@ await test("createRecallHook prefers event.prompt when messages contain startup 
     { get: () => null, set: () => {} } as any,
     { getBySender: async () => "" } as any,
     {
-      scope: { userId: "u", agentId: "a", requireUserId: false, requireAgentId: false },
+      scope: { userId: "u", agentId: "a" },
       recall: {
         enabled: true, method: "rag", hybrid: { enabled: false, alpha: 0.5, fallbackToRag: false },
         topK: 2, scoreThreshold: 0.3, maxContextChars: 1200, injectionBudgetChars: 1200,
@@ -767,7 +767,7 @@ await test("createRecallHook prefers event.prompt when messages contain startup 
       core: { enabled: true, topK: 5, maxItemChars: 240, autoExtractProposals: false, humanReviewRequired: false, touchOnRecall: false, proposalQueueMax: 10, alwaysInjectTiers: ["profile", "general"], retrievalOnlyTiers: ["technical"], maxAlwaysInjectChars: 600 },
       backend: { freeText: { provider: "mem0" } },
       mem0: { mode: "open-source", enableGraph: false, searchThreshold: 0.3, topK: 5 },
-      capture: { enabled: false, maxItemsPerRun: 0, minChars: 0, maxChars: 0, dedupeThreshold: 0.8 },
+      capture: { enabled: false, maxItemsPerRun: 0, minChars: 0, maxChars: 0, maxConversationTurns: 1, dedupeThreshold: 0.8 },
       outbox: { enabled: false, concurrency: 1, batchSize: 1, maxRetries: 1, drainTimeoutMs: 1000, persistPath: "", flushIntervalMs: 1000 },
       sync: { flushToMarkdown: false, flushIntervalSec: 300, memoryFilePath: "MEMORY.md" },
     } as any,
@@ -800,7 +800,7 @@ await test("createRecallHook session dedup does not block different queries in s
     { get: () => null, set: () => {} } as any,
     { getBySender: async () => "" } as any,
     {
-      scope: { userId: "u", agentId: "a", requireUserId: false, requireAgentId: false },
+      scope: { userId: "u", agentId: "a" },
       recall: {
         enabled: true, method: "rag", hybrid: { enabled: false, alpha: 0.5, fallbackToRag: false },
         topK: 2, scoreThreshold: 0.3, maxContextChars: 1200, injectionBudgetChars: 1200,
@@ -809,7 +809,7 @@ await test("createRecallHook session dedup does not block different queries in s
       core: { enabled: true, topK: 5, maxItemChars: 240, autoExtractProposals: false, humanReviewRequired: false, touchOnRecall: false, proposalQueueMax: 10, alwaysInjectTiers: ["profile", "general"], retrievalOnlyTiers: ["technical"], maxAlwaysInjectChars: 600 },
       backend: { freeText: { provider: "mem0" } },
       mem0: { mode: "open-source", enableGraph: false, searchThreshold: 0.3, topK: 5 },
-      capture: { enabled: false, maxItemsPerRun: 0, minChars: 0, maxChars: 0, dedupeThreshold: 0.8 },
+      capture: { enabled: false, maxItemsPerRun: 0, minChars: 0, maxChars: 0, maxConversationTurns: 1, dedupeThreshold: 0.8 },
       outbox: { enabled: false, concurrency: 1, batchSize: 1, maxRetries: 1, drainTimeoutMs: 1000, persistPath: "", flushIntervalMs: 1000 },
       sync: { flushToMarkdown: false, flushIntervalSec: 300, memoryFilePath: "MEMORY.md" },
     } as any,

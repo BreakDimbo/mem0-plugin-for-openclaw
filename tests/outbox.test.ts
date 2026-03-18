@@ -4,7 +4,7 @@
 // ============================================================================
 
 import { OutboxWorker } from "../outbox.js";
-import type { MemoryScope } from "../types.js";
+import type { MemoryScope, ConversationMessage } from "../types.js";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -30,6 +30,11 @@ function assert(cond: boolean, msg: string): void {
 
 function assertEqual(a: unknown, b: unknown, msg: string): void {
   if (a !== b) throw new Error(`${msg}: expected ${JSON.stringify(b)}, got ${JSON.stringify(a)}`);
+}
+
+// Helper to wrap text in message array
+function msg(text: string): ConversationMessage[] {
+  return [{ role: "user", content: text }];
 }
 
 // Mock backend
@@ -65,7 +70,7 @@ await test("enqueue adds items", async () => {
     persistPath: "",
   });
 
-  outbox.enqueue("test text 1", testScope);
+  outbox.enqueue(msg("test text 1"), testScope);
   assertEqual(outbox.pending, 1, "pending");
 });
 
@@ -77,8 +82,8 @@ await test("dedup prevents duplicate enqueue", async () => {
     persistPath: "",
   });
 
-  outbox.enqueue("same text", testScope);
-  outbox.enqueue("same text", testScope);
+  outbox.enqueue(msg("same text"), testScope);
+  outbox.enqueue(msg("same text"), testScope);
   assertEqual(outbox.pending, 1, "should dedup");
 });
 
@@ -90,7 +95,7 @@ await test("flush sends items successfully", async () => {
     persistPath: "",
   });
 
-  outbox.enqueue("flush test", testScope);
+  outbox.enqueue(msg("flush test"), testScope);
   await outbox.flush();
   assertEqual(outbox.pending, 0, "pending after flush");
   assertEqual(outbox.sent, 1, "sent count");
@@ -104,7 +109,7 @@ await test("flush retries on failure", async () => {
     persistPath: "",
   });
 
-  outbox.enqueue("retry test", testScope);
+  outbox.enqueue(msg("retry test"), testScope);
   await outbox.flush();
   assertEqual(outbox.pending, 1, "still pending after first failure");
   assertEqual(outbox.sent, 0, "not sent yet");
@@ -118,7 +123,7 @@ await test("items move to dead-letter after max retries", async () => {
     persistPath: "",
   });
 
-  outbox.enqueue("dead letter test", testScope);
+  outbox.enqueue(msg("dead letter test"), testScope);
   await outbox.flush();
   assertEqual(outbox.pending, 0, "removed from queue");
   assertEqual(outbox.failed, 1, "failed count");
@@ -133,8 +138,8 @@ await test("drain processes all items", async () => {
     persistPath: "",
   });
 
-  outbox.enqueue("drain test 1", testScope);
-  outbox.enqueue("drain test 2 unique text", testScope);
+  outbox.enqueue(msg("drain test 1"), testScope);
+  outbox.enqueue(msg("drain test 2 unique text"), testScope);
   await outbox.drain(5000);
   assertEqual(outbox.pending, 0, "all drained");
   assertEqual(outbox.sent, 2, "both sent");
@@ -174,7 +179,7 @@ await test("secondary backend failure does not block primary success", async () 
     secondaryBackend: secondary,
   });
 
-  outbox.enqueue("dual write test", testScope);
+  outbox.enqueue(msg("dual write test"), testScope);
   await outbox.flush();
   assertEqual(outbox.pending, 0, "primary success should clear queue");
   assertEqual(outbox.sent, 1, "primary success should count as sent");
@@ -192,7 +197,7 @@ await test("start loads pending items from disk and flushes them", async () => {
         id: "persisted-1",
         createdAt: Date.now(),
         scope: testScope,
-        payload: { text: "persisted text" },
+        payload: { messages: [{ role: "user", content: "persisted text" }] },
         retryCount: 0,
         nextRetryAt: 0,
       },
@@ -227,7 +232,7 @@ await test("load merges legacy shard queue files", async () => {
         id: "legacy-growth",
         createdAt: Date.now(),
         scope: { ...testScope, agentId: "growth_hacker", sessionKey: "agent:growth_hacker:main" },
-        payload: { text: "legacy shard item" },
+        payload: { messages: [{ role: "user", content: "legacy shard item" }] },
         retryCount: 0,
         nextRetryAt: 0,
       },
@@ -250,6 +255,39 @@ await test("load merges legacy shard queue files", async () => {
   assertEqual(outbox.pending, 0, "legacy shard item should not remain pending");
   const legacySaved = JSON.parse(await readFile(join(dir, "outbox-queue-growth_hacker.json"), "utf-8"));
   assertEqual(Array.isArray(legacySaved) ? legacySaved.length : -1, 0, "legacy shard file should be cleared after merge");
+});
+
+await test("load migrates legacy payload.text items", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "memu-outbox-"));
+  const queueFile = join(dir, "outbox-queue.json");
+  await writeFile(
+    queueFile,
+    JSON.stringify([
+      {
+        id: "legacy-text-1",
+        createdAt: Date.now(),
+        scope: testScope,
+        payload: { text: "legacy payload text" },
+        retryCount: 0,
+        nextRetryAt: 0,
+      },
+    ]),
+    "utf-8",
+  );
+
+  const outbox = new OutboxWorker(createMockBackend(true), testLogger, {
+    concurrency: 2,
+    batchSize: 10,
+    maxRetries: 3,
+    persistPath: dir,
+    flushIntervalMs: 60_000,
+  });
+
+  await outbox.start();
+  outbox.stop();
+
+  assertEqual(outbox.sent, 1, "legacy payload.text item should be migrated and flushed");
+  assertEqual(outbox.pending, 0, "legacy payload.text item should not remain pending");
 });
 
 // -- Summary --

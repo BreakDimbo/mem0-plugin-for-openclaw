@@ -103,17 +103,21 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
         for (let i = 0; i < batch.length; i++) {
           const item = batch[i];
 
+          // Get text from messages for core extraction (use last user message)
+          const lastUserMsg = [...item.messages].reverse().find(m => m.role === "user");
+          const itemText = lastUserMsg?.content ?? "";
+
           // Route to outbox for free-text memorization (always)
           outbox.enqueue(
-            item.text,
+            item.messages,
             item.scope,
-            buildFreeTextMetadata(item.text, item.scope, { captureKind: "auto" }),
+            buildFreeTextMetadata(itemText, item.scope, { captureKind: "auto" }),
           );
 
           // Attempt core extraction via regex (high-confidence patterns)
           let regexMatched = false;
-          if (config.core.enabled && config.core.autoExtractProposals) {
-            const draft = extractCoreProposal(item.text, item.scope);
+          if (config.core.enabled && config.core.autoExtractProposals && itemText) {
+            const draft = extractCoreProposal(itemText, item.scope);
             if (draft) {
               regexMatched = true;
               if (config.core.humanReviewRequired) {
@@ -137,14 +141,17 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
              itemClassification.queryType === "debug" ||
              itemClassification.queryType === "greeting" ||
              itemClassification.captureHint === "light");
-          if (!regexMatched && config.core.llmGate.enabled && !skipLlmGate) {
+          if (!regexMatched && config.core.llmGate.enabled && !skipLlmGate && itemText) {
             llmCandidates.push({ index: i, item });
           }
         }
 
         // Batch LLM gate for regex-missed candidates
         if (llmCandidates.length > 0) {
-          const texts = llmCandidates.map((c) => c.item.text);
+          const texts = llmCandidates.map((c) => {
+            const lastUserMsg = [...c.item.messages].reverse().find(m => m.role === "user");
+            return lastUserMsg?.content ?? "";
+          });
           const results = await judgeCandidates(texts, config.core.llmGate, api.logger);
 
           for (const result of results) {
@@ -155,10 +162,15 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
             const candidate = llmCandidates[result.index - 1];
             if (!candidate) continue;
 
+            const candidateText = (() => {
+              const lastUserMsg = [...candidate.item.messages].reverse().find(m => m.role === "user");
+              return lastUserMsg?.content ?? "";
+            })();
+
             if (config.core.humanReviewRequired) {
               proposalQueue.enqueue({
                 category: result.key.split(".")[0] || "general",
-                text: candidate.item.text,
+                text: candidateText,
                 key: result.key,
                 value: result.value,
                 reason: result.reason || "llm-gate",
@@ -169,7 +181,7 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
                 key: result.key,
                 value: result.value,
                 source: "capture-llm-gate",
-                metadata: { reason: result.reason, original_text: candidate.item.text },
+                metadata: { reason: result.reason, original_text: candidateText },
               });
             }
           }
@@ -223,7 +235,7 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
     }
 
     if (config.recall.enabled || config.core.enabled) {
-      api.on("before_prompt_build", createRecallHook(primaryFreeTextBackend, scopeResolver, coreRepo, cache, inbound, config, api.logger, metrics, sync, candidateQueue, classifier), {
+      api.on("before_prompt_build", createRecallHook(primaryFreeTextBackend, scopeResolver, coreRepo, cache, inbound, config, api.logger, metrics, sync, classifier), {
         priority: HOOK_PRIORITY.recall,
       });
     }
@@ -234,7 +246,7 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
       });
     }
 
-    api.on("message_received", createMessageReceivedHook(inbound, candidateQueue, coreRepo, config, api.logger, metrics), {
+    api.on("message_received", createMessageReceivedHook(inbound, api.logger), {
       priority: HOOK_PRIORITY.messageReceived,
     });
 

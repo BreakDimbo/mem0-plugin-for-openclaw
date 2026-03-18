@@ -22,32 +22,36 @@ Automatically recalls relevant memories before prompt building, and captures dur
 │                    OpenClaw Agent                        │
 ├─────────────────────────────────────────────────────────┤
 │                                                         │
-│  before_prompt_build          agent_end / message_recv  │
+│  before_prompt_build      message_received / agent_end  │
 │         │                            │                  │
 │         ▼                            ▼                  │
 │  ┌─────────────┐            ┌────────────────┐          │
-│  │ Recall Hook │            │ Capture Hook   │          │
-│  │             │            │                │          │
-│  │ 1. Extract  │            │ 1. Filter      │          │
-│  │    query    │            │    (low-signal, │          │
-│  │ 2. Search   │            │     injection)  │          │
-│  │    both     │            │ 2. Dedup       │          │
-│  │    layers   │            │ 3. Enqueue     │          │
-│  │ 3. Rerank   │            └───────┬────────┘          │
-│  │ 4. Dedup    │                    │                   │
-│  │ 5. Inject   │                    ▼                   │
-│  └─────────────┘            ┌────────────────┐          │
-│         │                   │ CandidateQueue │          │
-│         ▼                   │ (batch timer)  │          │
-│  ┌─────────────┐            └───────┬────────┘          │
-│  │   Context   │                    │                   │
-│  │  Injection  │                    ▼                   │
-│  │             │            ┌────────────────┐          │
-│  │ <core-      │            │  LLM Gate      │          │
-│  │  memory>    │            │  (Gemini)      │          │
-│  │ <relevant-  │            │                │          │
-│  │  memories>  │            │ core/free_text │          │
-│  └─────────────┘            │ /discard       │          │
+│  │ Recall Hook │            │ Inbound Cache  │          │
+│  │             │            │ (raw inbound)  │          │
+│  │ 1. Extract  │            └───────┬────────┘          │
+│  │    query    │                    │                   │
+│  │ 2. Search   │                    ▼                   │
+│  │    core +   │            ┌────────────────┐          │
+│  │    free-text│            │ Capture Hook   │          │
+│  │ 3. Inject   │            │ (agent_end)    │          │
+│  └──────┬──────┘            │ 1. Build convo │          │
+│         │                   │    window      │          │
+│         ▼                   │ 2. Filter      │          │
+│  ┌─────────────┐            │ 3. Queue/store │          │
+│  │   Context   │            └───────┬────────┘          │
+│  │  Injection  │                    │                   │
+│  │ <core-      │                    ▼                   │
+│  │  memory>    │            ┌────────────────┐          │
+│  │ <relevant-  │            │ CandidateQueue │          │
+│  │  memories>  │            │ or direct path │          │
+│  └─────────────┘            └───────┬────────┘          │
+│                                     │                   │
+│                                     ▼                   │
+│                             ┌────────────────┐          │
+│                             │  LLM Gate      │          │
+│                             │  (optional)    │          │
+│                             │ core/free_text │          │
+│                             │ /discard       │          │
 │                             └──┬─────────┬───┘          │
 │                                │         │              │
 │                   ┌────────────┘         └──────┐       │
@@ -146,6 +150,7 @@ Add to `~/.openclaw/openclaw.json`:
 
           "mem0": {
             "mode": "open-source",
+            "enableGraph": false,
             "oss": {
               "llm": {
                 "provider": "google",
@@ -163,6 +168,12 @@ Add to `~/.openclaw/openclaw.json`:
           },
           "scope": {
             "userId": "your-user-id"
+          },
+          "capture": {
+            "maxConversationTurns": 4
+          },
+          "sync": {
+            "memoryFilePath": "MEMORY.md"
           }
         }
       }
@@ -170,6 +181,8 @@ Add to `~/.openclaw/openclaw.json`:
   }
 }
 ```
+
+If you enable `mem0.enableGraph` with Gemini/Google models, the plugin now rewrites the graph LLM to Google's OpenAI-compatible endpoint automatically. You usually do not need a separate `oss.graph_store.llm` block anymore.
 
 ### 3. Verify
 
@@ -186,9 +199,9 @@ See [INSTALL.md](./INSTALL.md) for full configuration reference.
 ```
 ├── index.ts                  # Plugin entry, lifecycle management
 ├── hooks/
-│   ├── recall.ts             # before_prompt_build — search + inject
-│   ├── capture.ts            # agent_end — extract + queue
-│   └── message-received.ts   # Per-message tracking
+│   ├── recall.ts             # before_prompt_build — search + inject + classify
+│   ├── capture.ts            # agent_end — capture conversation windows
+│   └── message-received.ts   # Raw inbound message cache
 ├── tools/                    # 9 agent tools (recall, store, forget, etc.)
 ├── backends/free-text/
 │   ├── base.ts               # FreeTextBackend interface

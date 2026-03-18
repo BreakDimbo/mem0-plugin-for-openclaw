@@ -35,7 +35,8 @@ export function createStoreTool(outbox: OutboxWorker, config: MemuPluginConfig, 
         context: args.context,
       });
 
-      outbox.enqueue(text, scope, metadata);
+      // Wrap single user message in array for multi-turn API
+      outbox.enqueue([{ role: "user", content: text }], scope, metadata);
       await outbox.flush();
       audit("store", scope.userId, scope.agentId, `explicit store: "${text.slice(0, 80)}..."`);
 

@@ -1,7 +1,7 @@
 import { pathToFileURL } from "node:url";
 import { homedir } from "node:os";
 import type { FreeTextMemoryMetadata, MemoryScope, MemuMemoryRecord, MemuPluginConfig } from "../../types.js";
-import type { FreeTextBackend, FreeTextBackendStatus, FreeTextForgetOptions, FreeTextSearchOptions, FreeTextStoreOptions } from "./base.js";
+import type { FreeTextBackend, FreeTextBackendStatus, FreeTextForgetOptions, FreeTextSearchOptions, FreeTextStoreOptions, ConversationMessage } from "./base.js";
 import { matchesMetadataFilters } from "../../metadata.js";
 
 function expandTilde(p: string): string {
@@ -30,6 +30,11 @@ type Mem0Provider = {
 };
 
 type Mem0ProviderFactory = () => Promise<Mem0Provider>;
+
+type Mem0LlmConfig = {
+  provider: string;
+  config: Record<string, unknown>;
+};
 
 type JsonCapableLlm = {
   generateResponse(
@@ -139,6 +144,59 @@ function patchOssMemoryLlm(memory: Record<string, unknown>): void {
   llm.generateResponse = wrapped;
 }
 
+function normalizeProviderName(provider: string | undefined): string {
+  return String(provider ?? "").trim().toLowerCase();
+}
+
+function isGoogleProvider(provider: string | undefined): boolean {
+  const normalized = normalizeProviderName(provider);
+  return normalized === "google" || normalized === "gemini";
+}
+
+function toRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" ? value as Record<string, unknown> : {};
+}
+
+function makeOpenAiCompatibleGoogleConfig(source?: Mem0LlmConfig, fallbackApiKey?: string): Mem0LlmConfig {
+  const sourceConfig = toRecord(source?.config);
+  const apiKey = typeof sourceConfig.apiKey === "string" && sourceConfig.apiKey.trim().length > 0
+    ? sourceConfig.apiKey
+    : fallbackApiKey;
+  return {
+    provider: "openai",
+    config: {
+      ...sourceConfig,
+      ...(apiKey ? { apiKey } : {}),
+      baseURL: typeof sourceConfig.baseURL === "string" && sourceConfig.baseURL.trim().length > 0
+        ? sourceConfig.baseURL
+        : "https://generativelanguage.googleapis.com/v1beta/openai",
+    },
+  };
+}
+
+function resolveGraphLlmConfig(cfg: MemuPluginConfig["mem0"]): { topLevelLlm?: Mem0LlmConfig; graphStoreLlm?: Mem0LlmConfig } {
+  const baseLlm = cfg.oss?.llm;
+  const graphLlm = cfg.oss?.graph_store?.llm ?? baseLlm;
+  if (!cfg.enableGraph) {
+    return { topLevelLlm: baseLlm, graphStoreLlm: graphLlm };
+  }
+
+  if (isGoogleProvider(graphLlm?.provider) || isGoogleProvider(baseLlm?.provider)) {
+    const compat = makeOpenAiCompatibleGoogleConfig(graphLlm ?? baseLlm, cfg.apiKey);
+    return {
+      // mem0 upstream graph path incorrectly reads top-level llm.config, so mirror compat config there.
+      topLevelLlm: compat,
+      graphStoreLlm: compat,
+    };
+  }
+
+  return { topLevelLlm: baseLlm, graphStoreLlm: graphLlm };
+}
+
+export function resolveOssLlmConfigForTests(cfg: MemuPluginConfig["mem0"]): { topLevelLlm?: Mem0LlmConfig; graphStoreLlm?: Mem0LlmConfig } {
+  return resolveGraphLlmConfig(cfg);
+}
+
 export function effectiveUserId(scope: MemoryScope): string {
   if (!scope.agentId || scope.agentId === "main") return scope.userId;
   return `${scope.userId}:agent:${scope.agentId}`;
@@ -177,13 +235,12 @@ export class Mem0FreeTextBackend implements FreeTextBackend {
       const imported = await import("mem0ai/oss");
       const MemoryCtor = (imported as Record<string, unknown>).Memory as new (cfg: Record<string, unknown>) => any;
       const resolvedHistoryDbPath = cfg.oss?.historyDbPath ? expandTilde(cfg.oss.historyDbPath) : undefined;
-      // Build graphStore config: must explicitly set llm to override mem0's default OpenAI
+      const { topLevelLlm, graphStoreLlm } = resolveGraphLlmConfig(cfg);
       const graphStoreConfig = cfg.enableGraph && cfg.oss?.graph_store
         ? {
             graphStore: {
               ...cfg.oss.graph_store,
-              // IMPORTANT: explicitly set llm to use main llm config, overriding mem0's default OpenAI
-              llm: cfg.oss.graph_store.llm ?? cfg.oss?.llm ?? { provider: "openai", config: {} },
+              llm: graphStoreLlm ?? { provider: "openai", config: {} },
             },
           }
         : {};
@@ -191,7 +248,7 @@ export class Mem0FreeTextBackend implements FreeTextBackend {
         version: "v1.1",
         ...(cfg.oss?.embedder ? { embedder: cfg.oss.embedder } : {}),
         ...(cfg.oss?.vectorStore ? { vectorStore: cfg.oss.vectorStore } : {}),
-        ...(cfg.oss?.llm ? { llm: cfg.oss.llm } : {}),
+        ...(topLevelLlm ? { llm: topLevelLlm } : {}),
         // Use historyStore config (not top-level historyDbPath) to ensure proper db path resolution
         historyStore: {
           provider: "sqlite",
@@ -286,11 +343,11 @@ export class Mem0FreeTextBackend implements FreeTextBackend {
     }
   }
 
-  async store(text: string, scope: MemoryScope, options?: FreeTextStoreOptions): Promise<boolean> {
+  async store(messages: ConversationMessage[], scope: MemoryScope, options?: FreeTextStoreOptions): Promise<boolean> {
+    if (messages.length === 0) return true;
     try {
       const provider = await this.providerInstance();
       const effectiveUid = effectiveUserId(scope);
-      const messages = [{ role: "user", content: text }];
       const metadata = this.buildBaseMetadata(
         scope,
         String(options?.metadata?.capture_kind ?? ""),

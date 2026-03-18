@@ -118,12 +118,17 @@ export type CoreMemoryProposal = {
   reviewer?: string;
 };
 
+export type ConversationMessage = {
+  role: "user" | "assistant";
+  content: string;
+};
+
 export type OutboxItem = {
   id: string;
   createdAt: number;
   scope: MemoryScope;
   payload: {
-    text: string;
+    messages: ConversationMessage[];
     metadata?: Record<string, unknown>;
   };
   retryCount: number;
@@ -183,8 +188,6 @@ export type ScopeConfig = {
   userIdByAgent?: Record<string, string>;
   agentId: string;
   tenantId?: string;
-  requireUserId: boolean;
-  requireAgentId: boolean;
 };
 
 export type LlmGateConfig = {
@@ -228,7 +231,7 @@ export type MemuPluginConfig = {
       vectorStore?: { provider: string; config: Record<string, unknown> };
       llm?: { provider: string; config: Record<string, unknown> };
       historyDbPath?: string;
-      graph_store?: { provider: string; config: Record<string, unknown> };
+      graph_store?: { provider: string; config: Record<string, unknown>; llm?: { provider: string; config: Record<string, unknown> } };
     };
   };
   scope: ScopeConfig;
@@ -239,7 +242,6 @@ export type MemuPluginConfig = {
     maxChars: number;             // Renamed from maxContextChars/injectionBudgetChars
     cacheTtlMs: number;
     cacheMaxSize: number;
-    alwaysInjectCategories: string[];
   };
   core: {
     enabled: boolean;
@@ -259,6 +261,7 @@ export type MemuPluginConfig = {
     enabled: boolean;
     minChars: number;
     maxChars: number;
+    maxConversationTurns: number;
     dedupeThreshold: number;
     candidateQueue: {
       enabled: boolean;
@@ -326,8 +329,6 @@ export const DEFAULT_CONFIG: MemuPluginConfig = {
     userIdByAgent: undefined,
     agentId: "main",
     tenantId: undefined,
-    requireUserId: true,
-    requireAgentId: true,
   },
   recall: {
     enabled: true,
@@ -336,7 +337,6 @@ export const DEFAULT_CONFIG: MemuPluginConfig = {
     maxChars: 1500,
     cacheTtlMs: 60_000,
     cacheMaxSize: 100,
-    alwaysInjectCategories: [],
   },
   core: {
     enabled: true,
@@ -367,6 +367,7 @@ export const DEFAULT_CONFIG: MemuPluginConfig = {
     enabled: true,
     minChars: 20,
     maxChars: 600,
+    maxConversationTurns: 6,
     dedupeThreshold: 0.8,
     candidateQueue: {
       enabled: true,
@@ -502,6 +503,19 @@ function parseTierArray(v: unknown, def: CoreMemoryTier[]): CoreMemoryTier[] {
   return filtered.length > 0 ? filtered : def;
 }
 
+function parseMem0Llm(raw: unknown, fallbackApiKey?: string): { provider: string; config: Record<string, unknown> } | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const llmRaw = raw as { provider?: unknown; config?: unknown };
+  if (typeof llmRaw.provider !== "string") return undefined;
+  const llmConfig = llmRaw.config && typeof llmRaw.config === "object"
+    ? llmRaw.config as Record<string, unknown>
+    : {};
+  if (!llmConfig.apiKey && fallbackApiKey) {
+    return { provider: llmRaw.provider, config: { ...llmConfig, apiKey: fallbackApiKey } };
+  }
+  return { provider: llmRaw.provider, config: llmConfig };
+}
+
 export function loadConfig(raw?: Record<string, unknown>): MemuPluginConfig {
   if (!raw) return { ...DEFAULT_CONFIG };
 
@@ -529,19 +543,13 @@ export function loadConfig(raw?: Record<string, unknown>): MemuPluginConfig {
         vectorStore: ossRaw.vectorStore && typeof ossRaw.vectorStore === "object"
           ? (ossRaw.vectorStore as { provider: string; config: Record<string, unknown> })
           : undefined,
-        llm: (() => {
-          const llmRaw = ossRaw.llm as { provider: string; config: Record<string, unknown> } | undefined;
-          if (!llmRaw || typeof llmRaw !== "object") return undefined;
-          // Inherit geminiApiKey if apiKey not set in llm.config
-          const llmConfig = llmRaw.config ?? {};
-          if (!llmConfig.apiKey && geminiApiKey) {
-            return { ...llmRaw, config: { ...llmConfig, apiKey: geminiApiKey } };
-          }
-          return llmRaw;
-        })(),
+        llm: parseMem0Llm(ossRaw.llm, geminiApiKey),
         historyDbPath: typeof ossRaw.historyDbPath === "string" ? ossRaw.historyDbPath : undefined,
         graph_store: ossRaw.graph_store && typeof ossRaw.graph_store === "object"
-          ? (ossRaw.graph_store as { provider: string; config: Record<string, unknown> })
+          ? {
+              ...(ossRaw.graph_store as { provider: string; config: Record<string, unknown> }),
+              llm: parseMem0Llm((ossRaw.graph_store as Record<string, unknown>).llm, geminiApiKey),
+            }
           : undefined,
       }
     : undefined;
@@ -582,8 +590,6 @@ export function loadConfig(raw?: Record<string, unknown>): MemuPluginConfig {
       userIdByAgent: strMap(sc.userIdByAgent),
       agentId: str(sc.agentId, DEFAULT_CONFIG.scope.agentId),
       tenantId: optStr(sc.tenantId),
-      requireUserId: bool(sc.requireUserId, DEFAULT_CONFIG.scope.requireUserId),
-      requireAgentId: bool(sc.requireAgentId, DEFAULT_CONFIG.scope.requireAgentId),
     },
     recall: {
       enabled: bool(r.enabled, DEFAULT_CONFIG.recall.enabled),
@@ -592,9 +598,6 @@ export function loadConfig(raw?: Record<string, unknown>): MemuPluginConfig {
       maxChars: recallMaxChars,
       cacheTtlMs: num(r.cacheTtlMs, DEFAULT_CONFIG.recall.cacheTtlMs),
       cacheMaxSize: num(r.cacheMaxSize, DEFAULT_CONFIG.recall.cacheMaxSize),
-      alwaysInjectCategories: Array.isArray(r.alwaysInjectCategories)
-        ? (r.alwaysInjectCategories as string[]).filter((x) => typeof x === "string")
-        : DEFAULT_CONFIG.recall.alwaysInjectCategories,
     },
     core: {
       enabled: bool(co.enabled, DEFAULT_CONFIG.core.enabled),
@@ -631,6 +634,7 @@ export function loadConfig(raw?: Record<string, unknown>): MemuPluginConfig {
       enabled: bool(c.enabled, DEFAULT_CONFIG.capture.enabled),
       minChars: num(c.minChars, DEFAULT_CONFIG.capture.minChars),
       maxChars: num(c.maxChars, DEFAULT_CONFIG.capture.maxChars),
+      maxConversationTurns: numInRange(c.maxConversationTurns, DEFAULT_CONFIG.capture.maxConversationTurns, 1, 20),
       dedupeThreshold: typeof c.dedupeThreshold === "number" ? c.dedupeThreshold : DEFAULT_CONFIG.capture.dedupeThreshold,
       candidateQueue: (() => {
         const cq = (c.candidateQueue ?? {}) as Record<string, unknown>;

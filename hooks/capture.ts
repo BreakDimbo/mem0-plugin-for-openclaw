@@ -1,22 +1,22 @@
 // ============================================================================
-// Hook: agent_end — capture user messages to outbox for async memorization
-// Phase 2: dedup via cache, metrics tracking, improved filtering
+// Hook: agent_end — unified capture of user messages for memorization
+// Extracts multi-turn conversation (up to n recent user/assistant messages)
+// and routes to CandidateQueue for async processing with LLM gate.
 // ============================================================================
 
 import type { OutboxWorker } from "../outbox.js";
 import type { LRUCache } from "../cache.js";
 import type { Metrics } from "../metrics.js";
 import type { MarkdownSync } from "../sync.js";
-import type { MemuPluginConfig, MemuMemoryRecord, PluginHookContext, ClassificationResult } from "../types.js";
+import type { MemuPluginConfig, MemuMemoryRecord, PluginHookContext, ClassificationResult, ConversationMessage } from "../types.js";
 import { buildDynamicScope } from "../types.js";
 import { shouldCapture } from "../security.js";
 import type { CoreMemoryRepository } from "../core-repository.js";
-import { extractCoreProposal } from "../core-proposals.js";
-import type { CoreProposalQueue } from "../core-proposals.js";
+import { extractCoreProposal, type CoreProposalQueue } from "../core-proposals.js";
 import { buildFreeTextMetadata, trigramSimilarity } from "../metadata.js";
 import type { CandidateQueue } from "../candidate-queue.js";
 import type { InboundMessageCache } from "../inbound-cache.js";
-import { sanitizePromptQuery } from "./recall.js";
+import { judgeCandidates } from "../core-admission.js";
 
 type Logger = { info(msg: string): void; warn(msg: string): void };
 
@@ -36,13 +36,22 @@ function isSystemFragment(text: string): boolean {
 }
 
 function isInjectedMemory(text: string): boolean {
-  return text.includes("<relevant-memories>") || text.includes("</relevant-memories>");
+  return text.includes("<relevant-memories>") || text.includes("</relevant-memories>") ||
+         text.includes("<core-memory>") || text.includes("</core-memory>");
 }
 
 function isLowSignalUserText(text: string): boolean {
   const trimmed = text.trim();
   if (!trimmed) return true;
   return LOW_SIGNAL_PATTERNS.some((pattern) => pattern.test(trimmed));
+}
+
+function stripInjectedMemoryBlocks(text: string): string {
+  return text
+    .replace(/<core-memory>[\s\S]*?<\/core-memory>/gi, " ")
+    .replace(/<relevant-memories>[\s\S]*?<\/relevant-memories>/gi, " ")
+    .replace(/\[truncated by injection budget\]/gi, " ")
+    .trim();
 }
 
 function asRecord(v: unknown): Record<string, unknown> | null {
@@ -63,11 +72,138 @@ function extractMessageText(content: unknown): string {
     .join("\n");
 }
 
-function extractUserTextFromAgentEndMessage(msg: unknown): string {
+// Extract sender ID from a message object
+function extractSenderIdFromMessage(msg: unknown): string {
   const rec = asRecord(msg);
   if (!rec) return "";
-  if (rec.role !== "user") return "";
-  return extractMessageText(rec.content).trim();
+  const sender = rec.sender ?? rec.sender_id ?? rec.senderId;
+  return typeof sender === "string" ? sender : "";
+}
+
+type ExtractedConversationEntry = {
+  role: "user" | "assistant";
+  content: string;
+  senderId?: string;
+};
+
+/**
+ * Extract multi-turn conversation messages from event.messages.
+ * - Only extracts user/assistant roles
+ * - Strips injected <relevant-memories> and <core-memory> blocks
+ * - Returns up to maxTurns most recent messages
+ */
+function extractConversationMessages(
+  event: { messages?: unknown[] },
+  maxTurns: number,
+  logger: Logger,
+): { messages: ConversationMessage[]; senderId: string } {
+  const entries: ExtractedConversationEntry[] = [];
+
+  if (!event.messages || !Array.isArray(event.messages)) {
+    return { messages: [], senderId: "" };
+  }
+
+  for (const msg of event.messages) {
+    const rec = asRecord(msg);
+    if (!rec) continue;
+
+    const role = rec.role as string;
+    if (role !== "user" && role !== "assistant") continue;
+
+    const rawContent = extractMessageText(rec.content).trim();
+    if (!rawContent) continue;
+
+    const cleaned = stripInjectedMemoryBlocks(rawContent);
+    if (!cleaned) continue;
+    if (isInjectedMemory(cleaned)) continue;
+    if (isSystemFragment(cleaned)) continue;
+
+    entries.push({
+      role: role as "user" | "assistant",
+      content: cleaned,
+      senderId: role === "user" ? extractSenderIdFromMessage(msg) : undefined,
+    });
+  }
+
+  const userIndexes = entries
+    .map((entry, index) => (entry.role === "user" ? index : -1))
+    .filter((index) => index >= 0);
+  if (userIndexes.length === 0) {
+    return { messages: [], senderId: "" };
+  }
+
+  const effectiveTurns = Math.max(1, maxTurns);
+  const startIndex = userIndexes.length > effectiveTurns
+    ? userIndexes[userIndexes.length - effectiveTurns]
+    : 0;
+  const selected = entries.slice(startIndex);
+  const senderId = [...selected].reverse().find((entry) => entry.role === "user" && entry.senderId)?.senderId ?? "";
+  const messages = selected.map(({ role, content }) => ({ role, content }));
+
+  logger.info(`capture-hook: extracted ${messages.length} conversation messages (${Math.min(userIndexes.length, effectiveTurns)} turns)`);
+  return { messages, senderId };
+}
+
+function shouldSkipLlmGate(classification: ClassificationResult | undefined): boolean {
+  return !!classification && (
+    classification.queryType === "code" ||
+    classification.queryType === "debug" ||
+    classification.queryType === "greeting" ||
+    classification.captureHint === "light"
+  );
+}
+
+async function maybeExtractCoreMemory(
+  text: string,
+  scope: ReturnType<typeof buildDynamicScope>,
+  classification: ClassificationResult | undefined,
+  config: MemuPluginConfig,
+  coreRepo: CoreMemoryRepository,
+  proposalQueue: CoreProposalQueue,
+  logger: Logger,
+): Promise<void> {
+  if (!config.core.enabled || !config.core.autoExtractProposals || !text) return;
+
+  const draft = extractCoreProposal(text, scope);
+  if (draft) {
+    if (config.core.humanReviewRequired) {
+      proposalQueue.enqueue(draft);
+    } else {
+      await coreRepo.upsert(scope, {
+        key: draft.key,
+        value: draft.value,
+        source: "capture-direct",
+        metadata: { reason: draft.reason, proposal_text: draft.text },
+      });
+    }
+    return;
+  }
+
+  if (!config.core.llmGate.enabled || shouldSkipLlmGate(classification)) return;
+
+  const result = (await judgeCandidates([text], config.core.llmGate, logger)).find(
+    (candidate) => candidate.index === 1 && candidate.verdict === "core" && candidate.key && candidate.value,
+  );
+  if (!result?.key || !result.value) return;
+
+  if (config.core.humanReviewRequired) {
+    proposalQueue.enqueue({
+      category: result.key.split(".")[0] || "general",
+      text,
+      key: result.key,
+      value: result.value,
+      reason: result.reason || "llm-gate",
+      scope,
+    });
+    return;
+  }
+
+  await coreRepo.upsert(scope, {
+    key: result.key,
+    value: result.value,
+    source: "capture-direct-llm-gate",
+    metadata: { reason: result.reason, original_text: text },
+  });
 }
 
 export function createCaptureHook(
@@ -82,34 +218,30 @@ export function createCaptureHook(
   candidateQueue?: CandidateQueue,
   inbound?: InboundMessageCache,
 ) {
-  // Helper to extract sender ID from an event message
-  const extractSenderId = (msg: unknown): string => {
-    const rec = asRecord(msg);
-    if (!rec) return "";
-    const sender = rec.sender ?? rec.sender_id ?? rec.senderId;
-    return typeof sender === "string" ? sender : "";
-  };
-
-  return async (event: { messages?: unknown[] }, ctx: PluginHookContext) => {
+  return async (event: { messages?: unknown[]; prompt?: string; success?: boolean }, ctx: PluginHookContext) => {
     if (!config.capture.enabled) return;
-    if (!event.messages || event.messages.length === 0) return;
+    if ("success" in event && event.success === false) {
+      logger.info("capture-hook: skipped unsuccessful agent_end event");
+      return;
+    }
 
     // Register agent workspace for sync
     if (ctx.agentId && ctx.workspaceDir) {
       sync.registerAgent(ctx.agentId, ctx.workspaceDir);
     }
 
-    // Try to get classification from inbound cache (set by recall hook)
+    // Extract multi-turn conversation from event.messages
+    const { messages, senderId } = extractConversationMessages(event, config.capture.maxConversationTurns, logger);
+
+    if (messages.length === 0) {
+      logger.info(`capture-hook: no conversation messages extracted`);
+      return;
+    }
+
+    // Get classification from inbound cache (set by recall hook)
     let classification: ClassificationResult | undefined;
-    if (inbound && ctx.channelId) {
-      // Try to find sender ID from first user message
-      for (const msg of event.messages) {
-        const senderId = extractSenderId(msg);
-        if (senderId) {
-          classification = await inbound.getClassification(ctx.channelId, senderId);
-          break;
-        }
-      }
+    if (inbound && ctx.channelId && senderId) {
+      classification = await inbound.getClassification(ctx.channelId, senderId);
     }
 
     // Skip capture entirely if captureHint is "skip"
@@ -118,132 +250,63 @@ export function createCaptureHook(
       return;
     }
 
-    // When CandidateQueue is active, forward user messages to it as a fallback.
-    // The message_received hook is the primary feeder, but some entry points
-    // (e.g. `openclaw agent --message`) don't emit message_received events.
-    // CandidateQueue's hash-based dedup ensures no double-processing.
-    if (config.capture.candidateQueue.enabled && candidateQueue) {
-      const scope = buildDynamicScope(config.scope, ctx);
+    const scope = buildDynamicScope(config.scope, ctx);
+    metrics.captureTotal++;
 
-      // Only forward the LAST user message (current turn).
-      // event.messages may contain full session history; iterating all
-      // would re-hash old messages that were already captured.
-      let lastUserText = "";
-      for (let i = event.messages.length - 1; i >= 0; i--) {
-        const raw = extractUserTextFromAgentEndMessage(event.messages[i]);
-        if (!raw) continue;
-        const text = sanitizePromptQuery(raw);
-        if (!text) continue;
-        if (isSystemFragment(text) || isInjectedMemory(text)) continue;
-        lastUserText = text;
-        break;
-      }
+    // Get the last user message for validation
+    const lastUserMsg = [...messages].reverse().find(m => m.role === "user");
+    const lastUserText = lastUserMsg?.content ?? "";
 
-      if (lastUserText) {
-        metrics.captureTotal++;
-        if (shouldCapture(lastUserText, config.capture.minChars, config.capture.maxChars) && !isLowSignalUserText(lastUserText)) {
-          // Pass classification to CandidateQueue for LLM gate decision
-          const metadata = classification ? { classification } : undefined;
-          candidateQueue.enqueue(lastUserText, scope, metadata);
-          metrics.captureCaptured++;
-          logger.info(`capture-hook: forwarded last user message to candidateQueue (fallback)`);
-          // Ensure timer is started in this process
-          candidateQueue.start().catch(() => {});
-        } else {
-          metrics.captureFiltered++;
-        }
-      }
+    // Filter: length + injection + sensitive checks on last user message
+    if (!shouldCapture(lastUserText, config.capture.minChars, config.capture.maxChars)) {
+      logger.info(`capture-hook: filtered (shouldCapture failed, len=${lastUserText.length})`);
+      metrics.captureFiltered++;
       return;
     }
 
-    const scope = buildDynamicScope(config.scope, ctx);
-
-    // Extract user messages
-    const candidates: string[] = [];
-    let localFiltered = 0;
-    let localDeduped = 0;
-    let localEvaluated = 0;
-    let localProposals = 0;
-
-    for (const msg of event.messages) {
-      const text = extractUserTextFromAgentEndMessage(msg);
-      if (!text) continue;
-
-      localEvaluated++;
-      metrics.captureTotal++;
-
-      // Filter out system fragments, injected memories
-      if (isSystemFragment(text) || isInjectedMemory(text)) {
-        localFiltered++;
-        metrics.captureFiltered++;
-        continue;
-      }
-
-      // Length + injection + sensitive checks
-      if (!shouldCapture(text, config.capture.minChars, config.capture.maxChars)) {
-        localFiltered++;
-        metrics.captureFiltered++;
-        continue;
-      }
-
-      // Filter obvious short-term / low-signal chatter from auto-capture.
-      // These can still be stored explicitly via memory_store when needed.
-      if (isLowSignalUserText(text)) {
-        localFiltered++;
-        metrics.captureFiltered++;
-        continue;
-      }
-
-      // Dedup: check if this text is too similar to something already cached
-      const isDupe = checkDedup(text, scope, cache, config.capture.dedupeThreshold);
-      if (isDupe) {
-        localDeduped++;
-        metrics.captureDeduped++;
-        continue;
-      }
-
-      candidates.push(text);
+    // Filter: low-signal chatter
+    if (isLowSignalUserText(lastUserText)) {
+      logger.info(`capture-hook: filtered (low signal)`);
+      metrics.captureFiltered++;
+      return;
     }
 
-    // Take at most maxItemsPerRun (from the end, most recent)
-    const toCapture = candidates.slice(-3);
-
-    for (const text of toCapture) {
-      outbox.enqueue(
-        text,
-        scope,
-        buildFreeTextMetadata(text, scope, {
-          captureKind: "auto",
-        }),
-      );
+    // CandidateQueue path (preferred): enqueue for async batch processing
+    if (config.capture.candidateQueue.enabled && candidateQueue) {
+      const metadata = classification ? { classification } : undefined;
+      candidateQueue.enqueue(messages, scope, metadata);
       metrics.captureCaptured++;
+      logger.info(`capture-hook: enqueued ${messages.length} messages to candidateQueue`);
 
-      if (config.core.enabled && config.core.autoExtractProposals) {
-        const draft = extractCoreProposal(text, scope);
-        if (draft) {
-          if (config.core.humanReviewRequired) {
-            proposalQueue.enqueue(draft);
-            localProposals++;
-          } else {
-            const ok = await coreRepo.upsert(scope, {
-              key: draft.key,
-              value: draft.value,
-              source: "capture-auto",
-              metadata: { reason: draft.reason, proposal_text: draft.text },
-            });
-            if (ok) localProposals++;
-          }
-        }
-      }
-    }
+      // Ensure timer is started in this process
+      candidateQueue.start().catch(() => {});
 
-    if (toCapture.length > 0) {
+      // Schedule sync after capture
       sync.scheduleSync(scope.agentId);
+      return;
     }
 
-    if (toCapture.length > 0) {
-      logger.info(`capture-hook: enqueued ${toCapture.length} items (evaluated: ${localEvaluated}, filtered: ${localFiltered}, deduped: ${localDeduped}, core-proposals: ${localProposals})`);
+    // Direct outbox path (legacy, when candidateQueue disabled)
+    const isDupe = checkDedup(lastUserText, scope, cache, config.capture.dedupeThreshold);
+    if (isDupe) {
+      metrics.captureDeduped++;
+      logger.info(`capture-hook: filtered (duplicate)`);
+      return;
     }
+
+    await maybeExtractCoreMemory(lastUserText, scope, classification, config, coreRepo, proposalQueue, logger);
+
+    outbox.enqueue(
+      messages,
+      scope,
+      buildFreeTextMetadata(lastUserText, scope, {
+        captureKind: "auto",
+      }),
+    );
+    metrics.captureCaptured++;
+    logger.info(`capture-hook: enqueued ${messages.length} messages to outbox`);
+
+    sync.scheduleSync(scope.agentId);
   };
 }
 
@@ -252,6 +315,7 @@ const recentCapturesByScope = new Map<string, string[]>();
 const MAX_RECENT_CAPTURES = 50;
 
 function checkDedup(text: string, scope: { userId: string; agentId: string }, cache: LRUCache<MemuMemoryRecord[]>, threshold: number): boolean {
+  void cache;
   if (threshold >= 1.0) return false; // dedup disabled
 
   const scopeKey = `${scope.userId}::${scope.agentId}`;
@@ -263,10 +327,6 @@ function checkDedup(text: string, scope: { userId: string; agentId: string }, ca
       return true;
     }
   }
-
-  // Also check against cached recall results to avoid capturing what was just recalled
-  // (The cache stores MemuMemoryRecord[] arrays keyed by query hash — we can't iterate all,
-  // but this is handled by the isInjectedMemory filter above)
 
   // Track this text for future dedup
   recentCaptures.push(text);

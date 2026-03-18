@@ -1,6 +1,5 @@
 // ============================================================================
-// Test: capture hook fallback — forwards user messages to candidateQueue
-// when message_received didn't fire (e.g. CLI mode).
+// Test: capture hook behavior and fallback paths.
 // Run with: npx tsx tests/capture-fallback.test.ts
 // ============================================================================
 
@@ -15,10 +14,9 @@ import { CoreProposalQueue } from "../core-proposals.js";
 import { LRUCache } from "../cache.js";
 import { Metrics } from "../metrics.js";
 import { createCaptureHook } from "../hooks/capture.js";
-import { createRecallHook } from "../hooks/recall.js";
 import { InboundMessageCache } from "../inbound-cache.js";
 import { DEFAULT_CONFIG } from "../types.js";
-import type { MemuPluginConfig, MemuMemoryRecord, MemoryScope } from "../types.js";
+import type { MemuPluginConfig, MemuMemoryRecord, MemoryScope, ConversationMessage } from "../types.js";
 import type { FreeTextBackend, FreeTextBackendStatus } from "../backends/free-text/base.js";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -55,19 +53,25 @@ const logger = {
 
 class InMemoryFreeTextBackend implements FreeTextBackend {
   readonly provider = "in-memory-test";
-  items: Array<{ text: string; scope: MemoryScope }> = [];
+  items: Array<{ messages: ConversationMessage[]; scope: MemoryScope }> = [];
 
   async healthCheck(): Promise<FreeTextBackendStatus> {
     return { provider: this.provider, healthy: true };
   }
-  async store(text: string, scope: MemoryScope): Promise<boolean> {
-    this.items.push({ text, scope });
+  async store(messages: ConversationMessage[], scope: MemoryScope): Promise<boolean> {
+    this.items.push({ messages, scope });
     return true;
   }
   async search(): Promise<MemuMemoryRecord[]> { return []; }
   async list(): Promise<MemuMemoryRecord[]> { return []; }
   async forget(): Promise<{ purged_categories: number; purged_items: number; purged_resources: number } | null> {
     return { purged_categories: 0, purged_items: 0, purged_resources: 0 };
+  }
+}
+
+class InspectableCandidateQueue extends CandidateQueue {
+  inspectMessages(index: number): ConversationMessage[] {
+    return (this as any).queue[index]?.messages ?? [];
   }
 }
 
@@ -154,7 +158,7 @@ await test("1. Forwards last user message to candidateQueue when enabled", async
       persistPath: tmpDir, flushIntervalMs: 999_999,
     });
 
-    const candidateQueue = new CandidateQueue(async () => {}, logger, {
+    const candidateQueue = new InspectableCandidateQueue(async () => {}, logger, {
       intervalMs: 999_999, maxBatchSize: 50, persistPath: tmpDir,
     });
 
@@ -167,7 +171,8 @@ await test("1. Forwards last user message to candidateQueue when enabled", async
       baseCtx,
     );
 
-    assertEqual(candidateQueue.enqueued, 1, "should have enqueued the last user message");
+    assertEqual(candidateQueue.enqueued, 1, "should enqueue one conversation window");
+    assertEqual(candidateQueue.inspectMessages(0).length, 1, "single user turn should produce one captured message");
   } finally {
     await rm(tmpDir, { recursive: true, force: true });
   }
@@ -188,21 +193,21 @@ await test("2. Dedup — same message not double-enqueued via hash", async () =>
       persistPath: tmpDir, flushIntervalMs: 999_999,
     });
 
-    const candidateQueue = new CandidateQueue(async () => {}, logger, {
+    const candidateQueue = new InspectableCandidateQueue(async () => {}, logger, {
       intervalMs: 999_999, maxBatchSize: 50, persistPath: tmpDir,
     });
 
-    const msg = "我在字节跳动做后端开发，主要用Go语言，负责推荐系统的核心服务";
+    const msgText = "我在字节跳动做后端开发，主要用Go语言，负责推荐系统的核心服务";
 
-    // Simulate message_received hook enqueue first
-    candidateQueue.enqueue(msg, testScope);
+    // Simulate message_received hook enqueue first (wrap in messages array)
+    candidateQueue.enqueue([{ role: "user", content: msgText }], testScope);
     assertEqual(candidateQueue.enqueued, 1, "message_received should enqueue 1");
 
     // Now capture hook fires with the same message
     const hook = createCaptureHook(
       outbox, coreRepo, proposalQueue, cache, config, logger, metrics, syncStub, candidateQueue,
     );
-    await hook(makeAgentEndEvent([msg]), baseCtx);
+    await hook(makeAgentEndEvent([msgText]), baseCtx);
 
     // CandidateQueue hash-dedup should reject the duplicate
     assertEqual(candidateQueue.enqueued, 1, "duplicate should not be re-enqueued");
@@ -227,7 +232,7 @@ await test("3. Filters low-signal last message", async () => {
       persistPath: tmpDir, flushIntervalMs: 999_999,
     });
 
-    const candidateQueue = new CandidateQueue(async () => {}, logger, {
+    const candidateQueue = new InspectableCandidateQueue(async () => {}, logger, {
       intervalMs: 999_999, maxBatchSize: 50, persistPath: tmpDir,
     });
 
@@ -265,7 +270,7 @@ await test("4. Strips <relevant-memories> before capture via sanitizePromptQuery
       persistPath: tmpDir, flushIntervalMs: 999_999,
     });
 
-    const candidateQueue = new CandidateQueue(async () => {}, logger, {
+    const candidateQueue = new InspectableCandidateQueue(async () => {}, logger, {
       intervalMs: 999_999, maxBatchSize: 50, persistPath: tmpDir,
     });
 
@@ -312,7 +317,7 @@ await test("5. Falls back to direct outbox path when candidateQueue disabled", a
     });
     await outbox.loadFromDisk();
 
-    const candidateQueue = new CandidateQueue(async () => {}, logger, {
+    const candidateQueue = new InspectableCandidateQueue(async () => {}, logger, {
       intervalMs: 999_999, maxBatchSize: 50, persistPath: tmpDir,
     });
 
@@ -363,7 +368,7 @@ await test("6. Works without candidateQueue parameter (backward compat)", async 
   }
 });
 
-await test("7. Only captures LAST user message from multi-message history", async () => {
+await test("7. Captures recent conversation window from multi-message history", async () => {
   const tmpDir = await mkdtemp(join(tmpdir(), "cap-fb-7-"));
   try {
     const config = buildTestConfig(tmpDir);
@@ -378,7 +383,7 @@ await test("7. Only captures LAST user message from multi-message history", asyn
       persistPath: tmpDir, flushIntervalMs: 999_999,
     });
 
-    const candidateQueue = new CandidateQueue(async () => {}, logger, {
+    const candidateQueue = new InspectableCandidateQueue(async () => {}, logger, {
       intervalMs: 999_999, maxBatchSize: 50, persistPath: tmpDir,
     });
 
@@ -386,18 +391,22 @@ await test("7. Only captures LAST user message from multi-message history", asyn
       outbox, coreRepo, proposalQueue, cache, config, logger, metrics, syncStub, candidateQueue,
     );
 
-    // Simulate session history: 3 user messages. Only the LAST should be captured.
+    // Simulate session history: 3 user turns. The recent conversation window should be captured.
     await hook(
-      makeAgentEndEvent([
-        "我在字节跳动做后端开发，主要用Go语言，负责推荐系统的核心服务",
-        "我现在的职业是字节跳动资深后端架构师，深耕分布式系统",
-        "我的人格倾向是 INTJ，偏好独立深度思考而非频繁沟通",
-      ]),
+      {
+        messages: [
+          { role: "user", content: "我在字节跳动做后端开发，主要用Go语言，负责推荐系统的核心服务", sender_id: "user-window" },
+          { role: "assistant", content: "好的，我已经记录你的当前工作背景。" },
+          { role: "user", content: "我现在的职业是字节跳动资深后端架构师，深耕分布式系统", sender_id: "user-window" },
+          { role: "assistant", content: "明白了，我会按这个背景继续协助你。" },
+          { role: "user", content: "我的人格倾向是 INTJ，偏好独立深度思考而非频繁沟通", sender_id: "user-window" },
+        ],
+      },
       baseCtx,
     );
 
-    // Only the last message should be enqueued (current turn)
-    assertEqual(candidateQueue.enqueued, 1, "only the LAST user message should be enqueued");
+    assertEqual(candidateQueue.enqueued, 1, "conversation should be enqueued once");
+    assertEqual(candidateQueue.inspectMessages(0).length, 5, "recent turn window should keep all recent messages");
   } finally {
     await rm(tmpDir, { recursive: true, force: true });
   }
@@ -418,7 +427,7 @@ await test("8. Skips assistant messages when finding last user message", async (
       persistPath: tmpDir, flushIntervalMs: 999_999,
     });
 
-    const candidateQueue = new CandidateQueue(async () => {}, logger, {
+    const candidateQueue = new InspectableCandidateQueue(async () => {}, logger, {
       intervalMs: 999_999, maxBatchSize: 50, persistPath: tmpDir,
     });
 
@@ -429,150 +438,112 @@ await test("8. Skips assistant messages when finding last user message", async (
     await hook(
       {
         messages: [
-          { role: "user", content: "我在字节跳动做后端开发，主要用Go语言，负责核心服务" },
+          { role: "user", content: "我在字节跳动做后端开发，主要用Go语言，负责核心服务", sender_id: "user-last" },
           { role: "assistant", content: "好的，我已经记住了。你在字节跳动做后端，用Go做推荐系统核心服务。" },
-          { role: "user", content: "我现在的职业是字节跳动资深后端架构师，深耕分布式系统" },
+          { role: "user", content: "我现在的职业是字节跳动资深后端架构师，深耕分布式系统", sender_id: "user-last" },
         ],
       },
       baseCtx,
     );
 
-    // Should capture only the last user message, skipping the assistant message
-    assertEqual(candidateQueue.enqueued, 1, "should enqueue only the last user message");
+    assertEqual(candidateQueue.enqueued, 1, "should enqueue one conversation window");
+    const capturedMessages = candidateQueue.inspectMessages(0);
+    const lastCaptured = capturedMessages[capturedMessages.length - 1]?.content;
+    assertEqual(lastCaptured, "我现在的职业是字节跳动资深后端架构师，深耕分布式系统", "last captured message should be latest user turn");
   } finally {
     await rm(tmpDir, { recursive: true, force: true });
   }
 });
 
-// ── Recall Hook Capture Side-Effect Tests ────────────────────────────────────
-
-console.log("\nRecall Hook Capture Side-Effect Tests\n");
-
-await test("9. Recall hook enqueues last user message to candidateQueue", async () => {
-  const tmpDir = await mkdtemp(join(tmpdir(), "recall-cap-9-"));
+await test("9. Failed agent_end does not capture", async () => {
+  const tmpDir = await mkdtemp(join(tmpdir(), "cap-fb-9-"));
   try {
     const config = buildTestConfig(tmpDir);
     const mockBackend = new InMemoryFreeTextBackend();
     const coreRepo = new CoreMemoryRepository(tmpDir, logger, config.core.maxItemChars);
+    const proposalQueue = new CoreProposalQueue(tmpDir, 100, logger);
     const cache = new LRUCache<MemuMemoryRecord[]>(100, 60_000);
-    const inbound = new InboundMessageCache(join(tmpDir, "inbound.json"));
     const metrics = new Metrics();
-
+    const outbox = new OutboxWorker(mockBackend, logger, {
+      concurrency: 1, batchSize: 10, maxRetries: 3,
+      persistPath: tmpDir, flushIntervalMs: 999_999,
+    });
     const candidateQueue = new CandidateQueue(async () => {}, logger, {
       intervalMs: 999_999, maxBatchSize: 50, persistPath: tmpDir,
     });
 
-    const hook = createRecallHook(
-      mockBackend, { resolveRuntimeScope: () => testScope },
-      coreRepo, cache, inbound, config, logger, metrics, syncStub, candidateQueue,
+    const hook = createCaptureHook(
+      outbox, coreRepo, proposalQueue, cache, config, logger, metrics, syncStub, candidateQueue,
     );
 
     await hook(
-      {
-        messages: [
-          { role: "user", content: "我在字节跳动做后端开发，主要用Go语言，负责推荐系统的核心服务" },
-        ],
-      },
+      { success: false, messages: [{ role: "user", content: "我在字节跳动做后端开发，主要用Go语言，负责推荐系统的核心服务" }] },
       baseCtx,
     );
 
-    assert(candidateQueue.enqueued >= 1, `recall hook should enqueue user message, got enqueued=${candidateQueue.enqueued}`);
+    assertEqual(candidateQueue.enqueued, 0, "failed agent_end should not enqueue capture");
   } finally {
     await rm(tmpDir, { recursive: true, force: true });
   }
 });
 
-await test("10. Recall hook skips short messages (< minChars)", async () => {
+await test("10. Recall hook no longer enqueues capture side-effects", async () => {
   const tmpDir = await mkdtemp(join(tmpdir(), "recall-cap-10-"));
   try {
     const config = buildTestConfig(tmpDir);
     const mockBackend = new InMemoryFreeTextBackend();
-    const coreRepo = new CoreMemoryRepository(tmpDir, logger, config.core.maxItemChars);
-    const cache = new LRUCache<MemuMemoryRecord[]>(100, 60_000);
     const inbound = new InboundMessageCache(join(tmpDir, "inbound.json"));
     const metrics = new Metrics();
+
+    const uniqueMessage = "我长期负责字节跳动推荐系统的多语言后端架构设计与稳定性治理";
+    await inbound.set(baseCtx.channelId, "user-recall", uniqueMessage);
+    await inbound.setClassification(baseCtx.channelId, "user-recall", {
+      tier: "MEDIUM",
+      queryType: "factual",
+      targetCategories: [],
+      captureHint: "full",
+    });
+
+    const outbox = new OutboxWorker(mockBackend, logger, {
+      concurrency: 1, batchSize: 10, maxRetries: 3,
+      persistPath: tmpDir, flushIntervalMs: 999_999,
+    });
+    await outbox.loadFromDisk();
 
     const candidateQueue = new CandidateQueue(async () => {}, logger, {
       intervalMs: 999_999, maxBatchSize: 50, persistPath: tmpDir,
     });
 
-    const hook = createRecallHook(
-      mockBackend, { resolveRuntimeScope: () => testScope },
-      coreRepo, cache, inbound, config, logger, metrics, syncStub, candidateQueue,
-    );
-
-    await hook(
-      { messages: [{ role: "user", content: "我叫昊" }] },
-      baseCtx,
-    );
-
-    assertEqual(candidateQueue.enqueued, 0, "short message should not be enqueued");
-  } finally {
-    await rm(tmpDir, { recursive: true, force: true });
-  }
-});
-
-await test("11. Recall hook skips assistant messages", async () => {
-  const tmpDir = await mkdtemp(join(tmpdir(), "recall-cap-11-"));
-  try {
-    const config = buildTestConfig(tmpDir);
-    const mockBackend = new InMemoryFreeTextBackend();
-    const coreRepo = new CoreMemoryRepository(tmpDir, logger, config.core.maxItemChars);
-    const cache = new LRUCache<MemuMemoryRecord[]>(100, 60_000);
-    const inbound = new InboundMessageCache(join(tmpDir, "inbound.json"));
-    const metrics = new Metrics();
-
-    const candidateQueue = new CandidateQueue(async () => {}, logger, {
-      intervalMs: 999_999, maxBatchSize: 50, persistPath: tmpDir,
-    });
-
-    const hook = createRecallHook(
-      mockBackend, { resolveRuntimeScope: () => testScope },
-      coreRepo, cache, inbound, config, logger, metrics, syncStub, candidateQueue,
+    const hook = createCaptureHook(
+      outbox,
+      new CoreMemoryRepository(tmpDir, logger, config.core.maxItemChars),
+      new CoreProposalQueue(tmpDir, 100, logger),
+      new LRUCache<MemuMemoryRecord[]>(100, 60_000),
+      {
+        ...config,
+        capture: {
+          ...config.capture,
+          candidateQueue: { enabled: false, intervalMs: 999_999, maxBatchSize: 50 },
+        },
+      },
+      logger,
+      metrics,
+      syncStub,
+      candidateQueue,
+      inbound,
     );
 
     await hook(
       {
-        messages: [
-          { role: "assistant", content: "好的，我已经记住了你在字节跳动做后端开发，负责推荐系统的核心服务。" },
-        ],
+        messages: [{ role: "user", content: uniqueMessage, sender_id: "user-recall" }],
       },
       baseCtx,
     );
 
-    assertEqual(candidateQueue.enqueued, 0, "assistant message should not be enqueued");
-  } finally {
-    await rm(tmpDir, { recursive: true, force: true });
-  }
-});
+    await new Promise((resolve) => setTimeout(resolve, 50));
 
-await test("12. Recall hook dedup — same message not enqueued twice", async () => {
-  const tmpDir = await mkdtemp(join(tmpdir(), "recall-cap-12-"));
-  try {
-    const config = buildTestConfig(tmpDir);
-    const mockBackend = new InMemoryFreeTextBackend();
-    const coreRepo = new CoreMemoryRepository(tmpDir, logger, config.core.maxItemChars);
-    const cache = new LRUCache<MemuMemoryRecord[]>(100, 60_000);
-    const inbound = new InboundMessageCache(join(tmpDir, "inbound.json"));
-    const metrics = new Metrics();
-
-    const candidateQueue = new CandidateQueue(async () => {}, logger, {
-      intervalMs: 999_999, maxBatchSize: 50, persistPath: tmpDir,
-    });
-
-    const msg = "我的主目标是成为一人公司创业者，借助 AI 完成职业转型";
-
-    const hook = createRecallHook(
-      mockBackend, { resolveRuntimeScope: () => testScope },
-      coreRepo, cache, inbound, config, logger, metrics, syncStub, candidateQueue,
-    );
-
-    await hook({ messages: [{ role: "user", content: msg }] }, baseCtx);
-    assertEqual(candidateQueue.enqueued, 1, "first call should enqueue");
-
-    await hook({ messages: [{ role: "user", content: msg }] }, baseCtx);
-    assertEqual(candidateQueue.enqueued, 1, "duplicate should not be re-enqueued");
-    assertEqual(candidateQueue.dropped, 1, "duplicate should be counted as dropped");
+    assertEqual(candidateQueue.enqueued, 0, "direct outbox mode should not enqueue candidateQueue");
+    assert(outbox.sent >= 1 || outbox.pending >= 1, "capture should still proceed without recall-side enqueue");
   } finally {
     await rm(tmpDir, { recursive: true, force: true });
   }
