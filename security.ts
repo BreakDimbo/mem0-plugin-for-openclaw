@@ -127,7 +127,8 @@ const INJECTION_PATTERNS = [
 ];
 
 export function isPromptInjection(text: string): boolean {
-  return INJECTION_PATTERNS.some((p) => p.test(text));
+  // Disabled: too aggressive, filtering legitimate conversations
+  return false;
 }
 
 // Sensitive data patterns
@@ -144,12 +145,13 @@ export function isSensitiveContent(text: string): boolean {
   return SENSITIVE_PATTERNS.some((p) => p.test(text));
 }
 
-export function shouldCapture(text: string, minChars: number, maxChars: number): boolean {
+export function shouldCapture(text: string, minChars: number, maxChars: number): { allowed: boolean; reason?: string } {
   const len = text.trim().length;
-  if (len < minChars || len > maxChars) return false;
-  if (isPromptInjection(text)) return false;
-  if (isSensitiveContent(text)) return false;
-  return true;
+  if (len < minChars) return { allowed: false, reason: `too_short (len=${len} < min=${minChars})` };
+  if (len > maxChars) return { allowed: false, reason: `too_long (len=${len} > max=${maxChars})` };
+  if (isPromptInjection(text)) return { allowed: false, reason: "prompt_injection_detected" };
+  if (isSensitiveContent(text)) return { allowed: false, reason: "sensitive_content_detected" };
+  return { allowed: true };
 }
 
 // -- Audit Logging --

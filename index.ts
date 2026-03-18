@@ -100,12 +100,16 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
         // Items that regex didn't catch — collected for batch LLM gate
         const llmCandidates: Array<{ index: number; item: (typeof batch)[0] }> = [];
 
+        api.logger.info(`capture-processor: processing batch of ${batch.length} candidates`);
+
         for (let i = 0; i < batch.length; i++) {
           const item = batch[i];
 
           // Get text from messages for core extraction (use last user message)
           const lastUserMsg = [...item.messages].reverse().find(m => m.role === "user");
           const itemText = lastUserMsg?.content ?? "";
+
+          api.logger.info(`capture-processor: [${i}] text="${itemText.slice(0, 80)}${itemText.length > 80 ? '...' : ''}"`);
 
           // Route to outbox for free-text memorization (always)
           outbox.enqueue(
@@ -120,6 +124,7 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
             const draft = extractCoreProposal(itemText, item.scope);
             if (draft) {
               regexMatched = true;
+              api.logger.info(`capture-processor: [${i}] regex MATCHED → key=${draft.key}, value=${draft.value.slice(0, 50)}`);
               if (config.core.humanReviewRequired) {
                 proposalQueue.enqueue(draft);
               } else {
@@ -130,7 +135,11 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
                   metadata: { reason: draft.reason, proposal_text: draft.text },
                 });
               }
+            } else {
+              api.logger.info(`capture-processor: [${i}] regex NO MATCH`);
             }
+          } else {
+            api.logger.info(`capture-processor: [${i}] regex SKIPPED (enabled=${config.core.enabled}, autoExtract=${config.core.autoExtractProposals}, hasText=${!!itemText})`);
           }
 
           // Collect for LLM gate if regex missed
@@ -141,31 +150,52 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
              itemClassification.queryType === "debug" ||
              itemClassification.queryType === "greeting" ||
              itemClassification.captureHint === "light");
+
           if (!regexMatched && config.core.llmGate.enabled && !skipLlmGate && itemText) {
             llmCandidates.push({ index: i, item });
+            api.logger.info(`capture-processor: [${i}] → LLM gate (classification=${itemClassification?.queryType || 'none'}, hint=${itemClassification?.captureHint || 'none'})`);
+          } else if (!regexMatched) {
+            const reason = !config.core.llmGate.enabled ? "llmGate disabled"
+              : skipLlmGate ? `skipped by classification (${itemClassification?.queryType}, ${itemClassification?.captureHint})`
+              : !itemText ? "empty text"
+              : "unknown";
+            api.logger.info(`capture-processor: [${i}] FILTERED out of LLM gate → ${reason}`);
           }
         }
 
         // Batch LLM gate for regex-missed candidates
         if (llmCandidates.length > 0) {
+          api.logger.info(`capture-processor: LLM gate batch processing ${llmCandidates.length} candidates`);
           const texts = llmCandidates.map((c) => {
             const lastUserMsg = [...c.item.messages].reverse().find(m => m.role === "user");
             return lastUserMsg?.content ?? "";
           });
           const results = await judgeCandidates(texts, config.core.llmGate, api.logger);
 
+          api.logger.info(`capture-processor: LLM gate returned ${results.length} results`);
+
           for (const result of results) {
+            api.logger.info(`capture-processor: LLM verdict [index=${result.index}] verdict=${result.verdict}${result.key ? ` key=${result.key}` : ''}${result.reason ? ` reason="${result.reason}"` : ''}`);
+
             if (result.verdict !== "core") continue;
-            if (!result.key || !result.value) continue;
+            if (!result.key || !result.value) {
+              api.logger.info(`capture-processor: LLM verdict rejected (missing key or value)`);
+              continue;
+            }
 
             // Map 1-based LLM index back to batch item
             const candidate = llmCandidates[result.index - 1];
-            if (!candidate) continue;
+            if (!candidate) {
+              api.logger.info(`capture-processor: LLM verdict rejected (invalid index ${result.index})`);
+              continue;
+            }
 
             const candidateText = (() => {
               const lastUserMsg = [...candidate.item.messages].reverse().find(m => m.role === "user");
               return lastUserMsg?.content ?? "";
             })();
+
+            api.logger.info(`capture-processor: LLM verdict ACCEPTED → storing key=${result.key}, value="${result.value.slice(0, 50)}${result.value.length > 50 ? '...' : ''}"`);
 
             if (config.core.humanReviewRequired) {
               proposalQueue.enqueue({
@@ -185,6 +215,8 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
               });
             }
           }
+        } else {
+          api.logger.info(`capture-processor: no candidates for LLM gate`);
         }
 
         if (batch.length > 0) {

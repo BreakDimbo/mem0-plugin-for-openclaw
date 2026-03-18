@@ -83,9 +83,14 @@ export async function judgeCandidates(
   config: LlmGateConfig,
   logger: Logger,
 ): Promise<AdmissionResult[]> {
-  if (texts.length === 0) return [];
+  if (texts.length === 0) {
+    logger.info("llm-gate: empty input, returning []");
+    return [];
+  }
 
   const apiKey = config.apiKey;
+  logger.info(`llm-gate: apiKey present=${!!apiKey}, apiBase=${config.apiBase}, model=${config.model}`);
+
   if (!apiKey) {
     logger.info("llm-gate: skipped (no API key)");
     return [];
@@ -102,6 +107,8 @@ export async function judgeCandidates(
     max_tokens: config.maxTokensPerBatch,
     temperature: 0.1,
   };
+
+  logger.info(`llm-gate: calling API, url=${url}, model=${config.model}, texts count=${texts.length}`);
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), config.timeoutMs);
@@ -132,7 +139,16 @@ export async function judgeCandidates(
       return [];
     }
 
+    logger.info(`llm-gate: raw response length=${content.length}`);
+    logger.info(`llm-gate: raw response preview="${content.slice(0, 200)}${content.length > 200 ? '...' : ''}"`);
+
     const results = parseAdmissionResponse(content);
+    logger.info(`llm-gate: parsed ${results.length} results`);
+
+    for (const r of results) {
+      logger.info(`llm-gate: result index=${r.index} verdict=${r.verdict}${r.key ? ` key=${r.key}` : ''}${r.reason ? ` reason="${r.reason}"` : ''}`);
+    }
+
     logger.info(`llm-gate: judged ${texts.length} candidates → ${results.length} actionable results`);
     return results;
   } catch (err) {

@@ -219,6 +219,7 @@ export function createCaptureHook(
   inbound?: InboundMessageCache,
 ) {
   return async (event: { messages?: unknown[]; prompt?: string; success?: boolean }, ctx: PluginHookContext) => {
+    logger.info("capture-hook: agent_end triggered");
     if (!config.capture.enabled) return;
     if ("success" in event && event.success === false) {
       logger.info("capture-hook: skipped unsuccessful agent_end event");
@@ -258,8 +259,9 @@ export function createCaptureHook(
     const lastUserText = lastUserMsg?.content ?? "";
 
     // Filter: length + injection + sensitive checks on last user message
-    if (!shouldCapture(lastUserText, config.capture.minChars, config.capture.maxChars)) {
-      logger.info(`capture-hook: filtered (shouldCapture failed, len=${lastUserText.length})`);
+    const captureCheck = shouldCapture(lastUserText, config.capture.minChars, config.capture.maxChars);
+    if (!captureCheck.allowed) {
+      logger.info(`capture-hook: filtered (shouldCapture failed: ${captureCheck.reason})`);
       metrics.captureFiltered++;
       return;
     }
