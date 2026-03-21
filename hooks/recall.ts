@@ -49,6 +49,10 @@ const SESSION_CORE_CACHE_TTL_MS = 90 * 1000; // 90s — reduced from 5min to pic
 const SESSION_RELEVANT_CACHE = new Map<string, SessionRelevantCacheEntry>();
 const SESSION_RELEVANT_CACHE_TTL_MS = 90 * 1000;
 
+// Inflight dedup maps — prevent duplicate backend calls when multiple hook instances fire concurrently
+const SEARCH_INFLIGHT = new Map<string, Promise<MemuMemoryRecord[]>>();
+const CORE_LIST_INFLIGHT = new Map<string, Promise<Array<{ id: string; category?: string; key: string; value: string; tier?: string }>>>();
+
 const PREFERRED_KEYS = ["text", "content", "query", "question", "input", "message"];
 
 function extractTextBlocks(content: string | Array<{ type: string; text?: string }> | undefined): string {
@@ -745,13 +749,27 @@ export function createRecallHook(
           metrics.recallHits++;
           logger.info(`recall-hook: cache hit key=${cacheKey} count=${memories.length}`);
         } else {
-          const primaryResults = await Promise.all(searchQueries.map((searchQuery) => primaryBackend.search(searchQuery, scope, {
-            maxItems: searchLimit,
-            maxContextChars: config.recall.maxChars,
-            includeSessionScope: true,
-          })));
-          memories = dedupeMemories(primaryResults.flat());
-          memories = rerankMemoryResults(query, memories).slice(0, config.recall.topK);
+          const inflightKey = cacheKey;
+          const existing = SEARCH_INFLIGHT.get(inflightKey);
+          if (existing) {
+            memories = await existing;
+          } else {
+            const searchPromise = (async () => {
+              try {
+                const primaryResults = await Promise.all(searchQueries.map((searchQuery) => primaryBackend.search(searchQuery, scope, {
+                  maxItems: searchLimit,
+                  maxContextChars: config.recall.maxChars,
+                  includeSessionScope: true,
+                })));
+                const results = dedupeMemories(primaryResults.flat());
+                return rerankMemoryResults(query, results).slice(0, config.recall.topK);
+              } finally {
+                SEARCH_INFLIGHT.delete(inflightKey);
+              }
+            })();
+            SEARCH_INFLIGHT.set(inflightKey, searchPromise);
+            memories = await searchPromise;
+          }
           metrics.recallMisses++;
           if (memories.length > 0) cache.set(cacheKey, memories);
           logger.info(`recall-hook: fetched ${memories.length} memories via ${primaryBackend.provider} for ${searchQueries.length} query parts="${query.slice(0, 60)}..."`);
@@ -775,16 +793,29 @@ export function createRecallHook(
         if (cachedCore) {
           allCoreFacts = cachedCore.items;
         } else {
-          const coreCandidates = await coreRepo.list(scope, {
-            limit: Math.max(config.core.topK * 5, 50),
-          });
-          allCoreFacts = coreCandidates.map((item) => ({
-            id: item.id,
-            category: item.category,
-            key: item.key,
-            value: item.value,
-            tier: item.tier,
-          }));
+          const existingCore = CORE_LIST_INFLIGHT.get(sessionCacheKey);
+          if (existingCore) {
+            allCoreFacts = await existingCore;
+          } else {
+            const corePromise = (async () => {
+              try {
+                const coreCandidates = await coreRepo.list(scope, {
+                  limit: Math.max(config.core.topK * 5, 50),
+                });
+                return coreCandidates.map((item) => ({
+                  id: item.id,
+                  category: item.category,
+                  key: item.key,
+                  value: item.value,
+                  tier: item.tier,
+                }));
+              } finally {
+                CORE_LIST_INFLIGHT.delete(sessionCacheKey);
+              }
+            })();
+            CORE_LIST_INFLIGHT.set(sessionCacheKey, corePromise);
+            allCoreFacts = await corePromise;
+          }
           setSessionCoreCache(sessionCacheKey, allCoreFacts);
         }
 

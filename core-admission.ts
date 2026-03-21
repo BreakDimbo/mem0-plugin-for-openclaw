@@ -79,6 +79,10 @@ export function parseAdmissionResponse(raw: unknown): AdmissionResult[] {
   return results;
 }
 
+// Module-level inflight map: prevents duplicate LLM calls for identical candidate batches
+// when multiple hook instances fire concurrently (multi-process plugin registration).
+const JUDGE_INFLIGHT = new Map<string, Promise<AdmissionResult[]>>();
+
 export async function judgeCandidates(
   texts: string[],
   config: LlmGateConfig,
@@ -89,6 +93,14 @@ export async function judgeCandidates(
     return [];
   }
 
+  const inflightKey = texts.join("\x00");
+  const existing = JUDGE_INFLIGHT.get(inflightKey);
+  if (existing) {
+    logger.info("llm-gate: dedup inflight request for same candidate batch");
+    return existing;
+  }
+
+  const promise = (async () => { try {
   const apiKey = config.apiKey;
   logger.info(`llm-gate: apiKey present=${!!apiKey}, apiBase=${config.apiBase}, model=${config.model}`);
 
@@ -194,4 +206,11 @@ export async function judgeCandidates(
   } finally {
     clearTimeout(timer);
   }
+  } finally {
+    JUDGE_INFLIGHT.delete(inflightKey);
+  }
+  })();
+
+  JUDGE_INFLIGHT.set(inflightKey, promise);
+  return promise;
 }
