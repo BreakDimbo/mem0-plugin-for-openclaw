@@ -251,6 +251,8 @@ export class Mem0FreeTextBackend implements FreeTextBackend {
       const MemoryCtor = (imported as Record<string, unknown>).Memory as new (cfg: Record<string, unknown>) => any;
       const resolvedHistoryDbPath = cfg.oss?.historyDbPath ? expandTilde(cfg.oss.historyDbPath) : undefined;
       const { topLevelLlm, graphStoreLlm } = resolveGraphLlmConfig(cfg);
+      // Check original providers before resolveGraphLlmConfig converts google→openai
+      const stripResponseFormatWhenTools = isGoogleProvider(cfg.oss?.llm?.provider) || isGoogleProvider(cfg.oss?.graph_store?.llm?.provider);
       const graphStoreConfig = cfg.enableGraph && cfg.oss?.graph_store
         ? {
             graphStore: {
@@ -273,7 +275,6 @@ export class Mem0FreeTextBackend implements FreeTextBackend {
         ...graphStoreConfig,
         customPrompt: cfg.customPrompt || DEFAULT_LONG_TERM_CAPTURE_INSTRUCTIONS,
       });
-      const stripResponseFormatWhenTools = isGoogleProvider(topLevelLlm?.provider) || isGoogleProvider(graphStoreLlm?.provider);
       patchOssMemoryLlm(memory as Record<string, unknown>, stripResponseFormatWhenTools);
       return {
         add: (messages, options) => memory.add(messages, options),
