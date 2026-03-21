@@ -146,15 +146,15 @@ Add to `~/.openclaw/openclaw.json`:
         "config": {
           // Simplified top-level config (recommended)
           "dataDir": "~/.openclaw/data/memory-mem0",
-          "geminiApiKey": "YOUR_GEMINI_API_KEY",  // Shared for classifier, llmGate, mem0 LLM
+          "kimiApiKey": "YOUR_KIMI_CODING_API_KEY",  // Shared for classifier, llmGate, mem0 LLM
 
           "mem0": {
             "mode": "open-source",
             "enableGraph": false,
             "oss": {
               "llm": {
-                "provider": "google",
-                "config": { "model": "gemini-2.5-flash" }  // apiKey inherited from geminiApiKey
+                "provider": "kimi_coding",
+                "config": { "model": "k2p5" }  // apiKey inherited from kimiApiKey
               },
               "embedder": {
                 "provider": "ollama",
@@ -182,7 +182,7 @@ Add to `~/.openclaw/openclaw.json`:
 }
 ```
 
-If you enable `mem0.enableGraph` with Gemini/Google models, the plugin now rewrites the graph LLM to Google's OpenAI-compatible endpoint automatically. You usually do not need a separate `oss.graph_store.llm` block anymore.
+If you enable `mem0.enableGraph` with Kimi Coding, the plugin forwards `kimi_coding` directly to mem0's native provider. You usually do not need a separate `oss.graph_store.llm` block anymore.
 
 ### 3. Verify
 

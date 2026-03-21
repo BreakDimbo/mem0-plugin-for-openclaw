@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import type { FreeTextMemoryMetadata, MemoryScope, MemuMemoryRecord, MemuPluginConfig } from "../../types.js";
 import type { FreeTextBackend, FreeTextBackendStatus, FreeTextForgetOptions, FreeTextSearchOptions, FreeTextStoreOptions, ConversationMessage } from "./base.js";
 import { matchesMetadataFilters } from "../../metadata.js";
+import { isGoogleProvider, isKimiCodingProvider, normalizeMem0LlmConfig } from "../../llm-config.js";
 
 function expandTilde(p: string): string {
   if (p.startsWith("~/")) return homedir() + p.slice(1);
@@ -144,15 +145,6 @@ function patchOssMemoryLlm(memory: Record<string, unknown>): void {
   llm.generateResponse = wrapped;
 }
 
-function normalizeProviderName(provider: string | undefined): string {
-  return String(provider ?? "").trim().toLowerCase();
-}
-
-function isGoogleProvider(provider: string | undefined): boolean {
-  const normalized = normalizeProviderName(provider);
-  return normalized === "google" || normalized === "gemini";
-}
-
 function toRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? value as Record<string, unknown> : {};
 }
@@ -175,8 +167,9 @@ function makeOpenAiCompatibleGoogleConfig(source?: Mem0LlmConfig, fallbackApiKey
 }
 
 function resolveGraphLlmConfig(cfg: MemuPluginConfig["mem0"]): { topLevelLlm?: Mem0LlmConfig; graphStoreLlm?: Mem0LlmConfig } {
-  const baseLlm = cfg.oss?.llm;
-  const graphLlm = cfg.oss?.graph_store?.llm ?? baseLlm;
+  const fallbackApiKey = cfg.kimiApiKey ?? cfg.geminiApiKey;
+  const baseLlm = normalizeMem0LlmConfig(cfg.oss?.llm, fallbackApiKey);
+  const graphLlm = normalizeMem0LlmConfig(cfg.oss?.graph_store?.llm ?? baseLlm, fallbackApiKey);
   if (!cfg.enableGraph) {
     return { topLevelLlm: baseLlm, graphStoreLlm: graphLlm };
   }
@@ -236,7 +229,14 @@ export class Mem0FreeTextBackend implements FreeTextBackend {
       const MemoryCtor = (imported as Record<string, unknown>).Memory as new (cfg: Record<string, unknown>) => any;
       const resolvedHistoryDbPath = cfg.oss?.historyDbPath ? expandTilde(cfg.oss.historyDbPath) : undefined;
       const { topLevelLlm, graphStoreLlm } = resolveGraphLlmConfig(cfg);
-      const graphStoreConfig = cfg.enableGraph && cfg.oss?.graph_store
+      const disableGraphForKimi = cfg.enableGraph && (
+        isKimiCodingProvider(topLevelLlm?.provider) ||
+        isKimiCodingProvider(graphStoreLlm?.provider)
+      );
+      if (disableGraphForKimi) {
+        this.logger.warn("mem0-backend: disabling graph store for kimi_coding because the Kimi Coding endpoint is not compatible with mem0 graph extraction");
+      }
+      const graphStoreConfig = cfg.enableGraph && !disableGraphForKimi && cfg.oss?.graph_store
         ? {
             graphStore: {
               ...cfg.oss.graph_store,
@@ -254,7 +254,7 @@ export class Mem0FreeTextBackend implements FreeTextBackend {
           provider: "sqlite",
           config: { historyDbPath: resolvedHistoryDbPath || ":memory:" },
         },
-        ...(cfg.enableGraph ? { enableGraph: true } : {}),
+        ...(cfg.enableGraph && !disableGraphForKimi ? { enableGraph: true } : {}),
         ...graphStoreConfig,
         customPrompt: cfg.customPrompt || DEFAULT_LONG_TERM_CAPTURE_INSTRUCTIONS,
       });
@@ -348,6 +348,8 @@ export class Mem0FreeTextBackend implements FreeTextBackend {
     try {
       const provider = await this.providerInstance();
       const effectiveUid = effectiveUserId(scope);
+      const resolvedStoreLlm = normalizeMem0LlmConfig(this.config.mem0.oss?.llm, this.config.mem0.kimiApiKey ?? this.config.mem0.geminiApiKey);
+      const disableInferForKimi = this.config.mem0.mode === "open-source" && isKimiCodingProvider(resolvedStoreLlm?.provider);
       const metadata = this.buildBaseMetadata(
         scope,
         String(options?.metadata?.capture_kind ?? ""),
@@ -356,6 +358,7 @@ export class Mem0FreeTextBackend implements FreeTextBackend {
       const addOptions: Record<string, unknown> = this.config.mem0.mode === "open-source"
         ? {
             userId: effectiveUid,
+            ...(disableInferForKimi ? { infer: false } : {}),
             ...(options?.sessionScoped ? { runId: scope.sessionKey } : {}),
             metadata,
           }
@@ -367,6 +370,9 @@ export class Mem0FreeTextBackend implements FreeTextBackend {
             ...(this.config.mem0.enableGraph ? { enable_graph: true } : {}),
             output_format: "v1.1",
           };
+      if (disableInferForKimi) {
+        this.logger.warn("mem0-backend: forcing infer=false for kimi_coding store path to avoid mem0 OSS LLM endpoint incompatibility");
+      }
       const result = await provider.add(messages, addOptions);
       return Array.isArray(result?.results) ? result.results.length >= 0 : true;
     } catch (err) {

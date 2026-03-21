@@ -4,6 +4,7 @@
 // ============================================================================
 
 import { LRUCache } from "./cache.js";
+import { buildKimiMessagesUrl, isKimiCodingBaseUrl, normalizeChatApiConfig } from "./llm-config.js";
 import type { ClassificationResult, ClassifierConfig, QueryType, CaptureHint } from "./types.js";
 
 type Logger = { info(msg: string): void; warn(msg: string): void };
@@ -180,38 +181,56 @@ export class UnifiedIntentClassifier {
       return DEFAULT_RESULT;
     }
 
-    const apiBase = this.config.apiBase ?? "https://generativelanguage.googleapis.com/v1beta/openai";
-    const model = this.config.model ?? "gemini-2.5-flash";
+    const { apiBase, model } = normalizeChatApiConfig({
+      apiBase: this.config.apiBase,
+      model: this.config.model,
+    });
 
     this.metrics.classifierCalls++;
     const start = Date.now();
 
     try {
-      const url = `${apiBase.replace(/\/+$/, "")}/chat/completions`;
-      const body = {
-        model,
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: buildUserPrompt(query) },
-        ],
-        max_tokens: 150,
-        temperature: 0.1,
-        // Request compact JSON without markdown wrapper
-        response_format: { type: "json_object" },
-      };
-
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 10_000);
-
-      const resp = await fetch(url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      });
+      const isKimi = isKimiCodingBaseUrl(apiBase);
+      const resp = await fetch(
+        isKimi ? buildKimiMessagesUrl(apiBase) : `${apiBase.replace(/\/+$/, "")}/chat/completions`,
+        {
+          method: "POST",
+          headers: isKimi
+            ? {
+                "Content-Type": "application/json",
+                "x-api-key": apiKey,
+                "anthropic-version": "2023-06-01",
+                "User-Agent": "claude-code/0.1.0",
+              }
+            : {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${apiKey}`,
+              },
+          body: JSON.stringify(isKimi
+            ? {
+                model,
+                system: SYSTEM_PROMPT,
+                messages: [
+                  { role: "user", content: buildUserPrompt(query) },
+                ],
+                max_tokens: 150,
+                temperature: 0.1,
+              }
+            : {
+                model,
+                messages: [
+                  { role: "system", content: SYSTEM_PROMPT },
+                  { role: "user", content: buildUserPrompt(query) },
+                ],
+                max_tokens: 150,
+                temperature: 0.1,
+                response_format: { type: "json_object" },
+              }),
+          signal: controller.signal,
+        }
+      );
 
       clearTimeout(timer);
 
@@ -223,8 +242,15 @@ export class UnifiedIntentClassifier {
       }
 
       const json = (await resp.json()) as Record<string, unknown>;
-      const choices = json.choices as Array<{ message?: { content?: string } }> | undefined;
-      const content = choices?.[0]?.message?.content;
+      const content = isKimi
+        ? Array.isArray(json.content)
+          ? json.content
+            .filter((block): block is { type?: string; text?: string } => !!block && typeof block === "object")
+            .filter((block) => block.type === "text" && typeof block.text === "string")
+            .map((block) => block.text)
+            .join("")
+          : undefined
+        : (json.choices as Array<{ message?: { content?: string } }> | undefined)?.[0]?.message?.content;
 
       const result = parseClassificationResponse(content);
       if (!result) {

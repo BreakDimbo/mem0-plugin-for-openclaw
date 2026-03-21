@@ -33,7 +33,7 @@
 
 | Key | 用途 | 是否必须 |
 |-----|------|---------|
-| `geminiApiKey` | LLM（mem0 处理 + 意图分类 + LLM Gate） | 推荐 |
+| `kimiApiKey` | LLM（mem0 处理 + 意图分类 + LLM Gate） | 推荐 |
 | OpenAI API Key | 如果使用 OpenAI 作为 LLM | 可选 |
 
 ---
@@ -238,14 +238,14 @@ ls ~/.openclaw/extensions/memory-mem0/
         "enabled": true,
         "config": {
           "dataDir": "~/.openclaw/data/memory-mem0",
-          "geminiApiKey": "YOUR_GEMINI_API_KEY",
+          "kimiApiKey": "YOUR_KIMI_CODING_API_KEY",
 
           "mem0": {
             "mode": "open-source",
             "oss": {
               "llm": {
-                "provider": "google",
-                "config": { "model": "gemini-2.5-flash" }
+                "provider": "kimi_coding",
+                "config": { "model": "k2p5" }
               },
               "embedder": {
                 "provider": "ollama",
@@ -286,7 +286,7 @@ ls ~/.openclaw/extensions/memory-mem0/
           // 顶层简化配置
           // =====================
           "dataDir": "~/.openclaw/data/memory-mem0",
-          "geminiApiKey": "YOUR_GEMINI_API_KEY",
+          "kimiApiKey": "YOUR_KIMI_CODING_API_KEY",
 
           // =====================
           // mem0 后端配置
@@ -297,11 +297,11 @@ ls ~/.openclaw/extensions/memory-mem0/
             "searchThreshold": 0.25,      // 召回阈值（中文建议 0.20-0.25）
             "topK": 10,
             "oss": {
-              // LLM 配置（用于 mem0 内部处理；启用 Graph 时插件会自动转为 Google OpenAI-compatible 形态）
+              // LLM 配置（用于 mem0 内部处理；推荐使用 mem0 原生 kimi_coding provider）
               "llm": {
-                "provider": "google",
-                "config": { "model": "gemini-2.5-flash" }
-                // apiKey 继承自顶层 geminiApiKey
+                "provider": "kimi_coding",
+                "config": { "model": "k2p5" }
+                // apiKey 继承自顶层 kimiApiKey
               },
               // Embedding 配置
               "embedder": {

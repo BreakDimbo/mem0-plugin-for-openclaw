@@ -3,6 +3,13 @@
 // Aligned with 设计文档 v3.0 — full MemoryScope + Phase 2/3 config
 // ============================================================================
 
+import {
+  getKimiCodingBaseUrl,
+  getKimiCodingDefaultModel,
+  normalizeChatApiConfig,
+  normalizeMem0LlmConfig,
+} from "./llm-config.js";
+
 // -- Classification --
 
 export type QueryType = 'greeting' | 'code' | 'debug' | 'factual' | 'preference' | 'planning' | 'open';
@@ -208,7 +215,8 @@ export type ConsolidationConfig = {
 export type MemuPluginConfig = {
   // -- Top-level simplified config (new format) --
   dataDir?: string;           // Base data directory, replaces multiple paths
-  geminiApiKey?: string;      // Shared Gemini API key for classifier, llmGate, mem0 LLM
+  geminiApiKey?: string;      // Legacy alias for the shared LLM API key
+  kimiApiKey?: string;        // Shared Kimi Coding API key for classifier, llmGate, mem0 LLM
 
   // -- Existing detailed config (backward compatible) --
   backend: {
@@ -307,6 +315,7 @@ export function getSyncIntervalMs(config: MemuPluginConfig): number {
 export const DEFAULT_CONFIG: MemuPluginConfig = {
   dataDir: "~/.openclaw/data/memory-mem0",
   geminiApiKey: undefined,
+  kimiApiKey: undefined,
   backend: {
     freeText: {
       provider: "mem0",
@@ -356,9 +365,9 @@ export const DEFAULT_CONFIG: MemuPluginConfig = {
     },
     llmGate: {
       enabled: false,
-      apiBase: "https://generativelanguage.googleapis.com/v1beta/openai",
+      apiBase: getKimiCodingBaseUrl(),
       apiKey: undefined,
-      model: "gemini-2.5-flash",
+      model: getKimiCodingDefaultModel(),
       maxTokensPerBatch: 4000,
       timeoutMs: 60_000,
     },
@@ -391,8 +400,8 @@ export const DEFAULT_CONFIG: MemuPluginConfig = {
   },
   classifier: {
     enabled: true,
-    model: "gemini-2.0-flash-lite",
-    apiBase: "https://generativelanguage.googleapis.com/v1beta/openai",
+    model: getKimiCodingDefaultModel(),
+    apiBase: getKimiCodingBaseUrl(),
     apiKey: undefined,
     cacheTtlMs: 300_000,
     cacheMaxSize: 200,
@@ -507,13 +516,12 @@ function parseMem0Llm(raw: unknown, fallbackApiKey?: string): { provider: string
   if (!raw || typeof raw !== "object") return undefined;
   const llmRaw = raw as { provider?: unknown; config?: unknown };
   if (typeof llmRaw.provider !== "string") return undefined;
-  const llmConfig = llmRaw.config && typeof llmRaw.config === "object"
-    ? llmRaw.config as Record<string, unknown>
-    : {};
-  if (!llmConfig.apiKey && fallbackApiKey) {
-    return { provider: llmRaw.provider, config: { ...llmConfig, apiKey: fallbackApiKey } };
-  }
-  return { provider: llmRaw.provider, config: llmConfig };
+  return normalizeMem0LlmConfig({
+    provider: llmRaw.provider,
+    config: llmRaw.config && typeof llmRaw.config === "object"
+      ? llmRaw.config as Record<string, unknown>
+      : {},
+  }, fallbackApiKey);
 }
 
 export function loadConfig(raw?: Record<string, unknown>): MemuPluginConfig {
@@ -521,6 +529,7 @@ export function loadConfig(raw?: Record<string, unknown>): MemuPluginConfig {
 
   // Top-level simplified config
   const dataDir = optStr(raw.dataDir) ?? DEFAULT_CONFIG.dataDir;
+  const kimiApiKey = optStr(raw.kimiApiKey) ?? optStr(raw.geminiApiKey);
   const geminiApiKey = optStr(raw.geminiApiKey);
 
   const b = (raw.backend ?? {}) as Record<string, unknown>;
@@ -533,7 +542,7 @@ export function loadConfig(raw?: Record<string, unknown>): MemuPluginConfig {
   const o = (raw.outbox ?? {}) as Record<string, unknown>;
   const s = (raw.sync ?? {}) as Record<string, unknown>;
 
-  // Parse oss config with graph_store support and geminiApiKey inheritance
+  // Parse oss config with graph_store support and shared API key inheritance
   const ossRaw = mem0.oss as Record<string, unknown> | undefined;
   const oss = ossRaw && typeof ossRaw === "object"
     ? {
@@ -543,12 +552,12 @@ export function loadConfig(raw?: Record<string, unknown>): MemuPluginConfig {
         vectorStore: ossRaw.vectorStore && typeof ossRaw.vectorStore === "object"
           ? (ossRaw.vectorStore as { provider: string; config: Record<string, unknown> })
           : undefined,
-        llm: parseMem0Llm(ossRaw.llm, geminiApiKey),
+        llm: parseMem0Llm(ossRaw.llm, kimiApiKey),
         historyDbPath: typeof ossRaw.historyDbPath === "string" ? ossRaw.historyDbPath : undefined,
         graph_store: ossRaw.graph_store && typeof ossRaw.graph_store === "object"
           ? {
               ...(ossRaw.graph_store as { provider: string; config: Record<string, unknown> }),
-              llm: parseMem0Llm((ossRaw.graph_store as Record<string, unknown>).llm, geminiApiKey),
+              llm: parseMem0Llm((ossRaw.graph_store as Record<string, unknown>).llm, kimiApiKey),
             }
           : undefined,
       }
@@ -566,6 +575,7 @@ export function loadConfig(raw?: Record<string, unknown>): MemuPluginConfig {
   return {
     dataDir,
     geminiApiKey,
+    kimiApiKey,
     backend: {
       freeText: {
         provider: ft.provider === "mem0" ? "mem0" : DEFAULT_CONFIG.backend.freeText.provider,
@@ -622,9 +632,11 @@ export function loadConfig(raw?: Record<string, unknown>): MemuPluginConfig {
         const lg = (co.llmGate ?? {}) as Record<string, unknown>;
         return {
           enabled: bool(lg.enabled, DEFAULT_CONFIG.core.llmGate.enabled),
-          apiBase: str(lg.apiBase, DEFAULT_CONFIG.core.llmGate.apiBase),
-          apiKey: optStr(lg.apiKey) ?? geminiApiKey ?? (typeof process !== "undefined" ? process.env.MEM0_LLM_GATE_API_KEY : undefined),
-          model: str(lg.model, DEFAULT_CONFIG.core.llmGate.model),
+          ...normalizeChatApiConfig({
+            apiBase: optStr(lg.apiBase) ?? DEFAULT_CONFIG.core.llmGate.apiBase,
+            model: optStr(lg.model) ?? DEFAULT_CONFIG.core.llmGate.model,
+          }),
+          apiKey: optStr(lg.apiKey) ?? kimiApiKey ?? (typeof process !== "undefined" ? process.env.MEM0_LLM_GATE_API_KEY : undefined),
           maxTokensPerBatch: numInRange(lg.maxTokensPerBatch, DEFAULT_CONFIG.core.llmGate.maxTokensPerBatch, 500, 10_000),
           timeoutMs: numInRange(lg.timeoutMs, DEFAULT_CONFIG.core.llmGate.timeoutMs, 5_000, 120_000),
         };
@@ -665,9 +677,11 @@ export function loadConfig(raw?: Record<string, unknown>): MemuPluginConfig {
       const cl = (raw.classifier ?? {}) as Record<string, unknown>;
       return {
         enabled: bool(cl.enabled, DEFAULT_CONFIG.classifier.enabled ?? true),
-        model: optStr(cl.model) ?? DEFAULT_CONFIG.classifier.model,
-        apiBase: optStr(cl.apiBase) ?? DEFAULT_CONFIG.classifier.apiBase,
-        apiKey: optStr(cl.apiKey) ?? geminiApiKey ?? (typeof process !== "undefined" ? process.env.MEM0_CLASSIFIER_API_KEY : undefined),
+        ...normalizeChatApiConfig({
+          apiBase: optStr(cl.apiBase) ?? DEFAULT_CONFIG.classifier.apiBase,
+          model: optStr(cl.model) ?? DEFAULT_CONFIG.classifier.model,
+        }),
+        apiKey: optStr(cl.apiKey) ?? kimiApiKey ?? (typeof process !== "undefined" ? process.env.MEM0_CLASSIFIER_API_KEY : undefined),
         cacheTtlMs: num(cl.cacheTtlMs, DEFAULT_CONFIG.classifier.cacheTtlMs ?? 300_000),
         cacheMaxSize: num(cl.cacheMaxSize, DEFAULT_CONFIG.classifier.cacheMaxSize ?? 200),
       };

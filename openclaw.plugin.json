@@ -37,7 +37,11 @@
       },
       "geminiApiKey": {
         "type": "string",
-        "description": "Shared Gemini API key for classifier, llmGate, and mem0 LLM"
+        "description": "Legacy alias for the shared LLM API key"
+      },
+      "kimiApiKey": {
+        "type": "string",
+        "description": "Shared Kimi Coding API key for classifier, llmGate, and mem0 LLM"
       },
       "backend": {
         "type": "object",
@@ -125,9 +129,9 @@
             "type": "object",
             "properties": {
               "enabled": { "type": "boolean", "default": false },
-              "apiBase": { "type": "string", "default": "https://generativelanguage.googleapis.com/v1beta/openai" },
-              "apiKey": { "type": "string", "description": "API key (inherits from geminiApiKey if not set)" },
-              "model": { "type": "string", "default": "gemini-2.5-flash" },
+              "apiBase": { "type": "string", "default": "https://api.kimi.com/coding/" },
+              "apiKey": { "type": "string", "description": "API key (inherits from kimiApiKey or legacy geminiApiKey if not set)" },
+              "model": { "type": "string", "default": "k2p5" },
               "maxTokensPerBatch": { "type": "number", "default": 4000, "minimum": 500, "maximum": 10000 },
               "timeoutMs": { "type": "number", "default": 60000, "minimum": 5000, "maximum": 120000 }
             }
@@ -177,9 +181,9 @@
         "description": "Unified intent classifier for query routing and capture optimization",
         "properties": {
           "enabled": { "type": "boolean", "default": true, "description": "Enable/disable unified intent classifier" },
-          "model": { "type": "string", "default": "gemini-2.0-flash-lite", "description": "LLM model for classification" },
-          "apiBase": { "type": "string", "default": "https://generativelanguage.googleapis.com/v1beta/openai", "description": "API base URL" },
-          "apiKey": { "type": "string", "description": "API key (inherits from geminiApiKey if not set)" },
+          "model": { "type": "string", "default": "k2p5", "description": "LLM model for classification" },
+          "apiBase": { "type": "string", "default": "https://api.kimi.com/coding/", "description": "API base URL" },
+          "apiKey": { "type": "string", "description": "API key (inherits from kimiApiKey or legacy geminiApiKey if not set)" },
           "cacheTtlMs": { "type": "number", "default": 300000, "minimum": 0, "maximum": 3600000, "description": "Classification cache TTL in ms" },
           "cacheMaxSize": { "type": "number", "default": 200, "minimum": 10, "maximum": 1000, "description": "Max entries in classification cache" }
         }

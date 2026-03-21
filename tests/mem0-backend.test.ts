@@ -85,6 +85,48 @@ await test("graph config rewrites google llm to OpenAI-compatible config", () =>
   assertEqual(resolved.graphStoreLlm?.config.model, "gemini-2.5-flash", "should preserve model");
 });
 
+await test("loadConfig normalizes kimi-coding llm provider for mem0 oss", () => {
+  const cfg = loadConfig({
+    kimiApiKey: "kimi-key",
+    mem0: {
+      mode: "open-source",
+      oss: {
+        llm: {
+          provider: "kimi-coding",
+          config: { model: "kimi-coding/k2p5" },
+        },
+      },
+    },
+  });
+
+  assertEqual(cfg.mem0.oss?.llm?.provider, "kimi_coding", "kimi provider should be rewritten for mem0");
+  assertEqual(cfg.mem0.oss?.llm?.config.kimi_coding_base_url, "https://api.kimi.com/coding/", "should inject Kimi coding baseURL");
+  assertEqual(cfg.mem0.oss?.llm?.config.model, "k2p5", "should strip provider prefix");
+  assertEqual(cfg.mem0.oss?.llm?.config.apiKey, "kimi-key", "should inherit kimi api key");
+});
+
+await test("loadConfig normalizes classifier and llmGate kimi-style model ids", () => {
+  const cfg = loadConfig({
+    kimiApiKey: "kimi-key",
+    classifier: {
+      model: "kimi-coding/k2p5",
+    },
+    core: {
+      llmGate: {
+        enabled: true,
+        model: "kimi-coding/k2p5-thinking",
+      },
+    },
+  });
+
+  assertEqual(cfg.classifier.apiBase, "https://api.kimi.com/coding/", "classifier should use Kimi baseURL");
+  assertEqual(cfg.classifier.model, "k2p5", "classifier should strip provider prefix");
+  assertEqual(cfg.classifier.apiKey, "kimi-key", "classifier should inherit kimi api key");
+  assertEqual(cfg.core.llmGate.apiBase, "https://api.kimi.com/coding/", "llmGate should use Kimi baseURL");
+  assertEqual(cfg.core.llmGate.model, "k2p5-thinking", "llmGate should strip provider prefix");
+  assertEqual(cfg.core.llmGate.apiKey, "kimi-key", "llmGate should inherit kimi api key");
+});
+
 await test("loadConfig inherits gemini api key for graph_store llm", () => {
   const cfg = loadConfig({
     geminiApiKey: "gemini-key",
@@ -225,6 +267,42 @@ await test("store injects default long-term instructions for platform mode", asy
   );
 
   assert(typeof (capturedOptions as Record<string, unknown> | null)?.custom_instructions === "string", "default instructions should be included");
+});
+
+await test("store forces infer=false for kimi_coding oss mode", async () => {
+  let capturedOptions: Record<string, unknown> | null = null;
+  const backend = new Mem0FreeTextBackend(
+    loadConfig({
+      backend: { freeText: { provider: "mem0" } },
+      kimiApiKey: "kimi-key",
+      mem0: {
+        mode: "open-source",
+        oss: {
+          llm: {
+            provider: "kimi_coding",
+            config: { model: "k2p5" },
+          },
+        },
+      },
+    }),
+    logger,
+    async () => ({
+      add: async (_messages: unknown, options: Record<string, unknown>) => {
+        capturedOptions = options;
+        return { results: [{ id: "m1", event: "ADD" }] };
+      },
+      search: async () => [],
+      getAll: async () => [],
+      delete: async () => {},
+    }),
+  );
+
+  await backend.store(
+    [{ role: "user", content: "remember this exact durable fact" }],
+    { userId: "alice", agentId: "main", sessionKey: "agent:main:main" },
+  );
+
+  assertEqual((capturedOptions as Record<string, unknown> | null)?.infer, false, "kimi oss store should disable mem0 inference");
 });
 
 await test("search combines long-term and session memories without duplicates", async () => {

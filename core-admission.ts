@@ -6,6 +6,7 @@
 
 import type { LlmGateConfig } from "./types.js";
 import { sanitizeJsonLikeResponse } from "./backends/free-text/mem0.js";
+import { buildKimiMessagesUrl, isKimiCodingBaseUrl, normalizeChatApiConfig } from "./llm-config.js";
 
 type Logger = { info(msg: string): void; warn(msg: string): void };
 
@@ -96,19 +97,36 @@ export async function judgeCandidates(
     return [];
   }
 
-  const url = `${config.apiBase.replace(/\/+$/, "")}/chat/completions`;
-
-  const body = {
+  const { apiBase, model } = normalizeChatApiConfig({
+    apiBase: config.apiBase,
     model: config.model,
-    messages: [
-      { role: "system", content: SYSTEM_PROMPT },
-      { role: "user", content: buildUserPrompt(texts) },
-    ],
-    max_tokens: config.maxTokensPerBatch,
-    temperature: 0.1,
-  };
+  });
+  const isKimi = isKimiCodingBaseUrl(apiBase);
+  const url = isKimi
+    ? buildKimiMessagesUrl(apiBase)
+    : `${apiBase.replace(/\/+$/, "")}/chat/completions`;
 
-  logger.info(`llm-gate: calling API, url=${url}, model=${config.model}, texts count=${texts.length}`);
+  const body = isKimi
+    ? {
+        model,
+        system: SYSTEM_PROMPT,
+        messages: [
+          { role: "user", content: buildUserPrompt(texts) },
+        ],
+        max_tokens: config.maxTokensPerBatch,
+        temperature: 0.1,
+      }
+    : {
+        model,
+        messages: [
+          { role: "system", content: SYSTEM_PROMPT },
+          { role: "user", content: buildUserPrompt(texts) },
+        ],
+        max_tokens: config.maxTokensPerBatch,
+        temperature: 0.1,
+      };
+
+  logger.info(`llm-gate: calling API, url=${url}, model=${model}, texts count=${texts.length}`);
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), config.timeoutMs);
@@ -118,7 +136,15 @@ export async function judgeCandidates(
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
+        ...(isKimi
+          ? {
+              "x-api-key": apiKey,
+              "anthropic-version": "2023-06-01",
+              "User-Agent": "claude-code/0.1.0",
+            }
+          : {
+              Authorization: `Bearer ${apiKey}`,
+            }),
       },
       body: JSON.stringify(body),
       signal: controller.signal,
@@ -131,8 +157,15 @@ export async function judgeCandidates(
     }
 
     const json = (await resp.json()) as Record<string, unknown>;
-    const choices = json.choices as Array<{ message?: { content?: string } }> | undefined;
-    const content = choices?.[0]?.message?.content;
+    const content = isKimi
+      ? Array.isArray(json.content)
+        ? json.content
+          .filter((block): block is { type?: string; text?: string } => !!block && typeof block === "object")
+          .filter((block) => block.type === "text" && typeof block.text === "string")
+          .map((block) => block.text)
+          .join("")
+        : undefined
+      : (json.choices as Array<{ message?: { content?: string } }> | undefined)?.[0]?.message?.content;
 
     if (!content) {
       logger.warn("llm-gate: empty response content");
