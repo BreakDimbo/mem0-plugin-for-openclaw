@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import type { FreeTextMemoryMetadata, MemoryScope, MemuMemoryRecord, MemuPluginConfig } from "../../types.js";
 import type { FreeTextBackend, FreeTextBackendStatus, FreeTextForgetOptions, FreeTextSearchOptions, FreeTextStoreOptions, ConversationMessage } from "./base.js";
 import { matchesMetadataFilters } from "../../metadata.js";
-import { isGoogleProvider, isKimiCodingProvider, normalizeMem0LlmConfig } from "../../llm-config.js";
+import { isGoogleProvider, normalizeMem0LlmConfig } from "../../llm-config.js";
 
 function expandTilde(p: string): string {
   if (p.startsWith("~/")) return homedir() + p.slice(1);
@@ -131,18 +131,40 @@ function extractBalancedJson(text: string): string | null {
   return null;
 }
 
-function patchOssMemoryLlm(memory: Record<string, unknown>): void {
-  const llm = memory.llm as JsonCapableLlm | undefined;
-  if (!llm || typeof llm.generateResponse !== "function") return;
+function patchLlmGenerateResponse(llm: JsonCapableLlm, stripResponseFormatWhenTools: boolean): void {
   if ((llm.generateResponse as any).__memoryMemuPatched) return;
 
   const original = llm.generateResponse.bind(llm);
   const wrapped = async (...args: Parameters<JsonCapableLlm["generateResponse"]>) => {
+    // Gemini OpenAI-compat endpoint rejects requests that have both response_format and tools.
+    // Drop response_format when tools are present so graph extraction works correctly.
+    if (stripResponseFormatWhenTools && args[2] && (args[2] as unknown[]).length > 0) {
+      args[1] = undefined;
+    }
     const response = await original(...args);
     return sanitizeJsonLikeResponse(response);
   };
   (wrapped as any).__memoryMemuPatched = true;
   llm.generateResponse = wrapped;
+}
+
+function patchOssMemoryLlm(memory: Record<string, unknown>, stripResponseFormatWhenTools = false): void {
+  const llm = memory.llm as JsonCapableLlm | undefined;
+  if (llm && typeof llm.generateResponse === "function") {
+    patchLlmGenerateResponse(llm, stripResponseFormatWhenTools);
+  }
+
+  // Also patch graphMemory.structuredLlm — it sends response_format + tools simultaneously,
+  // which Gemini's OpenAI-compat endpoint does not support.
+  if (stripResponseFormatWhenTools) {
+    const graphMemory = (memory as any).graphMemory;
+    if (graphMemory) {
+      const structuredLlm = graphMemory.structuredLlm as JsonCapableLlm | undefined;
+      if (structuredLlm && typeof structuredLlm.generateResponse === "function") {
+        patchLlmGenerateResponse(structuredLlm, true);
+      }
+    }
+  }
 }
 
 function toRecord(value: unknown): Record<string, unknown> {
@@ -229,14 +251,7 @@ export class Mem0FreeTextBackend implements FreeTextBackend {
       const MemoryCtor = (imported as Record<string, unknown>).Memory as new (cfg: Record<string, unknown>) => any;
       const resolvedHistoryDbPath = cfg.oss?.historyDbPath ? expandTilde(cfg.oss.historyDbPath) : undefined;
       const { topLevelLlm, graphStoreLlm } = resolveGraphLlmConfig(cfg);
-      const disableGraphForKimi = cfg.enableGraph && (
-        isKimiCodingProvider(topLevelLlm?.provider) ||
-        isKimiCodingProvider(graphStoreLlm?.provider)
-      );
-      if (disableGraphForKimi) {
-        this.logger.warn("mem0-backend: disabling graph store for kimi_coding because the Kimi Coding endpoint is not compatible with mem0 graph extraction");
-      }
-      const graphStoreConfig = cfg.enableGraph && !disableGraphForKimi && cfg.oss?.graph_store
+      const graphStoreConfig = cfg.enableGraph && cfg.oss?.graph_store
         ? {
             graphStore: {
               ...cfg.oss.graph_store,
@@ -254,11 +269,12 @@ export class Mem0FreeTextBackend implements FreeTextBackend {
           provider: "sqlite",
           config: { historyDbPath: resolvedHistoryDbPath || ":memory:" },
         },
-        ...(cfg.enableGraph && !disableGraphForKimi ? { enableGraph: true } : {}),
+        ...(cfg.enableGraph ? { enableGraph: true } : {}),
         ...graphStoreConfig,
         customPrompt: cfg.customPrompt || DEFAULT_LONG_TERM_CAPTURE_INSTRUCTIONS,
       });
-      patchOssMemoryLlm(memory as Record<string, unknown>);
+      const stripResponseFormatWhenTools = isGoogleProvider(topLevelLlm?.provider) || isGoogleProvider(graphStoreLlm?.provider);
+      patchOssMemoryLlm(memory as Record<string, unknown>, stripResponseFormatWhenTools);
       return {
         add: (messages, options) => memory.add(messages, options),
         search: async (query, options) => normalizeArray(await memory.search(query, options)),
@@ -348,8 +364,6 @@ export class Mem0FreeTextBackend implements FreeTextBackend {
     try {
       const provider = await this.providerInstance();
       const effectiveUid = effectiveUserId(scope);
-      const resolvedStoreLlm = normalizeMem0LlmConfig(this.config.mem0.oss?.llm, this.config.mem0.kimiApiKey ?? this.config.mem0.geminiApiKey);
-      const disableInferForKimi = this.config.mem0.mode === "open-source" && isKimiCodingProvider(resolvedStoreLlm?.provider);
       const metadata = this.buildBaseMetadata(
         scope,
         String(options?.metadata?.capture_kind ?? ""),
@@ -358,7 +372,6 @@ export class Mem0FreeTextBackend implements FreeTextBackend {
       const addOptions: Record<string, unknown> = this.config.mem0.mode === "open-source"
         ? {
             userId: effectiveUid,
-            ...(disableInferForKimi ? { infer: false } : {}),
             ...(options?.sessionScoped ? { runId: scope.sessionKey } : {}),
             metadata,
           }
@@ -370,9 +383,6 @@ export class Mem0FreeTextBackend implements FreeTextBackend {
             ...(this.config.mem0.enableGraph ? { enable_graph: true } : {}),
             output_format: "v1.1",
           };
-      if (disableInferForKimi) {
-        this.logger.warn("mem0-backend: forcing infer=false for kimi_coding store path to avoid mem0 OSS LLM endpoint incompatibility");
-      }
       const result = await provider.add(messages, addOptions);
       return Array.isArray(result?.results) ? result.results.length >= 0 : true;
     } catch (err) {
