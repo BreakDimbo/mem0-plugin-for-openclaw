@@ -136,6 +136,7 @@ export class UnifiedIntentClassifier {
   private readonly cache: LRUCache<ClassificationResult>;
   private readonly logger: Logger;
   private readonly metrics: ClassifierMetrics;
+  private readonly inflight = new Map<string, Promise<ClassificationResult>>();
 
   constructor(
     config: ClassifierConfig,
@@ -181,6 +182,12 @@ export class UnifiedIntentClassifier {
       return DEFAULT_RESULT;
     }
 
+    // Dedup concurrent calls for the same query (e.g. multiple hook instances from multi-process registration)
+    const inflight = this.inflight.get(cacheKey);
+    if (inflight) {
+      return inflight;
+    }
+
     const { apiBase, model } = normalizeChatApiConfig({
       apiBase: this.config.apiBase,
       model: this.config.model,
@@ -189,7 +196,7 @@ export class UnifiedIntentClassifier {
     this.metrics.classifierCalls++;
     const start = Date.now();
 
-    try {
+    const classifyPromise = (async () => { try {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 10_000);
       const isKimi = isKimiCodingBaseUrl(apiBase);
@@ -272,7 +279,13 @@ export class UnifiedIntentClassifier {
       }
       this.metrics.classifierErrors++;
       return DEFAULT_RESULT;
+    } finally {
+      this.inflight.delete(cacheKey);
     }
+    })();
+
+    this.inflight.set(cacheKey, classifyPromise);
+    return classifyPromise;
   }
 
   /**
