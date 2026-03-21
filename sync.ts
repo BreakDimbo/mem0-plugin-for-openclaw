@@ -15,6 +15,10 @@ import { metadataKindLabel } from "./metadata.js";
 type Logger = { info(msg: string): void; warn(msg: string): void };
 type ScopeResolver = { resolveRuntimeScope(ctx?: PluginHookContext): MemoryScope };
 
+// Module-level inflight map: prevents duplicate syncForAgent calls across MarkdownSync instances
+// when OpenClaw registers the plugin multiple times concurrently.
+const SYNC_INFLIGHT = new Map<string, Promise<void>>();
+
 const GENERATED_BLOCK_START = "<!-- memory-mem0:start -->";
 const GENERATED_BLOCK_END = "<!-- memory-mem0:end -->";
 const GENERATED_HEADER = "<!-- memory-mem0:generated -->";
@@ -380,6 +384,20 @@ export class MarkdownSync {
   }
 
   private async syncForAgent(agentId: string): Promise<void> {
+    const inflightKey = agentId;
+    const existing = SYNC_INFLIGHT.get(inflightKey);
+    if (existing) {
+      return existing;
+    }
+
+    const promise = this._doSyncForAgent(agentId).finally(() => {
+      SYNC_INFLIGHT.delete(inflightKey);
+    });
+    SYNC_INFLIGHT.set(inflightKey, promise);
+    return promise;
+  }
+
+  private async _doSyncForAgent(agentId: string): Promise<void> {
     const filePath = this.resolveFilePath(agentId);
     if (!filePath) {
       this.logger.warn(`markdown-sync: skipped agent "${agentId}" because workspace is unknown`);
