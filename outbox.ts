@@ -35,6 +35,12 @@ type PersistedOutboxItem = Omit<OutboxItem, "payload"> & {
   payload?: LegacyOutboxPayload;
 };
 
+// Module-level dedup set shared across all OutboxWorker instances in the same process.
+// Prevents duplicate mem0 writes when multiple outbox instances receive the same item
+// due to multi-process plugin registration by OpenClaw.
+const GLOBAL_ENQUEUED_IDS = new Set<string>();
+const GLOBAL_ENQUEUED_MAX = 500;
+
 export class OutboxWorker {
   private queue: OutboxItem[] = [];
   private deadLetters: DeadLetterItem[] = [];
@@ -257,10 +263,15 @@ export class OutboxWorker {
     if (messages.length === 0) return;
     const id = this.makeId(messages, scope);
 
-    // Dedup: skip if already queued with same id
-    if (this.queue.some((item) => item.id === id)) {
+    // Dedup: skip if already queued in this instance or any other instance in this process
+    if (this.queue.some((item) => item.id === id) || GLOBAL_ENQUEUED_IDS.has(id)) {
       this.logger.info(`outbox: dedup skip id=${id}`);
       return;
+    }
+    GLOBAL_ENQUEUED_IDS.add(id);
+    if (GLOBAL_ENQUEUED_IDS.size > GLOBAL_ENQUEUED_MAX) {
+      const first = GLOBAL_ENQUEUED_IDS.values().next().value;
+      if (first) GLOBAL_ENQUEUED_IDS.delete(first);
     }
 
     this.queue.push({

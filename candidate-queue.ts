@@ -42,8 +42,9 @@ export class CandidateQueue {
   private readonly processor: CandidateProcessor;
   private readonly logger: Logger;
 
-  // Dedup: track recent text hashes to avoid enqueueing duplicates
-  private readonly recentHashes = new Set<string>();
+  // Dedup: module-level set shared across all CandidateQueue instances in the same process.
+  // Prevents duplicate enqueues when OpenClaw registers the plugin multiple times concurrently.
+  private static readonly recentHashesGlobal = new Set<string>();
   private static readonly MAX_RECENT_HASHES = 200;
 
   // Stats
@@ -125,7 +126,7 @@ export class CandidateQueue {
           const normalized = this.normalizePersistedItem(item);
           if (!normalized) continue;
           this.queue.push(normalized);
-          this.recentHashes.add(normalized.id);
+          CandidateQueue.recentHashesGlobal.add(normalized.id);
         }
       }
       this.logger.info(`candidate-queue: loaded ${this.queue.length} items from disk`);
@@ -155,7 +156,7 @@ export class CandidateQueue {
     const id = this.makeId(messages, scope);
 
     // Dedup
-    if (this.recentHashes.has(id)) {
+    if (CandidateQueue.recentHashesGlobal.has(id)) {
       this._dropped++;
       return;
     }
@@ -168,10 +169,10 @@ export class CandidateQueue {
       metadata,
     });
 
-    this.recentHashes.add(id);
-    if (this.recentHashes.size > CandidateQueue.MAX_RECENT_HASHES) {
-      const first = this.recentHashes.values().next().value;
-      if (first) this.recentHashes.delete(first);
+    CandidateQueue.recentHashesGlobal.add(id);
+    if (CandidateQueue.recentHashesGlobal.size > CandidateQueue.MAX_RECENT_HASHES) {
+      const first = CandidateQueue.recentHashesGlobal.values().next().value;
+      if (first) CandidateQueue.recentHashesGlobal.delete(first);
     }
 
     this._enqueued++;
