@@ -1,6 +1,6 @@
 # memory-mem0 插件技术文档
 
-> 版本 v1.1.1 · 2026-03-17 · 基于源码深度分析
+> 版本 v1.1.0 · 2026-03-22 · 基于源码深度分析
 
 ---
 
@@ -18,6 +18,7 @@
 | **向量检索** | bge-m3 (1024维) + Qdrant |
 | **LLM 准入门控** | 批量 LLM 判断候选记忆质量，防止噪音写入 |
 | **Tier 分层注入** | profile/general 层永久注入，technical 层按需检索 |
+| **记忆整理系统** | 每日/每周/每月自动整理，Ebbinghaus 衰减评分 + LLM 边界裁决，dead-letter 保护 |
 | **安全防护** | 注入攻击检测、敏感信息过滤、XML 转义 |
 | **Markdown 同步** | 核心记忆定期写入 MEMORY.md，跨会话可读 |
 
@@ -133,6 +134,12 @@ memory-mem0/
 │   ├── recall.ts         # before_prompt_build：召回 + 注入 + 分类缓存
 │   ├── capture.ts        # agent_end：统一捕获入口
 │   └── message-received.ts  # 仅缓存原始入站消息
+├── consolidation/        # 记忆整理子系统
+│   ├── types.ts          # 整理系统共享类型（ScoredMemory、ConsolidationReport 等）
+│   ├── scorer.ts         # ImportanceScorer：五因子评分 + Ebbinghaus 衰减
+│   ├── runner.ts         # ConsolidationRunner：dry-run + 实际整理执行
+│   ├── llm-consolidator.ts  # LLMConsolidator：边界区间 LLM 裁决（任意 OpenAI-compatible 端点）
+│   └── scheduler.ts      # ConsolidationScheduler：每小时 tick，daily/weekly/monthly 调度
 ├── classifier.ts         # 统一意图分类器（查询类型、复杂度层级、captureHint）
 ├── smart-router.ts       # 基于查询复杂度的模型路由
 ├── core-repository.ts    # Core Memory CRUD + 合并去重
@@ -146,6 +153,9 @@ memory-mem0/
 ├── cache.ts              # LRU 缓存
 ├── inbound-cache.ts      # 入站消息缓存（辅助召回）
 ├── workspace-facts.ts    # 工作区文件检索 fallback
+├── scripts/
+│   ├── real-data-analysis.ts   # 真实数据干跑分析
+│   └── tune-params.ts          # 跑满一周后的参数调优诊断
 └── backends/
     └── free-text/
         ├── base.ts       # FreeTextBackend 接口
@@ -155,7 +165,7 @@ memory-mem0/
 
 ---
 
-## 3. 核心模块详解
+## 4. 核心模块详解
 
 ### 3.1 双轨记忆体系
 
@@ -420,21 +430,87 @@ LLM Gate 使用中文 System Prompt 进行三分类判断：
 
 ---
 
-### 3.5 Core Memory 合并去重（Consolidation）
+### 3.5 记忆整理系统（Consolidation）
 
-**触发时机：** CandidateQueue 批处理完成后，每小时最多触发一次。
+记忆整理系统是独立的后台子系统，负责定期评估 Core Memory 的重要性并做出保留/降级/归档/删除决策，防止记忆无限增长且保证高质量记忆永不丢失。
 
-**合并逻辑（两步）：**
+#### 整理调度器（ConsolidationScheduler）
 
-**Step 1：精确键去重**
+每小时 tick 一次，按墙钟时间判断是否触发各周期：
 
-同 `(category, key)` 保留最新 `updatedAt` 的记录。
+| 周期 | 默认时间 | 说明 |
+| --- | --- | --- |
+| `daily` | 每天 03:00 | 轻量清理：删除/归档低分记忆 |
+| `weekly` | 每周一 04:00 | 中度整合：合并同语义记忆 |
+| `monthly` | 每月1日 05:00 | 深度审查：LLM 全量裁决 |
 
-**Step 2：语义值去重**
+- 调度状态持久化到 `consolidation-state.json`，重启后不会重复触发
+- 每个周期有 inflight 去重（同一周期不会并发执行）
+- 支持 `/memu consolidate run <cycle>` 手动强制触发
 
-同 category 内，用三元组相似度（trigramSimilarity）比较 value：
-- 相似度 >= `similarityThreshold`（默认 0.85）则合并
-- 保留 importance 更高的，相同则保留更新的
+#### 五因子重要性评分（ImportanceScorer）
+
+每条 Core Memory 记录会被评为 0–1 的重要性分数：
+
+```
+score = Σ(factor × weight)
+```
+
+| 因子 | 权重（默认） | 计算方式 |
+| --- | --- | --- |
+| `recency` | 0.30 | Ebbinghaus 遗忘曲线：`e^(-Δt/S)`，S=14天 |
+| `accessFreq` | 0.20 | 访问频率代理：(touchedAt - createdAt) 相对集合中位数 |
+| `novelty` | 0.20 | 1 − max(trigram 相似度到同 category 其他记录) |
+| `typePrior` | 0.15 | 静态先验：profile=1.0，technical=0.8，general=0.5 |
+| `explicitImportance` | 0.15 | 记录上的 importance 字段（0-10 自动归一化为 0-1） |
+
+**Ebbinghaus 遗忘曲线：** 刚更新的记忆 recency 接近 1.0，每经过 `stabilityDays` 天衰减到约 37%（`e^-1`）。默认 `stabilityDays=14`，即两周后 recency 降至 0.37。
+
+#### 分级裁决
+
+| 分数区间 | 裁决 | 行为 |
+| --- | --- | --- |
+| ≥ 0.65 | `keep` | 保留不变 |
+| 0.35 – 0.55 | `llm-boundary` | 调用 LLM 做精细裁决（可选） |
+| 0.45 – 0.65 | `downgrade` | 降级（降低 tier 或 importance） |
+| 0.25 – 0.45 | `archive` | 归档标记，跳过注入但不删除 |
+| < 0.10 | `delete` | 写入 dead-letter log 后删除 |
+
+#### LLM 边界裁决（ConsolidationLLMConfig）
+
+处于 `llmLow`–`llmHigh`（默认 0.35–0.55）区间的记录，自动调用 LLM 进行精细判断：
+
+- 支持任意 OpenAI-compatible 端点：本地 Ollama、Kimi Coding、OpenAI、LiteLLM
+- 默认端点：`http://localhost:11434/v1`，模型：`qwen2.5:14b`
+- 批量发送（默认最多 20 条），解析 JSON 响应，过滤非法 ID
+
+```jsonc
+"core": {
+  "consolidation": {
+    "llm": {
+      "enabled": true,
+      "apiBase": "http://localhost:11434/v1",  // 或 Kimi/OpenAI 等
+      "model": "qwen2.5:7b",
+      "timeoutMs": 30000
+    }
+  }
+}
+```
+
+#### Dead-letter 保护
+
+删除前将被删记录完整写入 `consolidation-dead-letter.jsonl`（JSONL 格式，追加写），包含：
+- 被删记录的完整内容
+- 删除原因（score-based / llm-verdict）
+- 删除时间戳
+
+误删可从 dead-letter 文件中手动恢复。
+
+#### 简单合并去重（CoreRepository 层）
+
+除整理调度器外，CoreRepository 层还维护一个低成本的在线去重：
+- **精确键去重**：同 `(category, key)` 保留最新 `updatedAt`
+- **语义值去重**：同 category 内 trigram 相似度 ≥ 0.85 的记录自动合并，保留 importance 更高的
 
 ---
 
@@ -494,9 +570,9 @@ LLM Gate 使用中文 System Prompt 进行三分类判断：
 
 ---
 
-## 4. 安全机制
+## 5. 安全机制
 
-### 4.1 注入攻击防御
+### 5.1 注入攻击防御
 
 ```typescript
 // 检测并拦截以下模式：
@@ -516,7 +592,7 @@ INJECTION_PATTERNS = [
 3. 注入模式检测
 4. 敏感信息检测
 
-### 4.2 敏感信息过滤
+### 5.2 敏感信息过滤
 
 自动过滤以下内容：
 
@@ -529,15 +605,15 @@ INJECTION_PATTERNS = [
 | SSN | `\d{3}-\d{2}-\d{4}` |
 | API Key | `sk-/pk-/rk-` 前缀 |
 
-### 4.3 上下文注入 XML 转义
+### 5.3 上下文注入 XML 转义
 
 所有注入到 Prompt 的记忆文本均经过 `escapeForInjection()` 处理，防止特殊字符破坏 XML 结构。
 
 ---
 
-## 5. 配置参考
+## 6. 配置参考
 
-### 5.1 简化配置（推荐）
+### 6.1 简化配置（推荐）
 
 v1.1.0 引入了顶层简化配置，减少重复字段：
 
@@ -600,7 +676,7 @@ v1.1.0 引入了顶层简化配置，减少重复字段：
 }
 ```
 
-### 5.2 完整配置结构（高级）
+### 6.2 完整配置结构（高级）
 
 以下为完整配置字段，大部分有合理默认值：
 
@@ -676,8 +752,43 @@ v1.1.0 引入了顶层简化配置，减少重复字段：
             "alwaysInjectLimit": 800,
             "consolidation": {
               "enabled": true,
-              "intervalMs": 3600000,
-              "similarityThreshold": 0.85
+              "intervalMs": 3600000,       // 最短整理间隔（ms），防止高频重跑
+              "similarityThreshold": 0.85, // 在线合并去重阈值
+              // 五因子评分权重（总和应为 1.0）
+              "weights": {
+                "recency": 0.30,
+                "accessFreq": 0.20,
+                "novelty": 0.20,
+                "typePrior": 0.15,
+                "explicitImportance": 0.15
+              },
+              // Ebbinghaus 遗忘曲线参数
+              "decay": {
+                "stabilityDays": 14         // 记忆稳定性（天），越大越不容易被淘汰
+              },
+              // 裁决分数阈值
+              "thresholds": {
+                "keep": 0.65,               // ≥keep → 保留
+                "downgrade": 0.45,          // ≥downgrade → 降级
+                "archive": 0.25,            // ≥archive → 归档（跳过注入）
+                "delete": 0.10,             // <delete → 删除（写 dead-letter）
+                "llmLow": 0.35,             // LLM 边界区间下界
+                "llmHigh": 0.55             // LLM 边界区间上界
+              },
+              // 整理调度（daily/weekly/monthly）
+              "schedule": {
+                "daily":   { "enabled": true, "hourOfDay": 3 },
+                "weekly":  { "enabled": true, "hourOfDay": 4, "dayOfWeek": 1 },   // 周一 04:00
+                "monthly": { "enabled": true, "hourOfDay": 5, "dayOfMonth": 1 }   // 每月1日 05:00
+              },
+              // 边界区间 LLM 裁决（任意 OpenAI-compatible 端点）
+              "llm": {
+                "enabled": false,                          // 默认关闭，需手动开启
+                "apiBase": "http://localhost:11434/v1",    // 本地 Ollama（也可用 Kimi/OpenAI）
+                "model": "qwen2.5:14b",
+                "timeoutMs": 30000,
+                "maxBatchSize": 20
+              }
             },
             "llmGate": {
               "enabled": true,
@@ -735,7 +846,7 @@ v1.1.0 引入了顶层简化配置，减少重复字段：
 }
 ```
 
-### 5.3 配置优化建议
+### 6.3 配置优化建议
 
 | 场景 | 参数 | 建议值 | 说明 |
 | --- | --- | --- | --- |
@@ -747,9 +858,9 @@ v1.1.0 引入了顶层简化配置，减少重复字段：
 
 ---
 
-## 6. 工具 API
+## 7. 工具 API
 
-### 6.1 可用工具列表
+### 7.1 可用工具列表
 
 | 工具 | 功能 |
 | --- | --- |
@@ -763,7 +874,7 @@ v1.1.0 引入了顶层简化配置，减少重复字段：
 | `memory_core_touch` | 刷新记忆的访问时间（防止被合并淘汰） |
 | `memory_core_proposals` | 审核 LLM 提取的候选记忆 |
 
-### 6.2 工具使用示例
+### 7.2 工具使用示例
 
 **查看记忆状态：**
 
@@ -792,9 +903,53 @@ memory_core_proposals(action="reject", proposalId="xxx")
 
 ---
 
-## 7. 记忆作用域（Scope）隔离
+## 8. CLI 命令（/memu）
 
-### 7.1 隔离维度
+所有命令通过 `/memu <action>` 调用：
+
+### 基础命令
+
+| 命令 | 说明 |
+| --- | --- |
+| `/memu status` | 查看插件运行状态（outbox、core、recall 统计） |
+| `/memu search <query>` | 手动语义搜索 |
+| `/memu flush` | 立即刷新 outbox 队列 |
+| `/memu dashboard` | 完整指标看板 |
+| `/memu audit` | 查看审计日志 |
+| `/memu core list` | 列出 Core Memory |
+| `/memu core touch <id>` | 刷新记录访问时间 |
+
+### 整理系统命令
+
+| 命令 | 说明 |
+| --- | --- |
+| `/memu consolidate status` | 查看整理调度状态（上次运行时间、总运行次数、最近报告） |
+| `/memu consolidate run [cycle]` | 立即执行整理（cycle 可选 daily/weekly/monthly，默认 daily） |
+| `/memu consolidate run [cycle] --dry-run` | 干跑（显示将要发生的变更，不实际修改） |
+| `/memu consolidate report [limit]` | 查看最近整理报告（limit 默认 5 条） |
+
+**干跑示例：**
+
+```
+/memu consolidate run daily --dry-run
+
+🧹 Consolidation dry-run (daily) — 82 records scored
+  keep      (≥0.65): 61
+  downgrade (≥0.45):  8
+  archive   (≥0.25):  9
+  delete    (<0.10):  4
+  llm-boundary (0.35–0.55): 6 → would call LLM
+
+  Would DELETE:
+    [general/memu_server.monthly_cost] score=0.041 — 月费用 0 美元
+    reason: very low score (0.041 < 0.10)
+```
+
+---
+
+## 9. 记忆作用域（Scope）隔离
+
+### 9.1 隔离维度
 
 ```
 Scope = {
@@ -810,7 +965,7 @@ Scope = {
 - Free-text 检索传入完整 scope，mem0 按 userId+agentId 隔离向量空间
 - 支持 `scope.userIdByAgent` 配置不同 Agent 使用不同 userId
 
-### 7.2 运行时 Scope 推断
+### 9.2 运行时 Scope 推断
 
 ```typescript
 buildDynamicScope(config.scope, ctx)
@@ -820,9 +975,9 @@ buildDynamicScope(config.scope, ctx)
 
 ---
 
-## 8. 性能分析
+## 10. 性能分析
 
-### 8.1 关键延迟来源
+### 10.1 关键延迟来源
 
 | 阶段 | 典型延迟 | 影响因素 |
 | --- | --- | --- |
@@ -832,7 +987,7 @@ buildDynamicScope(config.scope, ctx)
 | LLM Gate 判断 | 500~3000ms | Gemini API 网络 |
 | Outbox 写入 mem0 | 异步，不阻塞 | 后台队列 |
 
-### 8.2 缓存策略
+### 10.2 缓存策略
 
 | 缓存层 | 生命周期 | 说明 |
 | --- | --- | --- |
@@ -841,7 +996,7 @@ buildDynamicScope(config.scope, ctx)
 | Session Relevant Cache | 90s | 相同语义查询 free-text 复用 |
 | 注入去重 Window | 30s | 防止同内容重复注入 |
 
-### 8.3 当前 turning_zero 配置下的性能表现
+### 10.3 当前 turning_zero 配置下的性能表现
 
 基于 `memory_stats` 实测数据：
 
@@ -852,7 +1007,7 @@ buildDynamicScope(config.scope, ctx)
 
 ---
 
-## 9. 常见问题 FAQ
+## 11. 常见问题 FAQ
 
 **Q: 为什么有些内容没有被自动记忆？**
 
@@ -907,27 +1062,49 @@ A: 现在推荐直接使用 mem0 原生 `kimi_coding` provider。通常不需要
 
 **Q: 意图分类器报错 "failed to parse response"？**
 
-A: 分类器使用 Gemini Flash Lite 进行快速分类，有时响应会被截断。v1.1.1 增加了：
+A: 分类器使用 Gemini Flash Lite 进行快速分类，有时响应会被截断。插件已增加：
 1. 精简的中文 System Prompt（减少 token 消耗）
 2. `response_format: { type: "json_object" }` 强制 JSON 输出
 3. 回退正则解析（从截断响应中提取 tier/queryType/captureHint）
 
 如果分类失败，会默认返回 `MEDIUM` tier 和 `full` captureHint，不影响主流程。
 
+**Q: 整理系统会不会误删重要记忆？**
+
+A: 不会直接丢失。删除前会将完整记录写入 `consolidation-dead-letter.jsonl`。可用 `/memu consolidate run --dry-run` 预览将要发生的变更。若误删，从 dead-letter 文件中手动恢复即可。
+
+**Q: 整理 LLM 是否必须用 Qwen/Ollama？**
+
+A: 不是。支持任意 OpenAI-compatible 端点。`core.consolidation.llm` 中配置 `apiBase` 和 `model` 即可：
+- 本地 Ollama：`apiBase="http://localhost:11434/v1"`
+- Kimi Coding：`apiBase="https://api.kimi.com/coding/v1"`, `model="k2p5"`
+- OpenAI：`apiBase="https://api.openai.com/v1"`, `model="gpt-4o-mini"`
+- 不配置 LLM（`llm.enabled=false`）也完全可用，仅用评分阈值裁决。
+
+**Q: 整理系统跑了但没有删除任何记忆？**
+
+A: 正常。记忆创建后两周内 recency 分数仍然偏高（Ebbinghaus 衰减需要时间）。运行 `npx tsx scripts/tune-params.ts` 可以诊断当前评分分布，并估算首次出现删除记录的时间。
+
+**Q: 如何手动触发整理？**
+
+A: `/memu consolidate run daily`（或 weekly/monthly）。加 `--dry-run` 只预览不执行。
+
 ---
 
-## 10. 数据文件速查
+## 12. 数据文件速查
 
 | 文件路径 | 内容 | 说明 |
 | --- | --- | --- |
 | `data/memory-mem0/core-memory.json` | Core Memory 主存储 | 直接可读 JSON |
 | `data/memory-mem0/outbox-queue.json` | 待发送队列 | 异常时可手动清空 |
-| `data/memory-mem0/outbox-deadletter.json` | 死信队列 | 需人工介入 |
+| `data/memory-mem0/outbox-deadletter.json` | Outbox 死信队列 | 需人工介入 |
 | `data/memory-mem0/candidate-queue.json` | 捕获候选 | 批处理前的缓冲 |
 | `data/memory-mem0/core-proposals.json` | 人工审核队列 | 待审核的 core 候选 |
+| `data/memory-mem0/consolidation-dead-letter.jsonl` | 整理删除记录 | 每行一条被删记录，可用于误删恢复 |
+| `data/memory-mem0/consolidation-state.json` | 整理调度状态 | 记录 lastDailyRun/lastWeeklyRun/lastMonthlyRun |
 | `data/memory-mem0/mem0-vector-store.db` | SQLite 向量数据库 | 含 bge-m3 1024维向量 |
 | `workspace-*/MEMORY.md` | Markdown 同步输出 | Agent 启动时直接读取 |
 
 ---
 
-> 文档基于 memory-mem0 v1.1.1 源码分析，最后更新 2026-03-17
+> 文档基于 memory-mem0 v1.1.0 源码分析，最后更新 2026-03-22

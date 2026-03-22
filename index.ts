@@ -39,6 +39,8 @@ import { createCoreTouchTool } from "./tools/core-touch.js";
 import { createCoreProposalTool } from "./tools/core-proposals.js";
 
 import { createMemuCommand } from "./cli.js";
+import { ConsolidationRunner } from "./consolidation/runner.js";
+import { ConsolidationScheduler } from "./consolidation/scheduler.js";
 
 const HOOK_PRIORITY = {
   smartRouter: 200,
@@ -92,6 +94,14 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
     });
 
     const sync = new MarkdownSync(primaryFreeTextBackend, scopeResolver, coreRepo, config, api.logger);
+
+    const consolidationRunner = new ConsolidationRunner(coreRepo, config.core.consolidation, api.logger, primaryFreeTextBackend);
+    const consolidationScheduler = new ConsolidationScheduler(
+      consolidationRunner,
+      config.core.consolidation,
+      { userId: config.scope.userId, agentId: config.scope.agentId, sessionKey: "consolidation" },
+      api.logger,
+    );
 
     // -- CandidateQueue: per-message capture with configurable batch timer --
     let lastConsolidateAt = 0;
@@ -348,6 +358,7 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
         sync,
         config,
         api.runtime,
+        consolidationScheduler,
       ),
     );
 
@@ -374,6 +385,11 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
         // Start markdown sync
         sync.start();
 
+        // Start consolidation scheduler
+        if (config.core.consolidation.enabled) {
+          consolidationScheduler.start();
+        }
+
         api.logger.info("memory-mem0: service started");
       },
       stop: async (_ctx: unknown) => {
@@ -389,6 +405,7 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
         await proposalQueue.stop();
 
         sync.stop();
+        consolidationScheduler.stop();
         cache.clear();
 
         api.logger.info("memory-mem0: service stopped");

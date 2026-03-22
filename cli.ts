@@ -14,6 +14,9 @@ import { buildDynamicScope } from "./types.js";
 import { formatMemoriesContext, getAuditLog } from "./security.js";
 import type { FreeTextBackend } from "./backends/free-text/base.js";
 import { rerankMemoryResults } from "./metadata.js";
+import type { ConsolidationScheduler } from "./consolidation/scheduler.js";
+import { loadState } from "./consolidation/scheduler.js";
+import type { ConsolidationCycle } from "./consolidation/types.js";
 
 function inferPeerKindFromId(id: string): "direct" | "group" | "channel" {
   const raw = id.trim().toLowerCase();
@@ -83,10 +86,11 @@ export function createMemuCommand(
   sync: MarkdownSync,
   config: MemuPluginConfig,
   runtime: any,
+  consolidationScheduler?: ConsolidationScheduler,
 ) {
   return {
     name: "memu",
-    description: "memU memory management. Usage: /memu [status|search|compare|benchmark|flush|audit|dashboard|core ...]",
+    description: "memU memory management. Usage: /memu [status|search|compare|benchmark|flush|audit|dashboard|consolidate|core ...]",
     acceptsArgs: true,
     handler: async (ctx: any) => {
       const args = (typeof ctx?.args === "string" ? ctx.args : "").trim();
@@ -345,16 +349,115 @@ export function createMemuCommand(
         };
       }
 
+      // ── /memu consolidate ────────────────────────────────────────────────
+      if (action === "consolidate") {
+        const sub = tokens[1]?.toLowerCase();
+        const dryRun = tokens.includes("--dry-run");
+
+        // /memu consolidate status
+        if (!sub || sub === "status") {
+          const state = await loadState(config.core.consolidation.statePath).catch(() => null);
+          if (!state) {
+            return { text: "No consolidation runs recorded yet." };
+          }
+          const r = state.lastReport;
+          const lines = [
+            "Consolidation Status",
+            "════════════════════",
+            `Total runs:      ${state.totalRuns}`,
+            `Last daily:      ${state.lastDailyRun ?? "never"}`,
+            `Last weekly:     ${state.lastWeeklyRun ?? "never"}`,
+            `Last monthly:    ${state.lastMonthlyRun ?? "never"}`,
+          ];
+          if (r) {
+            lines.push(
+              "",
+              `Last report (${r.cycle}, ${r.runAt}):`,
+              `  Scored:    ${r.totalScored}`,
+              `  Kept:      ${r.kept}`,
+              `  Downgraded:${r.downgraded}`,
+              `  Archived:  ${r.archived}`,
+              `  Deleted:   ${r.deleted}`,
+              `  LLM used:  ${r.llmCalled}`,
+              `  Dry-run:   ${r.dryRun}`,
+            );
+          }
+          return { text: lines.join("\n") };
+        }
+
+        // /memu consolidate run [daily|weekly|monthly] [--dry-run]
+        if (sub === "run") {
+          if (!consolidationScheduler) {
+            return { text: "Consolidation scheduler not available (consolidation disabled?)." };
+          }
+          const cycleArg = tokens[2]?.toLowerCase() as ConsolidationCycle | undefined;
+          const cycle: ConsolidationCycle = ["daily", "weekly", "monthly"].includes(cycleArg ?? "")
+            ? cycleArg!
+            : "daily";
+          try {
+            await consolidationScheduler.forceRun(cycle, dryRun);
+            const state = await loadState(config.core.consolidation.statePath).catch(() => null);
+            const r = state?.lastReport;
+            const label = dryRun ? " (dry-run)" : "";
+            if (!r) return { text: `Consolidation ${cycle}${label} complete — no records found.` };
+            return {
+              text: [
+                `Consolidation ${cycle}${label} complete`,
+                `  Scored:    ${r.totalScored}`,
+                `  Kept:      ${r.kept}`,
+                `  Downgraded:${r.downgraded}`,
+                `  Archived:  ${r.archived}`,
+                `  Deleted:   ${r.deleted}`,
+              ].join("\n"),
+            };
+          } catch (err) {
+            return { text: `Consolidation failed: ${String(err)}` };
+          }
+        }
+
+        // /memu consolidate report — show last report entries
+        if (sub === "report") {
+          const state = await loadState(config.core.consolidation.statePath).catch(() => null);
+          const r = state?.lastReport;
+          if (!r) return { text: "No consolidation report available yet." };
+
+          const limit = parseInt(tokens[2] ?? "20", 10);
+          const entries = r.entries.slice(0, isNaN(limit) ? 20 : limit);
+          const lines = [
+            `Consolidation Report (${r.cycle}, ${r.runAt}, dryRun=${r.dryRun})`,
+            `Totals: scored=${r.totalScored} kept=${r.kept} archived=${r.archived} deleted=${r.deleted}`,
+            "─".repeat(60),
+            ...entries.map((e) =>
+              `[${e.verdict.toUpperCase().padEnd(9)}] ${e.category}/${e.key ?? e.id} (score=${e.score.toFixed(3)}) — ${e.snippet.slice(0, 50)}`
+            ),
+          ];
+          if (r.entries.length > entries.length) {
+            lines.push(`… and ${r.entries.length - entries.length} more`);
+          }
+          return { text: lines.join("\n") };
+        }
+
+        return {
+          text: [
+            "Usage:",
+            "  /memu consolidate status              — show scheduler state",
+            "  /memu consolidate run [daily|weekly|monthly] [--dry-run]",
+            "  /memu consolidate report [limit]      — view last report entries",
+          ].join("\n"),
+        };
+      }
+
       return {
         text: [
           "Usage:",
-          "  /memu status          — show connection, scope & queue status",
-          "  /memu sync [agentId]  — force Markdown sync",
-          "  /memu search <query>  — search memories",
-          "  /memu flush           — flush pending outbox items",
-          "  /memu dashboard       — full metrics dashboard",
-          "  /memu audit [limit]   — view audit log",
-          "  /memu core ...        — manage core memories and proposals",
+          "  /memu status                  — show connection, scope & queue status",
+          "  /memu sync [agentId]          — force Markdown sync",
+          "  /memu search <query>          — search memories",
+          "  /memu flush                   — flush pending outbox items",
+          "  /memu dashboard               — full metrics dashboard",
+          "  /memu audit [limit]           — view audit log",
+          "  /memu consolidate ...         — consolidation scheduler & reports",
+          "  /memu core ...                — manage core memories and proposals",
         ].join("\n"),
       };
     },

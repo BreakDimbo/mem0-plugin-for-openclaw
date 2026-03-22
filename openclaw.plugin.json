@@ -121,8 +121,61 @@
             "type": "object",
             "properties": {
               "enabled": { "type": "boolean", "default": true },
-              "intervalMs": { "type": "number", "default": 3600000, "minimum": 60000, "description": "Minimum interval between consolidation runs in ms (default 1 hour)" },
-              "similarityThreshold": { "type": "number", "default": 0.85, "minimum": 0.5, "maximum": 1, "description": "Trigram similarity threshold for value dedup within a category" }
+              "intervalMs": { "type": "number", "default": 3600000, "minimum": 60000, "description": "Minimum interval between consolidation runs in ms" },
+              "similarityThreshold": { "type": "number", "default": 0.85, "minimum": 0.5, "maximum": 1, "description": "Trigram similarity threshold for value dedup within a category" },
+              "thresholds": {
+                "type": "object",
+                "description": "Score thresholds for keep/downgrade/archive/delete verdicts",
+                "properties": {
+                  "keep":     { "type": "number", "default": 0.65, "minimum": 0, "maximum": 1 },
+                  "downgrade":{ "type": "number", "default": 0.45, "minimum": 0, "maximum": 1 },
+                  "archive":  { "type": "number", "default": 0.25, "minimum": 0, "maximum": 1 },
+                  "delete":   { "type": "number", "default": 0.10, "minimum": 0, "maximum": 1 },
+                  "llmLow":   { "type": "number", "default": 0.35, "minimum": 0, "maximum": 1 },
+                  "llmHigh":  { "type": "number", "default": 0.55, "minimum": 0, "maximum": 1 }
+                }
+              },
+              "decay": {
+                "type": "object",
+                "description": "Ebbinghaus forgetting curve parameters",
+                "properties": {
+                  "stabilityDays": { "type": "number", "default": 14, "minimum": 1, "maximum": 365, "description": "Memory stability S (days); higher = slower decay" }
+                }
+              },
+              "weights": {
+                "type": "object",
+                "description": "Five-factor importance score weights (should sum to 1.0)",
+                "properties": {
+                  "recency":            { "type": "number", "default": 0.30 },
+                  "accessFreq":         { "type": "number", "default": 0.20 },
+                  "novelty":            { "type": "number", "default": 0.20 },
+                  "typePrior":          { "type": "number", "default": 0.15 },
+                  "explicitImportance": { "type": "number", "default": 0.15 }
+                }
+              },
+              "schedule": {
+                "type": "object",
+                "description": "Per-cycle schedule configuration",
+                "properties": {
+                  "daily":   { "type": "object", "properties": { "enabled": { "type": "boolean", "default": true  }, "hourOfDay": { "type": "number", "default": 3, "minimum": 0, "maximum": 23 } } },
+                  "weekly":  { "type": "object", "properties": { "enabled": { "type": "boolean", "default": true  }, "hourOfDay": { "type": "number", "default": 4, "minimum": 0, "maximum": 23 }, "dayOfWeek":  { "type": "number", "default": 1, "minimum": 0, "maximum": 6, "description": "0=Sun 1=Mon … 6=Sat. Omit to run on any day." } } },
+                  "monthly": { "type": "object", "properties": { "enabled": { "type": "boolean", "default": true  }, "hourOfDay": { "type": "number", "default": 5, "minimum": 0, "maximum": 23 }, "dayOfMonth": { "type": "number", "default": 1, "minimum": 1, "maximum": 28, "description": "Day of month (1–28). Omit to run on any day." } } }
+                }
+              },
+              "llm": {
+                "type": "object",
+                "description": "LLM for boundary-zone verdict. Supports any OpenAI-compatible endpoint: local Ollama (qwen2.5/llama3), Kimi Coding, OpenAI, LiteLLM, OpenRouter. Legacy key 'qwen' is also accepted.",
+                "properties": {
+                  "enabled":      { "type": "boolean", "default": false },
+                  "apiBase":      { "type": "string",  "default": "http://localhost:11434/v1", "description": "OpenAI-compatible base URL. Examples: http://localhost:11434/v1 (Ollama), https://api.kimi.com/coding/v1 (Kimi), https://api.openai.com/v1 (OpenAI)" },
+                  "apiKey":       { "type": "string",  "description": "API key. Leave empty for local Ollama." },
+                  "model":        { "type": "string",  "default": "qwen2.5:14b", "description": "Model ID. Examples: qwen2.5:14b, llama3.1:8b, gpt-4o-mini, k2p5" },
+                  "timeoutMs":    { "type": "number",  "default": 30000,  "minimum": 5000, "maximum": 120000 },
+                  "maxBatchSize": { "type": "number",  "default": 20, "minimum": 1, "maximum": 100 }
+                }
+              },
+              "deadLetterPath": { "type": "string", "description": "Path for dead-letter log of deleted records" },
+              "statePath":      { "type": "string", "description": "Path for scheduler state persistence" }
             }
           },
           "llmGate": {

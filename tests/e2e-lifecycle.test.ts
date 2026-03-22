@@ -171,9 +171,9 @@ function buildTestConfig(tmpDir: string): MemuPluginConfig {
       autoExtractProposals: true,
       humanReviewRequired: false,
       consolidation: {
+        ...DEFAULT_CONFIG.core.consolidation,
         enabled: true,
         intervalMs: 0,
-        similarityThreshold: 0.85,
       },
     },
     outbox: {

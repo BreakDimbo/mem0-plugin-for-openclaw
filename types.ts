@@ -206,10 +206,88 @@ export type LlmGateConfig = {
   timeoutMs: number;
 };
 
+export type DecayParams = {
+  /** Ebbinghaus stability S (days): higher = slower decay */
+  stabilityDays: number;
+};
+
+export type ConsolidationThresholds = {
+  /** Score ≥ keep → always keep */
+  keep: number;
+  /** Score < delete → send to dead-letter and delete */
+  delete: number;
+  /** Score in [downgrade, keep) → downgrade tier or reduce weight */
+  downgrade: number;
+  /** Score < archive (and ≥ delete) → archive flag, skip injection */
+  archive: number;
+  /** Score in [llmLow, llmHigh] → ask LLM for verdict */
+  llmLow: number;
+  llmHigh: number;
+};
+
+export type CycleScheduleConfig = {
+  enabled: boolean;
+  /** Hour of day (0–23) to run this cycle */
+  hourOfDay: number;
+  /** Day of week (0=Sun, 1=Mon … 6=Sat) for weekly cycle. Omit = any day. */
+  dayOfWeek?: number;
+  /** Day of month (1–28) for monthly cycle. Omit = any day. */
+  dayOfMonth?: number;
+};
+
+/**
+ * LLM config for boundary-zone consolidation verdicts.
+ * Supports any OpenAI-compatible endpoint:
+ *   - Local Ollama:  apiBase="http://localhost:11434/v1"  model="qwen2.5:14b"
+ *   - Kimi Coding:   apiBase="https://api.kimi.com/coding/v1"  model="k2p5"
+ *   - OpenAI:        apiBase="https://api.openai.com/v1"  model="gpt-4o-mini"
+ *   - Any LiteLLM/OpenRouter proxy
+ */
+export type ConsolidationLLMConfig = {
+  enabled: boolean;
+  apiBase: string;
+  apiKey?: string;
+  model: string;
+  timeoutMs: number;
+  /** Max records to send to LLM in a single consolidation call */
+  maxBatchSize: number;
+};
+
+/** @deprecated use ConsolidationLLMConfig */
+export type QwenConsolidationConfig = ConsolidationLLMConfig;
+
+export type ScoreWeights = {
+  recency: number;
+  accessFreq: number;
+  novelty: number;
+  typePrior: number;
+  explicitImportance: number;
+};
+
 export type ConsolidationConfig = {
   enabled: boolean;
+  /** Minimum interval between any consolidation run (guard against rapid re-runs) */
   intervalMs: number;
+  /** Trigram similarity threshold for value dedup within a category */
   similarityThreshold: number;
+  /** Score thresholds for keep/downgrade/archive/delete verdicts */
+  thresholds: ConsolidationThresholds;
+  /** Ebbinghaus decay parameters */
+  decay: DecayParams;
+  /** Five-factor score weights (should sum to 1.0) */
+  weights: ScoreWeights;
+  /** Per-cycle schedule overrides */
+  schedule: {
+    daily: CycleScheduleConfig;
+    weekly: CycleScheduleConfig;
+    monthly: CycleScheduleConfig;
+  };
+  /** LLM for boundary-zone verdicts (any OpenAI-compat endpoint: Ollama/Kimi/OpenAI/LiteLLM) */
+  llm: ConsolidationLLMConfig;
+  /** Path to write dead-letter log (deleted records) */
+  deadLetterPath: string;
+  /** Path to persist scheduler state (lastRun timestamps) */
+  statePath: string;
 };
 
 export type MemuPluginConfig = {
@@ -362,6 +440,39 @@ export const DEFAULT_CONFIG: MemuPluginConfig = {
       enabled: true,
       intervalMs: 3_600_000,
       similarityThreshold: 0.85,
+      thresholds: {
+        keep: 0.65,
+        downgrade: 0.45,
+        archive: 0.25,
+        delete: 0.10,
+        llmLow: 0.35,
+        llmHigh: 0.55,
+      },
+      decay: {
+        stabilityDays: 14,
+      },
+      weights: {
+        recency: 0.30,
+        accessFreq: 0.20,
+        novelty: 0.20,
+        typePrior: 0.15,
+        explicitImportance: 0.15,
+      },
+      schedule: {
+        daily:   { enabled: true,  hourOfDay: 3 },
+        weekly:  { enabled: true,  hourOfDay: 4, dayOfWeek: 1 },   // Monday 04:00
+        monthly: { enabled: true,  hourOfDay: 5, dayOfMonth: 1 },  // 1st of month 05:00
+      },
+      llm: {
+        enabled: false,
+        apiBase: "http://localhost:11434/v1",
+        apiKey: undefined,
+        model: "qwen2.5:14b",
+        timeoutMs: 30_000,
+        maxBatchSize: 20,
+      },
+      deadLetterPath: "~/.openclaw/data/memory-mem0/consolidation-dead-letter.jsonl",
+      statePath: "~/.openclaw/data/memory-mem0/consolidation-state.json",
     },
     llmGate: {
       enabled: false,
@@ -622,10 +733,49 @@ export function loadConfig(raw?: Record<string, unknown>): MemuPluginConfig {
       alwaysInjectLimit: coreAlwaysInjectLimit,
       consolidation: (() => {
         const cn = (co.consolidation ?? {}) as Record<string, unknown>;
+        const def = DEFAULT_CONFIG.core.consolidation;
+        const cnTh = ((cn.thresholds ?? {}) as Record<string, unknown>);
+        const cnDe = ((cn.decay ?? {}) as Record<string, unknown>);
+        const cnWe = ((cn.weights ?? {}) as Record<string, unknown>);
+        const cnSc = ((cn.schedule ?? {}) as Record<string, Record<string, unknown>>);
+        const cnQw = ((cn.llm ?? cn.qwen ?? {}) as Record<string, unknown>); // accept both "llm" and legacy "qwen" key
         return {
-          enabled: bool(cn.enabled, DEFAULT_CONFIG.core.consolidation.enabled),
-          intervalMs: num(cn.intervalMs, DEFAULT_CONFIG.core.consolidation.intervalMs),
-          similarityThreshold: numInRange(cn.similarityThreshold, DEFAULT_CONFIG.core.consolidation.similarityThreshold, 0.5, 1),
+          enabled: bool(cn.enabled, def.enabled),
+          intervalMs: num(cn.intervalMs, def.intervalMs),
+          similarityThreshold: numInRange(cn.similarityThreshold, def.similarityThreshold, 0.5, 1),
+          thresholds: {
+            keep:     num(cnTh.keep,      def.thresholds.keep),
+            downgrade:num(cnTh.downgrade, def.thresholds.downgrade),
+            archive:  num(cnTh.archive,   def.thresholds.archive),
+            delete:   num(cnTh.delete,    def.thresholds.delete),
+            llmLow:   num(cnTh.llmLow,    def.thresholds.llmLow),
+            llmHigh:  num(cnTh.llmHigh,   def.thresholds.llmHigh),
+          },
+          decay: {
+            stabilityDays: num(cnDe.stabilityDays, def.decay.stabilityDays),
+          },
+          weights: {
+            recency:            num(cnWe.recency,            def.weights.recency),
+            accessFreq:         num(cnWe.accessFreq,         def.weights.accessFreq),
+            novelty:            num(cnWe.novelty,            def.weights.novelty),
+            typePrior:          num(cnWe.typePrior,          def.weights.typePrior),
+            explicitImportance: num(cnWe.explicitImportance, def.weights.explicitImportance),
+          },
+          schedule: {
+            daily:   { enabled: bool((cnSc.daily   ?? {}).enabled, def.schedule.daily.enabled),   hourOfDay: num((cnSc.daily   ?? {}).hourOfDay, def.schedule.daily.hourOfDay) },
+            weekly:  { enabled: bool((cnSc.weekly  ?? {}).enabled, def.schedule.weekly.enabled),  hourOfDay: num((cnSc.weekly  ?? {}).hourOfDay, def.schedule.weekly.hourOfDay),  ...(((cnSc.weekly  ?? {}).dayOfWeek  != null) ? { dayOfWeek:  num((cnSc.weekly  ?? {}).dayOfWeek,  def.schedule.weekly.dayOfWeek  ?? 1) } : (def.schedule.weekly.dayOfWeek  != null ? { dayOfWeek:  def.schedule.weekly.dayOfWeek  } : {})) },
+            monthly: { enabled: bool((cnSc.monthly ?? {}).enabled, def.schedule.monthly.enabled), hourOfDay: num((cnSc.monthly ?? {}).hourOfDay, def.schedule.monthly.hourOfDay), ...(((cnSc.monthly ?? {}).dayOfMonth != null) ? { dayOfMonth: num((cnSc.monthly ?? {}).dayOfMonth, def.schedule.monthly.dayOfMonth ?? 1) } : (def.schedule.monthly.dayOfMonth != null ? { dayOfMonth: def.schedule.monthly.dayOfMonth } : {})) },
+          },
+          llm: {
+            enabled:      bool(cnQw.enabled,      def.llm.enabled),
+            apiBase:      optStr(cnQw.apiBase) ?? def.llm.apiBase,
+            apiKey:       optStr(cnQw.apiKey),
+            model:        optStr(cnQw.model) ?? def.llm.model,
+            timeoutMs:    num(cnQw.timeoutMs,    def.llm.timeoutMs),
+            maxBatchSize: num(cnQw.maxBatchSize, def.llm.maxBatchSize),
+          },
+          deadLetterPath: optStr(cn.deadLetterPath) ?? def.deadLetterPath,
+          statePath:      optStr(cn.statePath) ?? def.statePath,
         };
       })(),
       llmGate: (() => {
