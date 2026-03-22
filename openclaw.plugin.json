@@ -195,10 +195,10 @@
         "type": "object",
         "properties": {
           "enabled": { "type": "boolean", "default": true },
-          "minChars": { "type": "number", "default": 20 },
-          "maxChars": { "type": "number", "default": 600 },
+          "minChars": { "type": "number", "default": 20, "minimum": 1, "maximum": 200 },
+          "maxChars": { "type": "number", "default": 600, "minimum": 100, "maximum": 20000 },
           "maxConversationTurns": { "type": "number", "default": 6, "minimum": 1, "maximum": 20, "description": "How many recent user turns to capture as a conversation window" },
-          "dedupeThreshold": { "type": "number", "default": 0.8 },
+          "dedupeThreshold": { "type": "number", "default": 0.8, "minimum": 0, "maximum": 1 },
           "candidateQueue": {
             "type": "object",
             "properties": {
@@ -213,9 +213,9 @@
         "type": "object",
         "properties": {
           "enabled": { "type": "boolean", "default": true },
-          "concurrency": { "type": "number", "default": 2 },
-          "batchSize": { "type": "number", "default": 10 },
-          "maxRetries": { "type": "number", "default": 5 },
+          "concurrency": { "type": "number", "default": 2, "minimum": 1, "maximum": 10 },
+          "batchSize": { "type": "number", "default": 10, "minimum": 1, "maximum": 100 },
+          "maxRetries": { "type": "number", "default": 5, "minimum": 0, "maximum": 20 },
           "drainTimeoutMs": { "type": "number", "default": 5000 },
           "persistPath": { "type": "string", "description": "Directory for outbox persistence (deprecated, use dataDir)" },
           "flushIntervalMs": { "type": "number", "default": 10000, "description": "Outbox flush interval in milliseconds" }

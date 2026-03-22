@@ -15,7 +15,10 @@
   },
   "include": [
     "*.ts",
+    "backends/**/*.ts",
+    "consolidation/**/*.ts",
     "hooks/**/*.ts",
+    "scripts/**/*.ts",
     "tools/**/*.ts",
     "tests/**/*.ts"
   ],
