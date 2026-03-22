@@ -97,7 +97,7 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
     let lastConsolidateAt = 0;
     const candidateQueue = new CandidateQueue(
       async (batch) => {
-        // Items that regex didn't catch — collected for batch LLM gate
+        // Items deferred to LLM gate — only written to free-text if verdict is core/free_text
         const llmCandidates: Array<{ index: number; item: (typeof batch)[0] }> = [];
 
         api.logger.info(`capture-processor: processing batch of ${batch.length} candidates`);
@@ -111,12 +111,19 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
 
           api.logger.info(`capture-processor: [${i}] text="${itemText.slice(0, 80)}${itemText.length > 80 ? '...' : ''}"`);
 
-          // Route to outbox for free-text memorization (always)
-          outbox.enqueue(
-            item.messages,
-            item.scope,
-            buildFreeTextMetadata(itemText, item.scope, { captureKind: "auto" }),
-          );
+          const itemClassification = item.metadata?.classification as ClassificationResult | undefined;
+          const skipCapture = itemClassification &&
+            (itemClassification.queryType === "greeting" ||
+             itemClassification.captureHint === "light");
+          const skipLlmGate = skipCapture || (itemClassification &&
+            (itemClassification.queryType === "code" ||
+             itemClassification.queryType === "debug"));
+
+          // Skip greeting/light entirely — not worth storing in free-text
+          if (skipCapture) {
+            api.logger.info(`capture-processor: [${i}] SKIPPED (classification=${itemClassification?.queryType}, hint=${itemClassification?.captureHint})`);
+            continue;
+          }
 
           // Attempt core extraction via regex (high-confidence patterns)
           let regexMatched = false;
@@ -142,28 +149,29 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
             api.logger.info(`capture-processor: [${i}] regex SKIPPED (enabled=${config.core.enabled}, autoExtract=${config.core.autoExtractProposals}, hasText=${!!itemText})`);
           }
 
-          // Collect for LLM gate if regex missed
-          // Skip LLM gate for code/debug/greeting queries (based on classification from capture hook)
-          const itemClassification = item.metadata?.classification as ClassificationResult | undefined;
-          const skipLlmGate = itemClassification &&
-            (itemClassification.queryType === "code" ||
-             itemClassification.queryType === "debug" ||
-             itemClassification.queryType === "greeting" ||
-             itemClassification.captureHint === "light");
-
-          if (!regexMatched && config.core.llmGate.enabled && !skipLlmGate && itemText) {
+          // Routing decision for free-text (outbox):
+          // - regex matched: write now (high-confidence content)
+          // - LLM gate disabled: write now (permissive fallback)
+          // - LLM gate enabled + not skipped: defer to LLM gate verdict
+          // - skipLlmGate (code/debug): write now (code/debug still worth capturing as free-text, just no core extraction)
+          if (regexMatched || !config.core.llmGate.enabled || skipLlmGate || !itemText) {
+            if (itemText) {
+              outbox.enqueue(
+                item.messages,
+                item.scope,
+                buildFreeTextMetadata(itemText, item.scope, { captureKind: "auto" }),
+              );
+              const reason = regexMatched ? "regex matched" : !config.core.llmGate.enabled ? "llmGate disabled" : skipLlmGate ? `skipLlmGate (${itemClassification?.queryType})` : "no text";
+              api.logger.info(`capture-processor: [${i}] → outbox directly (${reason})`);
+            }
+          } else {
+            // Defer to LLM gate — only write to outbox if verdict is core or free_text
             llmCandidates.push({ index: i, item });
             api.logger.info(`capture-processor: [${i}] → LLM gate (classification=${itemClassification?.queryType || 'none'}, hint=${itemClassification?.captureHint || 'none'})`);
-          } else if (!regexMatched) {
-            const reason = !config.core.llmGate.enabled ? "llmGate disabled"
-              : skipLlmGate ? `skipped by classification (${itemClassification?.queryType}, ${itemClassification?.captureHint})`
-              : !itemText ? "empty text"
-              : "unknown";
-            api.logger.info(`capture-processor: [${i}] FILTERED out of LLM gate → ${reason}`);
           }
         }
 
-        // Batch LLM gate for regex-missed candidates
+        // Batch LLM gate for deferred candidates
         if (llmCandidates.length > 0) {
           api.logger.info(`capture-processor: LLM gate batch processing ${llmCandidates.length} candidates`);
           const texts = llmCandidates.map((c) => {
@@ -174,46 +182,75 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
 
           api.logger.info(`capture-processor: LLM gate returned ${results.length} results`);
 
+          // Track which positions (0-based in llmCandidates) are approved for free-text
+          // Items not mentioned by LLM are implicitly discarded (system prompt: "discard 类型可以省略不输出")
+          const approvedPositions = new Set<number>();
+
           for (const result of results) {
             api.logger.info(`capture-processor: LLM verdict [index=${result.index}] verdict=${result.verdict}${result.key ? ` key=${result.key}` : ''}${result.reason ? ` reason="${result.reason}"` : ''}`);
 
-            if (result.verdict !== "core") continue;
-            if (!result.key || !result.value) {
-              api.logger.info(`capture-processor: LLM verdict rejected (missing key or value)`);
-              continue;
-            }
-
-            // Map 1-based LLM index back to batch item
             const candidate = llmCandidates[result.index - 1];
             if (!candidate) {
               api.logger.info(`capture-processor: LLM verdict rejected (invalid index ${result.index})`);
               continue;
             }
 
-            const candidateText = (() => {
-              const lastUserMsg = [...candidate.item.messages].reverse().find(m => m.role === "user");
-              return lastUserMsg?.content ?? "";
-            })();
-
-            api.logger.info(`capture-processor: LLM verdict ACCEPTED → storing key=${result.key}, value="${result.value.slice(0, 50)}${result.value.length > 50 ? '...' : ''}"`);
-
-            if (config.core.humanReviewRequired) {
-              proposalQueue.enqueue({
-                category: result.key.split(".")[0] || "general",
-                text: candidateText,
-                key: result.key,
-                value: result.value,
-                reason: result.reason || "llm-gate",
-                scope: candidate.item.scope,
-              });
-            } else {
-              await coreRepo.upsert(candidate.item.scope, {
-                key: result.key,
-                value: result.value,
-                source: "capture-llm-gate",
-                metadata: { reason: result.reason, original_text: candidateText },
-              });
+            if (result.verdict === "discard") {
+              api.logger.info(`capture-processor: LLM discard [${result.index}] → skipping outbox`);
+              continue;
             }
+
+            // free_text or core: approve for free-text write
+            approvedPositions.add(result.index - 1);
+
+            if (result.verdict === "core") {
+              if (!result.key || !result.value) {
+                api.logger.info(`capture-processor: LLM verdict rejected (missing key or value)`);
+                continue;
+              }
+
+              const candidateText = (() => {
+                const lastUserMsg = [...candidate.item.messages].reverse().find(m => m.role === "user");
+                return lastUserMsg?.content ?? "";
+              })();
+
+              api.logger.info(`capture-processor: LLM verdict ACCEPTED → storing key=${result.key}, value="${result.value.slice(0, 50)}${result.value.length > 50 ? '...' : ''}"`);
+
+              if (config.core.humanReviewRequired) {
+                proposalQueue.enqueue({
+                  category: result.key.split(".")[0] || "general",
+                  text: candidateText,
+                  key: result.key,
+                  value: result.value,
+                  reason: result.reason || "llm-gate",
+                  scope: candidate.item.scope,
+                });
+              } else {
+                await coreRepo.upsert(candidate.item.scope, {
+                  key: result.key,
+                  value: result.value,
+                  source: "capture-llm-gate",
+                  metadata: { reason: result.reason, original_text: candidateText },
+                });
+              }
+            }
+          }
+
+          // Write approved items to free-text memory
+          for (let j = 0; j < llmCandidates.length; j++) {
+            if (!approvedPositions.has(j)) {
+              api.logger.info(`capture-processor: LLM omitted/discard [${j}] → skipping outbox`);
+              continue;
+            }
+            const candidate = llmCandidates[j];
+            const lastUserMsg = [...candidate.item.messages].reverse().find(m => m.role === "user");
+            const itemText = lastUserMsg?.content ?? "";
+            outbox.enqueue(
+              candidate.item.messages,
+              candidate.item.scope,
+              buildFreeTextMetadata(itemText, candidate.item.scope, { captureKind: "auto" }),
+            );
+            api.logger.info(`capture-processor: LLM approved [${j}] → outbox`);
           }
         } else {
           api.logger.info(`capture-processor: no candidates for LLM gate`);

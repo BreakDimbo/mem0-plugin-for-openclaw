@@ -51,7 +51,6 @@ export function shouldStoreCoreMemory(key: string, value: string, maxChars: numb
   if (!isValidCoreKey(key)) return false;
   const normalized = sanitizeCoreValue(value, maxChars);
   if (normalized.length < 3) return false;
-  if (isPromptInjection(normalized)) return false;
   if (isSensitiveContent(normalized)) return false;
   return true;
 }
@@ -109,28 +108,6 @@ export function applyInjectionBudget(sections: string[], budgetChars: number): s
   return out.join("\n\n");
 }
 
-// Common prompt injection patterns
-const INJECTION_PATTERNS = [
-  /ignore\s+(all\s+)?previous\s+instructions/i,
-  /disregard\s+(all\s+)?prior/i,
-  /you\s+are\s+now\s+/i,
-  /system\s*:\s*/i,
-  /\[INST\]/i,
-  /<<SYS>>/i,
-  /<\|im_start\|>/i,
-  /\bpretend\s+you\s+are\b/i,
-  /\bact\s+as\s+if\b/i,
-  /\bjailbreak\b/i,
-  /\bDAN\s+mode\b/i,
-  /<system>/i,
-  /system\s+prompt/i,
-];
-
-export function isPromptInjection(text: string): boolean {
-  // Disabled: too aggressive, filtering legitimate conversations
-  return false;
-}
-
 // Sensitive data patterns
 const SENSITIVE_PATTERNS = [
   /\b1[3-9]\d{9}\b/,                    // Chinese phone numbers
@@ -149,7 +126,6 @@ export function shouldCapture(text: string, minChars: number, maxChars: number):
   const len = text.trim().length;
   if (len < minChars) return { allowed: false, reason: `too_short (len=${len} < min=${minChars})` };
   if (len > maxChars) return { allowed: false, reason: `too_long (len=${len} > max=${maxChars})` };
-  if (isPromptInjection(text)) return { allowed: false, reason: "prompt_injection_detected" };
   if (isSensitiveContent(text)) return { allowed: false, reason: "sensitive_content_detected" };
   return { allowed: true };
 }

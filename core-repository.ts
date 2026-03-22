@@ -52,36 +52,8 @@ function scoreTextMatch(query: string, key: string, value: string): number {
   return lexical + genericConceptBoost(query, value);
 }
 
-function inferCategoryFromKey(key: string): string {
-  const head = key.split(".")[0]?.trim().toLowerCase();
-  switch (head) {
-    case "identity":
-    case "profile":
-    case "person":
-    case "bio":
-      return "identity";
-    case "preference":
-    case "preferences":
-      return "preferences";
-    case "goal":
-    case "goals":
-      return "goals";
-    case "constraint":
-    case "constraints":
-    case "team":
-      return "constraints";
-    case "relationship":
-    case "relationships":
-      return "relationships";
-    default:
-      return "general";
-  }
-}
-
-export function normalizeCoreCategory(category: string | undefined, key: string): string {
-  const normalized = (category ?? "").trim().toLowerCase();
-  if (!normalized) return inferCategoryFromKey(key);
-  switch (normalized) {
+function mapCategoryToken(token: string): string {
+  switch (token) {
     case "identity":
     case "profile":
     case "person":
@@ -104,6 +76,16 @@ export function normalizeCoreCategory(category: string | undefined, key: string)
     default:
       return "general";
   }
+}
+
+function inferCategoryFromKey(key: string): string {
+  return mapCategoryToken(key.split(".")[0]?.trim().toLowerCase() ?? "");
+}
+
+export function normalizeCoreCategory(category: string | undefined, key: string): string {
+  const normalized = (category ?? "").trim().toLowerCase();
+  if (!normalized) return inferCategoryFromKey(key);
+  return mapCategoryToken(normalized);
 }
 
 export function inferTierFromCategory(category: string): CoreMemoryTier {

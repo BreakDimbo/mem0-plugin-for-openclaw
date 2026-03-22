@@ -17,6 +17,7 @@ import { genericConceptBoost, rerankMemoryResults, tokenizeSemanticQuery } from 
 import { resolveWorkspaceDir, searchWorkspaceFacts } from "../workspace-facts.js";
 import type { UnifiedIntentClassifier } from "../classifier.js";
 import { DEFAULT_CLASSIFICATION } from "../classifier.js";
+import { extractSenderId, extractTextBlocks, stripInjectedBlocks } from "./utils.js";
 
 type Logger = { info(msg: string): void; warn(msg: string): void };
 
@@ -55,16 +56,6 @@ const CORE_LIST_INFLIGHT = new Map<string, Promise<Array<{ id: string; category?
 
 const PREFERRED_KEYS = ["text", "content", "query", "question", "input", "message"];
 
-function extractTextBlocks(content: string | Array<{ type: string; text?: string }> | undefined): string {
-  if (!content) return "";
-  if (typeof content === "string") return content.trim();
-  return content
-    .filter((b) => b.type === "text" && b.text)
-    .map((b) => b.text!.trim())
-    .filter(Boolean)
-    .join("\n")
-    .trim();
-}
 
 function maybeJson(raw: string): unknown | undefined {
   const trimmed = raw.trim();
@@ -151,27 +142,6 @@ function extractFromObject(root: unknown, depth = 0): string {
   return "";
 }
 
-function extractSenderId(raw: string): string {
-  const patterns = [
-    /"sender_id"\s*:\s*"([^"]{3,200})"/i,
-    /\\"sender_id\\"\s*:\s*\\"([^"\\]{3,200})\\"/i,
-    /"from"\s*:\s*"([^"]{3,200})"/i,
-  ];
-
-  for (const p of patterns) {
-    const m = raw.match(p);
-    if (m?.[1]) return m[1].trim();
-  }
-  return "";
-}
-
-function stripInjectedBlocks(raw: string): string {
-  return raw
-    .replace(/<core-memory>[\s\S]*?<\/core-memory>/gi, " ")
-    .replace(/<relevant-memories>[\s\S]*?<\/relevant-memories>/gi, " ")
-    .replace(/\[truncated by injection budget\]/gi, " ")
-    .trim();
-}
 
 function extractLikelyQuestionLine(raw: string): string {
   const lines = raw

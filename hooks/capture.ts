@@ -17,6 +17,7 @@ import { buildFreeTextMetadata, trigramSimilarity } from "../metadata.js";
 import type { CandidateQueue } from "../candidate-queue.js";
 import type { InboundMessageCache } from "../inbound-cache.js";
 import { judgeCandidates } from "../core-admission.js";
+import { stripInjectedBlocks } from "./utils.js";
 
 type Logger = { info(msg: string): void; warn(msg: string): void };
 
@@ -46,13 +47,6 @@ function isLowSignalUserText(text: string): boolean {
   return LOW_SIGNAL_PATTERNS.some((pattern) => pattern.test(trimmed));
 }
 
-function stripInjectedMemoryBlocks(text: string): string {
-  return text
-    .replace(/<core-memory>[\s\S]*?<\/core-memory>/gi, " ")
-    .replace(/<relevant-memories>[\s\S]*?<\/relevant-memories>/gi, " ")
-    .replace(/\[truncated by injection budget\]/gi, " ")
-    .trim();
-}
 
 function asRecord(v: unknown): Record<string, unknown> | null {
   return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
@@ -113,7 +107,7 @@ function extractConversationMessages(
     const rawContent = extractMessageText(rec.content).trim();
     if (!rawContent) continue;
 
-    const cleaned = stripInjectedMemoryBlocks(rawContent);
+    const cleaned = stripInjectedBlocks(rawContent);
     if (!cleaned) continue;
     if (isInjectedMemory(cleaned)) continue;
     if (isSystemFragment(cleaned)) continue;

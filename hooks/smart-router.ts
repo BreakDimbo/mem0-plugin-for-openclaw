@@ -6,6 +6,7 @@
 import type { UnifiedIntentClassifier } from "../classifier.js";
 import type { MemuPluginConfig, ClassificationResult } from "../types.js";
 import type { InboundMessageCache } from "../inbound-cache.js";
+import { extractSenderId, extractTextBlocks, stripInjectedBlocks } from "./utils.js";
 
 type Logger = { info(msg: string): void; warn(msg: string): void };
 
@@ -24,60 +25,6 @@ type BeforeModelResolveResult = {
   providerOverride?: string;
 };
 
-/**
- * Extract text from message content (handles string or structured content)
- */
-function extractTextBlocks(content: unknown): string {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  return content
-    .filter((block): block is { type: "text"; text: string } =>
-      block && typeof block === "object" && block.type === "text" && typeof block.text === "string"
-    )
-    .map((b) => b.text)
-    .join("\n");
-}
-
-/**
- * Extract senderId from prompt (supports multiple formats)
- * - JSON format: "sender_id": "xxx" or "from": "xxx"
- * - Legacy format: [user:xxx] or From: xxx
- */
-function extractSenderId(prompt: string): string | undefined {
-  // JSON format (matches recall hook pattern)
-  const jsonPatterns = [
-    /"sender_id"\s*:\s*"([^"]{3,200})"/i,
-    /\\"sender_id\\"\s*:\s*\\"([^"\\]{3,200})\\"/i,
-    /"from"\s*:\s*"([^"]{3,200})"/i,
-  ];
-  for (const p of jsonPatterns) {
-    const m = prompt.match(p);
-    if (m?.[1]) return m[1].trim();
-  }
-
-  // Legacy format
-  const match = prompt.match(/\[user:([^\]]+)\]/) || prompt.match(/From:\s*(\S+)/);
-  return match?.[1];
-}
-
-/**
- * Check if text contains injected memory content
- */
-function isInjectedContent(text: string): boolean {
-  return text.includes("<core-memory>") || text.includes("</core-memory>") ||
-         text.includes("<relevant-memories>") || text.includes("</relevant-memories>");
-}
-
-/**
- * Strip injected memory blocks from text
- */
-function stripInjectedBlocks(raw: string): string {
-  return raw
-    .replace(/<core-memory>[\s\S]*?<\/core-memory>/gi, " ")
-    .replace(/<relevant-memories>[\s\S]*?<\/relevant-memories>/gi, " ")
-    .replace(/\[truncated by injection budget\]/gi, " ")
-    .trim();
-}
 
 export function createSmartRouterHook(
   classifier: UnifiedIntentClassifier | undefined,
@@ -112,12 +59,7 @@ export function createSmartRouterHook(
       const lastUser = event.messages.filter((m) => m.role === "user").slice(-1)[0];
       const rawContent = extractTextBlocks(lastUser?.content);
       if (rawContent) {
-        // Check if content has injected blocks and strip them
-        if (isInjectedContent(rawContent)) {
-          query = stripInjectedBlocks(rawContent);
-        } else {
-          query = rawContent;
-        }
+        query = stripInjectedBlocks(rawContent);
       }
     }
 
