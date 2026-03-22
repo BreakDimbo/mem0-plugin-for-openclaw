@@ -465,6 +465,197 @@ tests/consolidation-e2e.test.ts      # 端到端：插入100条测试记忆 → 
 
 ---
 
+## 十二、执行任务清单
+
+> 每个任务保证可独立测试、可验证、可执行。遵循三条原则：第一性原理、适时反思、最大化有效信息密度。
+
+### 依赖链
+
+```
+T1 (类型基础)
+ └─▶ T2 (评分算法)
+      └─▶ T3 (dry-run 报告)     ← 首个可观测节点，确认算法方向
+           └─▶ T4 (core 执行)   ← 首次真实删除，范围最小最安全
+                └─▶ T5 (mem0)   ← 扩展到主要噪声来源
+                     └─▶ T6 (Qwen) ← LLM 处理模糊边界
+                          └─▶ T7 (调度器) ← 自动化
+                               └─▶ T8 (CLI) ← 操作界面
+                                    └─▶ R1 (反思节点) ← 数据驱动调参
+```
+
+---
+
+### T1 — 扩展 Config 类型定义（consolidation foundation）
+
+**目标**：为整理机制建立完整类型基础，所有后续任务依赖此层。
+
+**文件**：
+- `consolidation/types.ts`（新建）：`ConsolidationCycle`、`MemoryVerdict`、`ScoredMemory<T>`、`ScoreFactors`、`LLMVerdict`、`ConsolidationReport`
+- `types.ts`（修改）：替换 `ConsolidationConfig`，新增 `QwenConsolidationConfig`、`CycleScheduleConfig`、`ConsolidationThresholds`、`DecayParams`
+- `openclaw.plugin.json`（修改）：新增 consolidation 配置块默认值
+
+**验收**：`npx tsc --noEmit` 通过，现有代码无新错误
+
+---
+
+### T2 — 实现 ImportanceScorer（五因子评分 + Ebbinghaus 衰减）
+
+**目标**：纯算法模块，输入记忆记录，输出 0-1 重要性分数，无副作用、无外部 IO。
+
+**文件**：`consolidation/scorer.ts`（新建）
+
+**核心接口**：
+```typescript
+class ImportanceScorer {
+  scoreCore(records: CoreMemoryRecord[]): ScoredMemory<CoreMemoryRecord>[]
+  scoreFreeText(records: MemuMemoryRecord[]): ScoredMemory<MemuMemoryRecord>[]
+}
+```
+
+**测试**：`tests/consolidation-scorer.test.ts`（≥5 个测试用例，覆盖各 tier 和边界值）
+
+**验收**：测试全通过；50 条真实记忆的分数分布合理（Core/Important/Discard ≈ 20%/50%/30%）
+
+---
+
+### T3 — 干跑报告（dry-run，仅 core memory）
+
+**目标**：读取 core memory，评分，输出分级报告，**不执行任何写操作**。在真实删除前先看清「会发生什么」。
+
+**文件**：`consolidation/runner.ts`（新建，仅实现 `dryRunCore()`）
+
+**输出示例**：
+```
+=== 日整理干跑报告 (core memory) ===
+总记录: 87 条 | 待升级: 15 | 待标记 important: 48 | 边界区间: 12 | 待删除: 9 | 受保护: 3
+```
+
+**测试**：`tests/consolidation-dryrun.test.ts`
+
+**验收**：测试全通过；对真实数据运行，报告可读；不修改任何文件
+
+---
+
+### T4 — 执行 core memory 整理（含 dead-letter 保护）
+
+**目标**：对明确低分的 core 记忆执行删除；边界区间暂跳过（等 T6 LLM 处理）；写 dead-letter 日志作安全网。
+
+**文件**：
+- `consolidation/runner.ts`（扩展，新增 `executeCore()`）
+- `consolidation/dead-letter.ts`（新建）：写入/读取/清理过期文件
+
+**dead-letter 格式**（按日期分文件 `.jsonl`）：
+```jsonl
+{"ts":1234567890,"cycle":"daily","id":"...","category":"general","key":"...","value":"...","score":0.18,"reason":"score_below_threshold"}
+```
+
+**测试**：`tests/consolidation-execute-core.test.ts`（含幂等性验证）
+
+**验收**：执行后实际删除数与干跑预测一致；dead-letter 文件可读可恢复
+
+---
+
+### T5 — 扩展整理到 free-text memory（mem0）
+
+**目标**：将整理扩展到 mem0——这是记忆冗余的主要来源，是空间维度优化的主战场。
+
+**文件**：`consolidation/runner.ts`（扩展，新增 `dryRunFreeText()`、`executeFreeText()`）、`consolidation/scorer.ts`（扩展 free-text tier 推断）
+
+**Free-text tier 推断**：
+- `memory_kind` 为 preference/workflow/constraint → profile (halfLife=90d)
+- `memory_kind` 为 technical/decision/architecture → technical (halfLife=30d)
+- 其他/未知 → general (halfLife=7d)
+- `quality === "durable"` → 额外 +0.1 分
+
+**测试**：`tests/consolidation-freetext.test.ts`（使用 mock backend）
+
+**验收**：测试全通过；执行后 mem0 总量减少，主观召回精度提升
+
+---
+
+### T6 — Qwen LLM 整合器（边界区间裁决 + 合并摘要）
+
+**目标**：对评分在阈值边界 ±0.1 范围内的记忆，用 Qwen 做语义理解后最终裁决，并生成合并摘要替换重复记忆群。
+
+**文件**：`consolidation/llm-consolidator.ts`（新建）
+
+**核心接口**：
+```typescript
+class LLMConsolidator {
+  async judgeMemories(memories, cycle): Promise<LLMVerdict[]>
+  async mergeCluster(cluster): Promise<string>
+}
+```
+
+**Qwen 接入**：`POST ${apiBase}/chat/completions`，与 `core-admission.ts` 格式完全一致
+
+**失败降级**：Qwen 不可用时返回空数组，整理流程继续（LLM 是增强，不是依赖）
+
+**测试**：`tests/consolidation-llm.test.ts`（mock 场景；含 Ollama 联调用例）
+
+**验收**：mock 测试全通过；Qwen 裁决与人工判断一致性 ≥ 80%
+
+---
+
+### T7 — 调度器 + 整理状态持久化
+
+**目标**：日/周/月自动运行，进程重启后能正确补跑遗漏的整理周期。
+
+**文件**：
+- `consolidation/state.ts`（新建）：lastRun 持久化 + lock 文件机制
+- `consolidation/scheduler.ts`（新建）：每小时 tick + 条件触发
+- `index.ts`（修改）：在 `service_start` 注册调度器
+
+**lock 超期保护**：lock 文件超过 2 小时自动视为过期（防崩溃死锁）
+
+**测试**：`tests/consolidation-scheduler.test.ts`（含 lock 竞争、时间条件、重启补跑场景）
+
+**验收**：测试全通过；进程重启后自动补跑；`consolidation-state.json` 可读
+
+---
+
+### T8 — CLI 命令 + 整理状态看板
+
+**目标**：提供人工干预入口；dry-run 让用户在执行前审查决策（「适时反思」的操作界面）。
+
+**文件**：`cli.ts`（扩展现有 `/memu` 命令）
+
+**新增命令**：
+```
+/memu consolidate [daily|weekly|monthly] [--dry-run]
+/memu consolidate status
+/memu consolidate unlock
+```
+
+**验收**：`--dry-run` 无副作用；`status` 与 state.json 数据一致；Qwen 不可达时 status 正常显示
+
+---
+
+### R1 — 反思节点：跑满一周后调优评分参数
+
+**时机**：T8 完成并自动运行 ≥ 7 天后
+
+**不是编码任务，是结构化反思。**
+
+**需要收集的数据**：
+- 每次整理的删除率（目标区间：10-30%）
+- 边界区间占比（> 40% 说明阈值需要调整）
+- 抽样 20 条 Qwen 裁决的人工评估一致性
+- dead-letter 日志中是否有误删的重要记忆
+
+**调优参考**：
+
+| 观察现象 | 调整策略 |
+|---------|---------|
+| 删除率 < 5% | 降低 discard 阈值 / 缩短 general halfLife |
+| 删除率 > 40% | 提高 discard 阈值 / 延长半衰期 |
+| 边界区间 > 40% | 扩大 core/discard 阈值间距 |
+| Qwen 裁决偏差大 | 优化 Prompt，增加 few-shot 示例 |
+
+**输出**：更新本文档「调优记录」章节 + 必要时修改 `openclaw.plugin.json` 默认值
+
+---
+
 ## 附录：关键论文
 
 - SimpleMem: https://arxiv.org/abs/2601.02553
