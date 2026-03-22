@@ -4,7 +4,7 @@
 // ============================================================================
 
 import { LRUCache } from "./cache.js";
-import { buildKimiMessagesUrl, isKimiCodingBaseUrl, normalizeChatApiConfig } from "./llm-config.js";
+import { isKimiCodingBaseUrl, normalizeChatApiConfig } from "./llm-config.js";
 import type { ClassificationResult, ClassifierConfig, QueryType, CaptureHint } from "./types.js";
 
 type Logger = { info(msg: string): void; warn(msg: string): void };
@@ -197,47 +197,30 @@ export class UnifiedIntentClassifier {
     const start = Date.now();
 
     const classifyPromise = (async () => { try {
+      const isKimi = isKimiCodingBaseUrl(apiBase);
+      const url = `${apiBase.replace(/\/+$/, "")}/chat/completions`;
+
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 10_000);
-      const isKimi = isKimiCodingBaseUrl(apiBase);
-      const resp = await fetch(
-        isKimi ? buildKimiMessagesUrl(apiBase) : `${apiBase.replace(/\/+$/, "")}/chat/completions`,
-        {
-          method: "POST",
-          headers: isKimi
-            ? {
-                "Content-Type": "application/json",
-                "x-api-key": apiKey,
-                "anthropic-version": "2023-06-01",
-                "User-Agent": "claude-code/0.1.0",
-              }
-            : {
-                "Content-Type": "application/json",
-                Authorization: `Bearer ${apiKey}`,
-              },
-          body: JSON.stringify(isKimi
-            ? {
-                model,
-                system: SYSTEM_PROMPT,
-                messages: [
-                  { role: "user", content: buildUserPrompt(query) },
-                ],
-                max_tokens: 150,
-                temperature: 0.1,
-              }
-            : {
-                model,
-                messages: [
-                  { role: "system", content: SYSTEM_PROMPT },
-                  { role: "user", content: buildUserPrompt(query) },
-                ],
-                max_tokens: 150,
-                temperature: 0.1,
-                response_format: { type: "json_object" },
-              }),
-          signal: controller.signal,
-        }
-      );
+      const resp = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+          ...(isKimi ? { "User-Agent": "claude-code/0.1.0" } : {}),
+        },
+        body: JSON.stringify({
+          model,
+          messages: [
+            { role: "system", content: SYSTEM_PROMPT },
+            { role: "user", content: buildUserPrompt(query) },
+          ],
+          max_tokens: 150,
+          temperature: 0.1,
+          response_format: { type: "json_object" },
+        }),
+        signal: controller.signal,
+      });
 
       clearTimeout(timer);
 
@@ -249,15 +232,7 @@ export class UnifiedIntentClassifier {
       }
 
       const json = (await resp.json()) as Record<string, unknown>;
-      const content = isKimi
-        ? Array.isArray(json.content)
-          ? json.content
-            .filter((block): block is { type?: string; text?: string } => !!block && typeof block === "object")
-            .filter((block) => block.type === "text" && typeof block.text === "string")
-            .map((block) => block.text)
-            .join("")
-          : undefined
-        : (json.choices as Array<{ message?: { content?: string } }> | undefined)?.[0]?.message?.content;
+      const content = (json.choices as Array<{ message?: { content?: string } }> | undefined)?.[0]?.message?.content;
 
       const result = parseClassificationResponse(content);
       if (!result) {
