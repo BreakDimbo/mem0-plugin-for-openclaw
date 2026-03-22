@@ -1,557 +1,512 @@
-# memory-mem0 插件技术文档
+# memory-mem0
 
-> 版本 v1.1.0 · 2026-03-22 · 基于源码深度分析
+> OpenClaw 增强型双轨记忆插件 · v1.1.0 · 2026-03-22
+
+为 AI Agent 提供跨会话的长期记忆能力。将非结构化对话内容转化为结构化的持久知识，在每次对话前精准召回，使 Agent 感知用户的历史偏好、目标与约束。
 
 ---
 
-## 1. 项目概述
+## 目录
 
-`memory-mem0` 是 OpenClaw 的**增强型记忆插件**，为 AI Agent 提供跨会话的长期记忆能力。它将非结构化对话内容转化为结构化的持久知识，在下次会话时精准召回，使 Agent 在每次对话中都能感知用户的历史偏好、目标与约束。
+1. [核心能力](#1-核心能力)
+2. [与官方 mem0 插件对比](#2-与官方-mem0-插件对比)
+3. [整体架构](#3-整体架构)
+4. [模块结构](#4-模块结构)
+5. [核心模块详解](#5-核心模块详解)
+   - 5.1 [双轨记忆体系](#51-双轨记忆体系)
+   - 5.2 [召回管道（Recall Hook）](#52-召回管道recall-hook)
+   - 5.3 [统一意图分类器](#53-统一意图分类器)
+   - 5.4 [捕获管道（Capture Pipeline）](#54-捕获管道capture-pipeline)
+   - 5.5 [LLM 准入门控](#55-llm-准入门控)
+   - 5.6 [Outbox 异步写回队列](#56-outbox-异步写回队列)
+   - 5.7 [记忆整理系统（Consolidation）](#57-记忆整理系统consolidation)
+   - 5.8 [Markdown 同步](#58-markdown-同步)
+   - 5.9 [安全机制](#59-安全机制)
+6. [配置参考](#6-配置参考)
+7. [工具 API](#7-工具-api)
+8. [CLI 命令（/memu）](#8-cli-命令memu)
+9. [作用域隔离（Scope）](#9-作用域隔离scope)
+10. [数据文件](#10-数据文件)
+11. [FAQ](#11-faq)
 
-### 核心能力
+---
+
+## 1. 核心能力
 
 | 能力 | 描述 |
-| --- | --- |
-| **双轨记忆** | Core Memory（结构化 KV）+ Free-text Memory（向量语义） |
-| **统一意图分类** | 查询分类（greeting/code/factual...）+ 复杂度分层（SIMPLE→REASONING） |
-| **异步捕获** | 对话结束后静默提取，不干扰主流程 |
-| **向量检索** | bge-m3 (1024维) + Qdrant |
-| **LLM 准入门控** | 批量 LLM 判断候选记忆质量，防止噪音写入 |
-| **Tier 分层注入** | profile/general 层永久注入，technical 层按需检索 |
-| **记忆整理系统** | 每日/每周/每月自动整理，Ebbinghaus 衰减评分 + LLM 边界裁决，dead-letter 保护 |
+|------|------|
+| **双轨记忆** | Core Memory（结构化 KV，本地 JSON）+ Free-text Memory（向量语义，mem0） |
+| **自动召回** | `before_prompt_build` 时检索并注入，零代码侵入 |
+| **自动捕获** | `agent_end` 后静默提取，不阻塞响应 |
+| **统一意图分类** | 查询类型（greeting/code/factual…）+ 复杂度层级（SIMPLE→REASONING）+ captureHint |
+| **LLM 准入门控** | 批量判断候选记忆质量（core/free_text/discard），防止噪音写入 |
+| **记忆整理系统** | 每日/每周/每月自动整理，Ebbinghaus 衰减评分 + LLM 边界裁决 + dead-letter 保护 |
+| **Tier 分层注入** | profile/general 永久注入，technical 按需检索 |
+| **中文优先** | CJK bigram 分词、中文数字归一化（第一↔1）、跨语言语义匹配 |
+| **多 Agent 隔离** | 完整 Scope（userId + agentId + sessionKey + tenantId），per-agent userId 映射 |
 | **安全防护** | 注入攻击检测、敏感信息过滤、XML 转义 |
-| **Markdown 同步** | 核心记忆定期写入 MEMORY.md，跨会话可读 |
+| **Markdown 同步** | 核心记忆定期写入 MEMORY.md，跨会话文件可读 |
 
 ---
 
 ## 2. 与官方 mem0 插件对比
 
-### 2.1 架构差异
+### 功能对比
 
-| 维度 | 官方 mem0 插件 | 本插件 (memory-mem0) |
-|------|---------------|---------------------|
-| **记忆模型** | 单一向量记忆 | **双轨记忆**：Core Memory (结构化 KV) + Free-text Memory (向量) |
-| **Core Memory** | ❌ 不支持 | ✅ 本地 JSON 存储，分级注入 |
-| **召回率** | ~35.7% (基准测试) | **~88.6%** (相同 70 条测试集) |
-| **中文支持** | 基础支持 | **CJK 分词、数字归一化、语义重排序** |
-| **LLM 门控** | ❌ 无质量过滤 | ✅ **三分类门控** (core/free_text/discard) |
-| **捕获方式** | 同步写入 | **异步流水线** (零延迟影响) |
-| **去重机制** | 简单哈希 | **三元组相似度 + 语义合并** |
-| **工作区 Fallback** | ❌ 不支持 | ✅ **本地文件检索补充** |
-| **人工审核** | ❌ 不支持 | ✅ **Proposal Queue 人工确认** |
-| **安全过滤** | 基础过滤 | **注入攻击检测 + 敏感信息过滤** |
-| **多 Agent 隔离** | 部分支持 | **完整 Scope 隔离** |
-| **工具 API** | 3 个基础工具 | **9 个专用工具** |
+| 维度 | 官方 mem0 插件 | memory-mem0 |
+|------|--------------|-------------|
+| 记忆模型 | 单一向量记忆 | **双轨**：Core Memory + Free-text |
+| Core Memory | ❌ | ✅ 本地 JSON，Tier 分层 |
+| 召回率（70 条基准） | 35.7% | **88.6%** |
+| 中文支持 | 基础 | **CJK 分词 + 数字归一化 + 语义重排序** |
+| LLM 门控 | ❌ | ✅ 三分类（core/free_text/discard） |
+| 捕获方式 | 同步阻塞 | **异步流水线，零延迟影响** |
+| 记忆整理 | ❌ | ✅ 多周期调度 + Ebbinghaus 评分 + dead-letter |
+| 人工审核 | ❌ | ✅ Proposal Queue |
+| 工具 API | 3 个 | **9 个** |
+| CLI 看板 | ❌ | ✅ `/memu` 完整命令集 |
 
-### 2.2 召回率对比详解
+### 召回率基准（70 条测试集）
 
-在覆盖用户画像、目标、偏好、约束、技术配置和架构决策的 **70 条基准测试** 中：
+| 测试类别 | 官方插件 | memory-mem0 |
+|---------|---------|-------------|
+| 用户画像（identity） | 40% | **100%** |
+| 目标偏好（goals/preferences） | 35% | **90%** |
+| 约束规则（constraints） | 30% | **86%** |
+| 技术配置（technical） | 30% | **57%** |
+| 架构决策（architecture） | 25% | **56%** |
+| **整体** | **35.7%** | **88.6%** |
 
-| 测试类别 | 官方插件 | memory-mem0 | 提升原因 |
-|---------|---------|------------|---------|
-| 用户画像 (identity) | 40% | **95%** | Core Memory 永久注入 |
-| 目标偏好 (goals/preferences) | 35% | **90%** | Tier 分层策略 |
-| 约束规则 (constraints) | 30% | **85%** | 关键词 BM25 增强 |
-| 技术配置 (technical) | 30% | **70%** | 工作区 Fallback |
-| 架构决策 (architecture) | 25% | **65%** | 语义重排序 |
-| **整体召回率** | **35.7%** | **88.6%** | 双轨 + 混合检索 |
+> 技术/架构类偏低是 mem0 后端 `add` API 在存储时会改写内容（翻译为英文、丢失数字精度），属后端限制而非召回层问题。
 
-### 2.3 延迟与性能
+### 召回率演进
 
-| 指标 | 官方插件 | memory-mem0 |
-|------|---------|------------|
-| 首次召回延迟 | 2000-5000ms | 2700-5400ms (含 Core Memory 缓存) |
-| 缓存命中延迟 | N/A | **< 1ms** (Session Cache) |
-| 捕获写入延迟 | **同步阻塞** | **异步零阻塞** |
-| 批量处理能力 | 无 | **CandidateQueue + Outbox** |
-
-### 2.4 适用场景建议
-
-| 场景 | 推荐方案 |
-|------|---------|
-| 快速原型 / 简单需求 | 官方 mem0 插件 |
-| **生产级中文 Agent** | **memory-mem0** |
-| 需要高召回率 | **memory-mem0** |
-| 需要 Core Memory 稳定性 | **memory-mem0** |
-| 需要人工审核机制 | **memory-mem0** |
-| 多 Agent 隔离需求 | **memory-mem0** |
-| 低延迟要求 | 官方插件 (同步更可控) |
+| 版本 | 召回率 | 关键变更 |
+|------|------:|---------|
+| 基线（官方插件） | 35.7% | 纯 free-text |
+| + Core Memory + 重排序 | 75.7% | 本地 KV，语义重排 |
+| + 捕获流水线修复 | 78.6% | CLI 模式捕获，LLM 门控，去重修复 |
+| + 统一意图分类器 | 88.6% | 智能路由，bge-m3 嵌入 |
+| 预填充语料（上限） | 92.9% | 所有事实预存 |
 
 ---
 
-## 3. 系统架构
-
-### 2.1 整体流程图
+## 3. 整体架构
 
 ```
-用户消息
-    │
-    ▼
-[message_received 钩子]
-    │── 仅缓存原始入站消息（InboundMessageCache）
-    │── 不做过滤/不入 CandidateQueue
-    └──────────────────────────────────────────────┐
-                                                   │
-[before_prompt_build 钩子]                         │
-    │── 从 messages / prompt / inbound cache 提取查询
-    │── 统一意图分类（queryType / captureHint）
-    │── Core Memory 检索 + Free-text 检索 + workspace facts
-    └── 注入 <core-memory> / <relevant-memories>   │
-                                                   │
-[agent_end 钩子] ◄─────────────────────────────────┘
-    │── 仅在 success=true 时执行
-    │── 从 event.messages 提取最近 N 个 user turns 对话窗口
-    │── 清除注入的 memory blocks，保留真实 user / assistant 内容
-    │── 根据 captureHint / 长度 / 低信号规则决定是否捕获
-    ├── candidateQueue.enabled=true  → CandidateQueue
-    └── candidateQueue.enabled=false → 直接写 Outbox + 尝试 Core 提取
-
-[CandidateQueue 批处理]
-    ├── 写入 Outbox（free-text）
-    ├── Regex 快速提取 core 候选
-    └── LLM Gate 批量判断 regex 未命中项
-         ├── verdict=core      → CoreRepo.upsert / ProposalQueue
-         ├── verdict=free_text → 保持仅 free-text
-         └── verdict=discard   → 丢弃 core 提案
-
-[OutboxWorker]
-    │── 指数退避重试（1s/5s/30s/120s）
-    │── 并发度 2，批量 10
-    └── 死信队列（超过 maxRetries）
-
-[MarkdownSync]
-    │── 每 5 分钟定时同步
-    └── 写入 MEMORY.md（按 agent 隔离）
+┌─────────────────────────────────────────────────────────────────┐
+│                        OpenClaw Agent                            │
+├──────────────────────┬──────────────────────────────────────────┤
+│   message_received   │   before_prompt_build     agent_end      │
+│         │            │          │                    │           │
+│         ▼            │          ▼                    ▼           │
+│  InboundMessageCache │   ┌─────────────┐    ┌──────────────┐    │
+│  （原始消息缓存）     │   │ 统一意图分类 │    │  捕获 Hook   │    │
+│                      │   │  Classifier  │    │  agent_end   │    │
+│                      │   └──────┬──────┘    └──────┬───────┘    │
+│                      │          │                   │            │
+│                      │          ▼                   ▼            │
+│                      │   ┌─────────────┐    ┌──────────────┐    │
+│                      │   │  Recall Hook │    │ CandidateQueue│   │
+│                      │   │ 双层检索+注入│    │ 批量缓冲去重  │   │
+│                      │   └──────┬──────┘    └──────┬───────┘    │
+│                      │          │                   │            │
+│                      │          ▼                   ▼            │
+│                      │   ┌─────────────┐    ┌──────────────┐    │
+│                      │   │  <core-mem> │    │  LLM Gate    │    │
+│                      │   │  <relevant> │    │ core/ft/discard    │
+│                      │   │  注入 Prompt│    └──┬───────┬───┘    │
+│                      │   └─────────────┘       │       │        │
+│                      │                          ▼       ▼        │
+│                      │                   CoreRepo   Outbox       │
+│                      │                   (本地JSON)  (异步队列)   │
+│                      │                                 │         │
+│                      │                                 ▼         │
+│                      │                            mem0 API       │
+│                      │                           (向量数据库)     │
+├──────────────────────┴──────────────────────────────────────────┤
+│              整理调度器（后台，每小时 tick）                        │
+│   daily 03:00 · weekly 周一 04:00 · monthly 每月1日 05:00        │
+│   ImportanceScorer → 裁决 → 可选 LLM 裁决 → dead-letter 保护     │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-### 2.2 模块结构
+---
+
+## 4. 模块结构
 
 ```
 memory-mem0/
-├── index.ts              # 插件入口，注册所有模块
-├── types.ts              # 类型定义 + 配置 Schema + 默认值
+├── index.ts                    # 插件入口：注册所有 hook/tool/command，生命周期管理
+├── types.ts                    # 全量类型定义 + 配置 Schema + 默认值 + loadConfig()
+│
 ├── hooks/
-│   ├── recall.ts         # before_prompt_build：召回 + 注入 + 分类缓存
-│   ├── capture.ts        # agent_end：统一捕获入口
-│   └── message-received.ts  # 仅缓存原始入站消息
-├── consolidation/        # 记忆整理子系统
-│   ├── types.ts          # 整理系统共享类型（ScoredMemory、ConsolidationReport 等）
-│   ├── scorer.ts         # ImportanceScorer：五因子评分 + Ebbinghaus 衰减
-│   ├── runner.ts         # ConsolidationRunner：dry-run + 实际整理执行
-│   ├── llm-consolidator.ts  # LLMConsolidator：边界区间 LLM 裁决（任意 OpenAI-compatible 端点）
-│   └── scheduler.ts      # ConsolidationScheduler：每小时 tick，daily/weekly/monthly 调度
-├── classifier.ts         # 统一意图分类器（查询类型、复杂度层级、captureHint）
-├── smart-router.ts       # 基于查询复杂度的模型路由
-├── core-repository.ts    # Core Memory CRUD + 合并去重
-├── core-proposals.ts     # 人工审核队列
-├── core-admission.ts     # LLM 准入门控
-├── outbox.ts             # 异步写回队列
-├── candidate-queue.ts    # 捕获候选缓冲
-├── sync.ts               # Markdown 同步
-├── security.ts           # 注入防御 + 敏感过滤
-├── metadata.ts           # 记忆类型推断 + 重排序
-├── cache.ts              # LRU 缓存
-├── inbound-cache.ts      # 入站消息缓存（辅助召回）
-├── workspace-facts.ts    # 工作区文件检索 fallback
+│   ├── recall.ts               # before_prompt_build：查询提取 → 分类 → 双层检索 → 注入
+│   ├── capture.ts              # agent_end：对话窗口提取 → 过滤 → CandidateQueue
+│   ├── message-received.ts     # 仅缓存原始入站消息（InboundMessageCache）
+│   ├── smart-router.ts         # before_model_resolve：按复杂度层级路由模型
+│   └── utils.ts                # stripInjectedBlocks、extractTextBlocks 等共用函数
+│
+├── consolidation/              # 记忆整理子系统
+│   ├── types.ts                # ScoreFactors、ScoredMemory、ConsolidationReport 等
+│   ├── scorer.ts               # ImportanceScorer：五因子 + Ebbinghaus 衰减
+│   ├── runner.ts               # ConsolidationRunner：dry-run + 实际执行 + dead-letter
+│   ├── llm-consolidator.ts     # LLMConsolidator：边界区间调用任意 OpenAI-compat 端点
+│   └── scheduler.ts            # ConsolidationScheduler：hourly tick + 状态持久化
+│
+├── backends/free-text/
+│   ├── base.ts                 # FreeTextBackend 接口
+│   ├── factory.ts              # 后端工厂（目前仅 mem0）
+│   └── mem0.ts                 # mem0 platform + OSS 实现，Gemini/Kimi graph patch
+│
+├── classifier.ts               # UnifiedIntentClassifier：单次 LLM 分类，LRU 缓存
+├── smart-router.ts             # SmartRouter：tier→model 映射
+├── core-repository.ts          # CoreMemoryRepository：CRUD + 在线三元组去重
+├── core-proposals.ts           # CoreProposalQueue：人工审核队列 + Regex 提取
+├── core-admission.ts           # judgeCandidates()：批量 LLM 准入门控
+├── candidate-queue.ts          # CandidateQueue：SHA256 去重 + 定时批处理
+├── outbox.ts                   # OutboxWorker：指数退避重试 + 死信队列 + 磁盘持久化
+├── sync.ts                     # MarkdownSync：定时写入 MEMORY.md
+├── cache.ts                    # LRUCache<T>：带 TTL 的 LRU 缓存
+├── inbound-cache.ts            # InboundMessageCache：入站消息去重辅助
+├── metadata.ts                 # 分词 + 中文数字归一化 + 语义重排序 + trigram 相似度
+├── security.ts                 # shouldCapture / escapeForInjection / 注入检测
+├── workspace-facts.ts          # 工作区 MD 文件 fallback 检索
+├── metrics.ts                  # 运行时指标（召回延迟、捕获量等）
+├── llm-config.ts               # Kimi/Gemini API 地址归一化工具
+├── cli.ts                      # /memu 所有 CLI 命令实现
+│
+├── tools/                      # 9 个 Agent 工具（工厂模式）
+│   ├── recall.ts               # memory_recall
+│   ├── store.ts                # memory_store
+│   ├── forget.ts               # memory_forget
+│   ├── stats.ts                # memory_stats
+│   ├── core-list.ts            # memory_core_list
+│   ├── core-upsert.ts          # memory_core_upsert
+│   ├── core-delete.ts          # memory_core_delete
+│   ├── core-touch.ts           # memory_core_touch
+│   └── core-proposals.ts       # memory_core_proposals
+│
 ├── scripts/
-│   ├── real-data-analysis.ts   # 真实数据干跑分析
-│   └── tune-params.ts          # 跑满一周后的参数调优诊断
-└── backends/
-    └── free-text/
-        ├── base.ts       # FreeTextBackend 接口
-        ├── mem0.ts       # mem0 向量数据库实现
-        └── factory.ts    # 后端工厂
+│   ├── real-data-analysis.ts   # 真实数据干跑分析（评分分布 + 整理报告）
+│   └── tune-params.ts          # 参数调优诊断（跑满一周后使用）
+│
+└── tests/                      # 测试文件（npx tsx 运行）
+    ├── consolidation-scorer.test.ts
+    ├── consolidation-runner.test.ts
+    ├── consolidation-e2e.test.ts
+    ├── e2e-lifecycle.test.ts
+    ├── cache.test.ts
+    ├── classifier.test.ts
+    └── ...
 ```
 
 ---
 
-## 4. 核心模块详解
+## 5. 核心模块详解
 
-### 3.1 双轨记忆体系
+### 5.1 双轨记忆体系
 
 #### Core Memory（核心记忆）
 
-结构化 KV 存储，持久化在本地 JSON 文件中。
+本地 JSON 文件存储的结构化 KV，零网络依赖，毫秒级访问。
 
 **数据结构：**
 
 ```typescript
 type CoreMemoryRecord = {
-  id: string;            // UUID
-  category: string;      // identity / goals / constraints / preferences / relationships / general
-  key: string;           // 格式：category.topic（如 identity.name）
-  value: string;         // 简洁的第三人称事实陈述
-  importance?: number;   // 重要性 1-10
-  tier?: CoreMemoryTier; // profile | technical | general
-  source?: string;       // 来源标识
-  createdAt: number;
-  updatedAt: number;
-  touchedAt?: number;    // 最近一次被注入/访问的时间
+  id: string;           // UUID
+  category: string;     // identity / goals / preferences / constraints / relationships / technical / general
+  key: string;          // 格式：category.topic，如 identity.name
+  value: string;        // 简洁事实陈述
+  importance?: number;  // 重要性，0–10（scorer 自动归一化为 0–1）
+  tier?: "profile" | "technical" | "general";
+  source?: string;      // 来源：capture-queue / capture-llm-gate / manual 等
+  createdAt?: number;
+  updatedAt?: number;
+  touchedAt?: number;   // 最近一次被注入/访问的时间（影响整理评分）
 };
 ```
 
-**Tier 分层策略：**
+**Tier 策略：**
 
-| Tier | Category 映射 | 注入策略 |
-| --- | --- | --- |
+| Tier | Category 映射 | 注入方式 |
+|------|-------------|---------|
 | `profile` | identity / preferences / goals / relationships | 永远注入（always-inject） |
-| `technical` | technical / architecture / decision / benchmark | 仅按评分检索时注入 |
-| `general` | 其他（constraints 等） | 永远注入 |
+| `general` | constraints 及其他 | 永远注入 |
+| `technical` | technical / architecture / decision / benchmark | 按评分检索时注入 |
 
-**存储路径：** `~/.openclaw/data/memory-mem0/core-memory.json`
+**持久化路径：** `~/.openclaw/data/memory-mem0/core-memory.json`
 
 #### Free-text Memory（自由文本记忆）
 
-向量数据库存储，通过 mem0（OSS 模式）实现语义检索。
+通过 mem0 OSS 模式存储于向量数据库（Qdrant + bge-m3 1024维嵌入），支持语义相似度检索。
 
-**元数据类型体系：**
+**memory_kind 分类：**
 
-| memory_kind | 触发关键词示例 | 描述 |
-| --- | --- | --- |
-| `profile` | 名字、时区、住在 | 身份基础信息 |
-| `preference` | 喜欢、偏好 | 个人偏好 |
-| `constraint` | 必须、禁止、不要 | 规则与约束 |
-| `goal` | 目标、计划、方向 | 长期目标 |
-| `relationship` | 伴侣、同事、朋友 | 关系信息 |
-| `decision` | 决定、选择、因为 | 决策与理由 |
-| `architecture` | 架构、分层、管线 | 系统设计 |
-| `technical` | 配置、参数、模型 | 技术细节 |
-| `benchmark` | 延迟、成本、p95 | 性能指标 |
-| `lesson` | 教训、复盘、经验 | 学习成果 |
-| `workflow` | 工作流、代码审查 | 流程信息 |
-| `project` | 项目、工作区、文档 | 项目上下文 |
-| `general` | 其他 | 通用 |
-
-**Quality 分级：**
-
-- `durable`：稳定持久事实（偏好、约束、目标）→ Markdown 同步优先
-- `transient`：临时上下文 → 检索后不持久同步
+| 类型 | 触发关键词示例 |
+|------|-------------|
+| `profile` | 名字、时区、住在 |
+| `preference` | 喜欢、偏好 |
+| `constraint` | 必须、禁止、不要 |
+| `goal` | 目标、计划 |
+| `decision` | 决定、选择、因为 |
+| `architecture` | 架构、分层、管线 |
+| `technical` | 配置、参数、模型 |
+| `benchmark` | 延迟、成本、p95 |
+| `lesson` | 教训、复盘、经验 |
+| `workflow` | 工作流、流程 |
 
 ---
 
-### 3.2 召回管道（Recall Hook）
+### 5.2 召回管道（Recall Hook）
 
-**触发时机：** `before_prompt_build`（每次 Agent 构建 Prompt 前）
+**触发时机：** `before_prompt_build`，每次构建 Prompt 前自动执行。
 
-**查询提取策略：**
-
-```
-raw prompt / messages
-    │
-    ├── stripInjectedBlocks()     # 去除上次注入的 <core-memory>
-    ├── stripPromptLead()         # 去除 Feishu/time 元数据前缀
-    ├── sanitizePromptQuery()     # 提取最后一条用户文本
-    └── splitRecallQueries()      # 拆分多问题（按序号、分号、换行）
-```
-
-**查询意图推断（inferQueryIntent）：**
-
-插件会分析查询关键词，推断用户意图并选择最优检索策略：
-- `singleFact`：是否是单点查询（影响返回条数）
-- `configLike`：是否是技术配置类问题（限制 free-text 返回 2 条）
-- `categoryHints`：推断相关 category（identity / constraints / technical 等）
-
-**双层检索：**
+**执行流程：**
 
 ```
-Phase 1: always-inject 池（profile + general tier）
-  └── 全量 Core Memory 按 tier 筛选，永远注入
+1. 查询提取
+   raw prompt/messages
+     ├── stripInjectedBlocks()      去除上次注入的 <core-memory>/<relevant-memories>
+     ├── stripPromptLead()          去除飞书/时间元数据前缀
+     ├── sanitizePromptQuery()      提取最后一条用户文本
+     └── splitRecallQueries()       拆分多问题（按序号、分号、换行）
 
-Phase 2: retrieval 池（technical tier）
-  └── scoreCoreCandidate() 评分：
-      ├── 精确匹配 = 1.0 ~ 1.2
-      ├── tokenOverlap BM25 = 0 ~ 0.99
-      ├── conceptBoost（同义词/概念扩展）
-      └── categoryBoost（+0.12 当 category 命中意图）
+2. 意图分类（UnifiedIntentClassifier）
+   → 返回 queryType / captureHint / targetCategories / tier
 
-Phase 3: Free-text 向量检索
-  └── mem0.search() × queryParts 并行
-      └── 去重 + rerankMemoryResults() 重排序
+3. 双层检索（并行）
+   Phase 1: always-inject 池
+     全量 Core Memory 按 tier=profile/general 筛选，全量注入
 
-Phase 4: workspace facts（并行补充）
-  └── 搜索工作区 MD 文件，补充本地上下文
+   Phase 2: technical tier 检索
+     scoreCoreCandidate() 多维评分：
+       ├── 精确 key 匹配 = 1.0～1.2
+       ├── token overlap BM25
+       ├── conceptBoost（同义词/概念扩展）
+       └── categoryBoost（+0.12 当 category 命中意图）
+
+   Phase 3: free-text 向量检索
+     mem0.search() × queryParts 并行 → 去重 → rerankMemoryResults() 重排序
+
+   Phase 4: workspace facts（并行补充）
+     工作区 MD 文件 token 匹配，本地 fallback
+
+4. 注入 Prompt
+   <core-memory>
+   稳定事实，优先级高于 relevant-memories...
+   1. 候选答案 [identity/identity.name]：昊。
+   </core-memory>
+
+   <relevant-memories>
+   补充历史事实...
+   1. 候选答案 [general]：用户上午和晚上最高效。
+   </relevant-memories>
 ```
 
-**注入格式：**
+**会话级去重：**
 
-```xml
-<core-memory>
-稳定事实，优先级高于 relevant-memories...
-
-1. 候选答案 [identity/identity.name]：用户叫昊。
-2. 候选答案 [goals/goals.primary]：用户的主目标是成为一人公司创业者。
-</core-memory>
-
-<relevant-memories>
-补充历史事实。仅当 core-memory 没覆盖答案时再参考...
-
-1. 候选答案 [general]：用户上午和晚上最高效...
-</relevant-memories>
-```
-
-**注入去重机制：**
-
-- **签名去重**：相同内容在 30s 内不重复注入
-- **Session Core Cache**：90s 内同一 session 的 Core 列表复用
-- **Session Relevant Cache**：90s 内相同语义查询的 free-text 结果复用
+| 去重机制 | TTL | 说明 |
+|---------|-----|------|
+| 注入签名去重 | 30s | 相同内容短期内不重复注入 |
+| Session Core Cache | 90s | 同 session Core 列表复用 |
+| Session Relevant Cache | 90s | 相同语义查询 free-text 结果复用 |
 
 ---
 
-### 3.3 捕获管道（Capture Pipeline）
+### 5.3 统一意图分类器
 
-**当前实现只有一个真正的自动捕获入口：`agent_end`。**
+单次 LLM 调用（Kimi Coding k2p5），结果缓存在 LRU Cache（300s TTL），同一查询只调用一次。
 
-| 入口 | 触发时机 | 当前职责 |
-| --- | --- | --- |
-| `message_received` | 用户消息到达时 | 仅缓存原始文本到 `InboundMessageCache` |
-| `recall hook` | 构建 Prompt 时 | 做召回、注入、分类缓存，不再承担捕获副作用 |
-| `agent_end` | Agent 回复完成后 | 自动捕获主入口，负责入队或直接写 Outbox |
+**分类维度：**
 
-**`agent_end` 捕获语义：**
+| 字段 | 取值 | 用途 |
+|------|------|------|
+| `tier` | SIMPLE / MEDIUM / COMPLEX / REASONING | 可选模型路由（Smart Router） |
+| `queryType` | greeting / code / debug / factual / preference / planning / open | 控制捕获策略 |
+| `captureHint` | skip / light / full | 控制 Capture Pipeline 行为 |
+| `targetCategories` | identity / work / preferences / goals… | 引导 Core Memory 检索范围 |
 
-- 仅当 `event.success=true` 时才执行捕获。
-- 从 `event.messages` 中提取最近 `maxConversationTurns` 个用户轮次对应的完整对话窗口，而不是只取最后一条 message。
-- 会移除 `<core-memory>`、`<relevant-memories>` 和注入预算截断标记，但保留真实的 user / assistant 对话内容。
-- 最终是否捕获，以最后一条用户消息作为过滤与 dedupe 判定依据。
+**captureHint 行为：**
 
-**Graph Memory 兼容层：**
-
-- 当 `mem0.enableGraph=true` 且 `oss.llm` / `oss.graph_store.llm` 使用 `google` 或 `gemini` provider 时，插件会自动改写为 Google 的 OpenAI-compatible `openai` 配置。
-- 改写后的配置会同时写入顶层 `llm` 和 `graphStore.llm`，绕过 mem0 上游 Graph 路径误读 `config.llm.config` 的问题。
-- 因此大多数情况下不需要单独维护 `graph_store.llm`；只配 `oss.llm` 即可。
-
-**意图分类器 `captureHint` 流程控制：**
-
-在 `before_prompt_build` 阶段，统一意图分类器会提前产出分类结果并缓存，供 `agent_end` 捕获阶段复用：
-
-| captureHint | 处理方式 | 适用场景 |
-| --- | --- | --- |
-| `skip` | 完全跳过捕获 | 问候语、代码请求、调试请求 |
-| `light` | 允许 free-text，跳过 Core LLM Gate | 临时上下文、不值得提炼为 Core |
-| `full` | 完整处理（含 Regex / LLM Gate） | 身份信息、偏好、目标等持久事实 |
-
-分类器使用精简中文 Prompt 和 `response_format: json_object` 确保响应可靠解析。对于截断的 LLM 响应，会回退到正则提取部分字段。
-
-**过滤条件（任一命中即丢弃）：**
-
-```typescript
-// 1. 系统片段 / 注入残留
-SKIP_PREFIXES = ["[system]", "[tool_result]", "<system", "```tool", "<relevant-memories>"]
-
-// 2. 长度校验（针对最后一条用户消息）
-text.length < minChars(16) || text.length > maxChars(600)
-
-// 3. 低信号内容
-LOW_SIGNAL_PATTERNS = [
-  /ok|好的|嗯|收到/,        // 简短确认
-  /today|明天|今天|今晚/,    // 临时时间表达
-  /test|debug|memu|测试/,  // 调试内容
-]
-
-// 4. direct-outbox 模式下的相似度去重
-trigramSimilarity(text, recent) >= dedupeThreshold
-```
-
-**捕获落地路径：**
-
-| 配置 | 行为 |
-| --- | --- |
-| `capture.candidateQueue.enabled=true` | 对话窗口进入 `CandidateQueue`，后续批量写 `Outbox`，并做 Regex / LLM Gate Core 提取 |
-| `capture.candidateQueue.enabled=false` | 直接写 `Outbox`，同时立即尝试 Regex / LLM Gate Core 提取 |
-
-#### CandidateQueue 批处理流程
-
-```
-入队（enqueue conversation window）
-    │── SHA256 哈希去重（全局 200 条窗口）
-    │── 数据结构：messages[] + scope + metadata
-    └── 写入 candidate-queue.json（持久化，可兼容旧 text 格式恢复）
-
-定时触发（默认 10 分钟）
-    │
-    ▼
-processBatch（最多 50 条）
-    │
-    ├── 路由到 Outbox（free-text 写入）
-    │
-    ├── 对最后一条 user message 做 Regex 快速提取
-    │   └── extractCoreProposal()：
-    │       识别"用户叫X"/"我来自X"等高置信度模式
-    │       └── humanReviewRequired=true  → ProposalQueue
-    │           humanReviewRequired=false → CoreRepo.upsert()
-    │
-    └── 对 regex 未命中项做 LLM Gate 批量判断
-        ├── 跳过 code / debug / greeting / captureHint=light
-        ├── 返回 JSON：verdict / key / value / reason
-        └── verdict=core      → CoreRepo.upsert() / ProposalQueue
-            verdict=free_text → 保持仅 free-text
-            verdict=discard   → 丢弃 core 提案
-```
-
-#### LLM Gate System Prompt
-
-LLM Gate 使用中文 System Prompt 进行三分类判断：
-
-- **core**：用户稳定个人特征（必须提供 key + value）
-- **free_text**：有价值的上下文信息
-- **discard**：低信号/临时/闲聊内容
-
-**注意：LLM Gate 需要 `llmGate.apiKey` 配置，否则静默跳过。**
+| captureHint | 处理方式 |
+|-------------|---------|
+| `skip` | 完全跳过捕获（问候、纯代码请求、调试） |
+| `light` | 仅写 free-text，跳过 Core LLM Gate |
+| `full` | 完整处理：Regex 提取 + LLM Gate + Outbox |
 
 ---
 
-### 3.4 Outbox 异步写回队列
+### 5.4 捕获管道（Capture Pipeline）
 
-**设计目标：** 解耦 AI 主流程与外部 mem0 写入，不让网络延迟影响响应速度。
+**唯一自动捕获入口：`agent_end`**（仅当 `event.success=true` 时执行）。
 
-**关键特性：**
+```
+agent_end
+  │
+  ├── 提取对话窗口（最近 maxConversationTurns 个 user 轮次）
+  ├── stripInjectedBlocks()   清除注入的 memory block
+  ├── shouldCapture() 过滤：
+  │     ├── 内容 < minChars(20) 或 > maxChars(600)
+  │     ├── 命中低信号模式（"好的"、"测试"、"今天"等）
+  │     ├── 命中系统片段前缀（[system]、[tool_result]…）
+  │     └── 与最近捕获相似度 ≥ dedupeThreshold(0.8)
+  │
+  └── 入队 CandidateQueue（enabled=true）
+      或直接写 Outbox（enabled=false）
+
+CandidateQueue 批处理（默认每 10s，最多 50 条）
+  │
+  ├── 路由到 Outbox（free-text 写入）
+  │
+  ├── Regex 快速提取 Core（高置信度模式）
+  │     "我叫X" / "我来自X" / "我喜欢X" 等
+  │     → humanReviewRequired=true  → ProposalQueue
+  │       humanReviewRequired=false → CoreRepo.upsert()
+  │
+  └── LLM Gate 批量判断（仅对 Regex 未命中 + captureHint=full 的项）
+        返回 JSON 数组：[{index, verdict, key, value, reason}]
+        ├── verdict=core      → CoreRepo.upsert() / ProposalQueue
+        ├── verdict=free_text → 仅 Outbox（不写 Core）
+        └── verdict=discard   → 完全丢弃
+```
+
+---
+
+### 5.5 LLM 准入门控
+
+`core-admission.ts` — 批量调用 LLM，对 CandidateQueue 中未被 Regex 捕获的项做三分类判断。
+
+**System Prompt（中文）：**
+- `core`：用户的稳定个人特征，必须提供 key（格式 `category.topic`）和 value
+- `free_text`：有价值的上下文信息，可选提供 value 摘要
+- `discard`：低信号/临时/闲聊内容，可省略不输出
+
+**关键行为：**
+- 需要 `llmGate.apiKey` 才生效；无 key 时静默跳过（仅 Regex 路径）
+- 使用模块级 inflight Map 去重：相同 batch 内容不会并发发两次
+- 响应解析容错：支持 markdown 代码块、截断 JSON
+
+---
+
+### 5.6 Outbox 异步写回队列
+
+解耦 AI 主流程与 mem0 写入，不让网络延迟影响 Agent 响应速度。
 
 | 特性 | 实现 |
-| --- | --- |
-| **持久化** | 写入 `outbox-queue.json`，重启恢复 |
-| **去重** | 1分钟时间桶 SHA256 哈希 |
-| **指数退避** | 1s → 5s → 30s → 120s |
-| **死信队列** | maxRetries（默认5次）后移入 `outbox-deadletter.json` |
-| **并发控制** | 并发度 2，批量 10 |
-| **立即刷新** | enqueue 后立即触发一次 flush（减少延迟） |
-| **优雅停机** | drain(drainTimeoutMs) 保证消息不丢 |
-
-**队列状态文件：**
-
-```
-~/.openclaw/data/memory-mem0/
-├── outbox-queue.json          # 待发送队列
-├── outbox-deadletter.json     # 死信队列
-├── candidate-queue.json       # 捕获候选
-├── core-memory.json           # Core Memory 主存储
-├── core-proposals.json        # 人工审核提案
-└── mem0-vector-store.db       # 向量数据库
-```
+|------|------|
+| 磁盘持久化 | `outbox-queue.json`，重启后自动恢复 |
+| 去重 | 1分钟时间桶 SHA256 哈希 |
+| 重试策略 | 指数退避：1s → 5s → 30s → 120s |
+| 死信队列 | 超过 maxRetries(5) 后移入 `outbox-deadletter.json` |
+| 并发控制 | 并发度 2，批量 10 |
+| 立即刷新 | enqueue 后立即触发一次 flush（减少写入延迟） |
+| 优雅停机 | `drain(drainTimeoutMs)` 保证消息不丢 |
 
 ---
 
-### 3.5 记忆整理系统（Consolidation）
+### 5.7 记忆整理系统（Consolidation）
 
-记忆整理系统是独立的后台子系统，负责定期评估 Core Memory 的重要性并做出保留/降级/归档/删除决策，防止记忆无限增长且保证高质量记忆永不丢失。
+后台独立子系统，定期评估 Core Memory 的重要性并做保留/降级/归档/删除决策。
 
-#### 整理调度器（ConsolidationScheduler）
+#### 调度器（ConsolidationScheduler）
 
-每小时 tick 一次，按墙钟时间判断是否触发各周期：
+每小时 tick，按墙钟时间判断是否触发：
 
 | 周期 | 默认时间 | 说明 |
-| --- | --- | --- |
-| `daily` | 每天 03:00 | 轻量清理：删除/归档低分记忆 |
-| `weekly` | 每周一 04:00 | 中度整合：合并同语义记忆 |
-| `monthly` | 每月1日 05:00 | 深度审查：LLM 全量裁决 |
+|------|---------|------|
+| `daily` | 每天 03:00 | 轻量清理 |
+| `weekly` | 每周一 04:00 | 中度整合 |
+| `monthly` | 每月1日 05:00 | 深度审查 |
 
-- 调度状态持久化到 `consolidation-state.json`，重启后不会重复触发
-- 每个周期有 inflight 去重（同一周期不会并发执行）
-- 支持 `/memu consolidate run <cycle>` 手动强制触发
+- 状态持久化到 `consolidation-state.json`，重启不重复触发
+- inflight Map 保证同一周期不并发执行
+- 支持 `/memu consolidate run <cycle>` 手动触发
 
 #### 五因子重要性评分（ImportanceScorer）
 
-每条 Core Memory 记录会被评为 0–1 的重要性分数：
-
 ```
-score = Σ(factor × weight)
+score = recency × 0.30
+      + accessFreq × 0.20
+      + novelty × 0.20
+      + typePrior × 0.15
+      + explicitImportance × 0.15
 ```
 
-| 因子 | 权重（默认） | 计算方式 |
-| --- | --- | --- |
-| `recency` | 0.30 | Ebbinghaus 遗忘曲线：`e^(-Δt/S)`，S=14天 |
-| `accessFreq` | 0.20 | 访问频率代理：(touchedAt - createdAt) 相对集合中位数 |
-| `novelty` | 0.20 | 1 − max(trigram 相似度到同 category 其他记录) |
-| `typePrior` | 0.15 | 静态先验：profile=1.0，technical=0.8，general=0.5 |
-| `explicitImportance` | 0.15 | 记录上的 importance 字段（0-10 自动归一化为 0-1） |
+| 因子 | 计算方式 |
+|------|---------|
+| `recency` | Ebbinghaus 遗忘曲线：`e^(-Δt/S)`，S=stabilityDays(14天) |
+| `accessFreq` | (touchedAt − createdAt) 相对集合中位数的 sigmoid 归一化 |
+| `novelty` | 1 − max(trigram 相似度，同 category 其他记录) |
+| `typePrior` | 静态先验：profile=1.0，technical=0.8，general=0.5 |
+| `explicitImportance` | importance 字段，自动归一化（>1 则 ÷10）|
 
-**Ebbinghaus 遗忘曲线：** 刚更新的记忆 recency 接近 1.0，每经过 `stabilityDays` 天衰减到约 37%（`e^-1`）。默认 `stabilityDays=14`，即两周后 recency 降至 0.37。
-
-#### 分级裁决
+#### 分级裁决阈值
 
 | 分数区间 | 裁决 | 行为 |
-| --- | --- | --- |
+|---------|------|------|
 | ≥ 0.65 | `keep` | 保留不变 |
-| 0.35 – 0.55 | `llm-boundary` | 调用 LLM 做精细裁决（可选） |
-| 0.45 – 0.65 | `downgrade` | 降级（降低 tier 或 importance） |
-| 0.25 – 0.45 | `archive` | 归档标记，跳过注入但不删除 |
-| < 0.10 | `delete` | 写入 dead-letter log 后删除 |
+| [0.45, 0.65) | `downgrade` | 降级（降低 tier/importance） |
+| [0.25, 0.45) | `archive` | 归档标记，跳过注入但不删除 |
+| [0.10, 0.25) | `archive` | 同上 |
+| < 0.10 | `delete` | 写 dead-letter 后删除 |
+| [0.35, 0.55] | `llm-boundary` | 在上述基础上额外调用 LLM 精细裁决 |
 
-#### LLM 边界裁决（ConsolidationLLMConfig）
+#### LLM 边界裁决
 
-处于 `llmLow`–`llmHigh`（默认 0.35–0.55）区间的记录，自动调用 LLM 进行精细判断：
-
-- 支持任意 OpenAI-compatible 端点：本地 Ollama、Kimi Coding、OpenAI、LiteLLM
-- 默认端点：`http://localhost:11434/v1`，模型：`qwen2.5:14b`
-- 批量发送（默认最多 20 条），解析 JSON 响应，过滤非法 ID
+处于 llmLow–llmHigh（默认 0.35–0.55）区间的记录，调用 LLM 做精细判断。支持任意 OpenAI-compatible 端点：
 
 ```jsonc
-"core": {
-  "consolidation": {
-    "llm": {
-      "enabled": true,
-      "apiBase": "http://localhost:11434/v1",  // 或 Kimi/OpenAI 等
-      "model": "qwen2.5:7b",
-      "timeoutMs": 30000
-    }
+"consolidation": {
+  "llm": {
+    "enabled": true,
+    "apiBase": "http://localhost:11434/v1",  // 本地 Ollama
+    // 或 "https://api.kimi.com/coding/v1" / "https://api.openai.com/v1"
+    "model": "qwen2.5:7b",
+    "timeoutMs": 30000,
+    "maxBatchSize": 20
   }
 }
 ```
 
 #### Dead-letter 保护
 
-删除前将被删记录完整写入 `consolidation-dead-letter.jsonl`（JSONL 格式，追加写），包含：
-- 被删记录的完整内容
-- 删除原因（score-based / llm-verdict）
-- 删除时间戳
+删除前将被删记录完整写入 `consolidation-dead-letter.jsonl`（JSONL 追加），包含完整记录内容、删除原因、删除时间戳。误删可从文件中手动恢复。
 
-误删可从 dead-letter 文件中手动恢复。
+#### 参数调优
 
-#### 简单合并去重（CoreRepository 层）
+跑满一周后运行诊断脚本：
 
-除整理调度器外，CoreRepository 层还维护一个低成本的在线去重：
-- **精确键去重**：同 `(category, key)` 保留最新 `updatedAt`
-- **语义值去重**：同 category 内 trigram 相似度 ≥ 0.85 的记录自动合并，保留 importance 更高的
+```bash
+npx tsx scripts/tune-params.ts
+```
+
+输出：评分分布直方图、bimodality 检测、Ebbinghaus 衰减充分性估算、LLM 边界率、dead-letter 质量分析、因子方差诊断，并给出具体配置建议。
 
 ---
 
-### 3.6 人工审核队列（CoreProposalQueue）
+### 5.8 Markdown 同步
 
-当 `humanReviewRequired: true` 时，LLM Gate 和 Regex 提取的核心记忆候选会进入审核队列，等待人工确认。
-
-**操作接口：**
-
-```
-/memory_core_proposals list        # 查看待审核提案
-/memory_core_proposals approve     # 批准（写入 CoreRepo）
-/memory_core_proposals reject      # 拒绝
-```
-
----
-
-### 3.7 Markdown 同步（MarkdownSync）
-
-**目的：** 将 Core Memory 写入 MEMORY.md，使其在 Agent 启动读取文件时可直接感知。
-
-**同步策略：**
+`MarkdownSync` 将 Core Memory 写入 MEMORY.md，使 Agent 启动读取文件时可直接感知记忆。
 
 | 触发方式 | 间隔 |
-| --- | --- |
+|---------|------|
 | 定时同步 | 每 5 分钟（`sync.intervalMs=300000`） |
-| 按需触发 | 捕获写入后 1s 防抖延迟 |
+| 写入后触发 | 捕获写入后 1s 防抖 |
 
-**输出格式（写入 MEMORY.md）：**
+**输出格式：**
 
 ```markdown
 <!-- memory-mem0:start -->
 <!-- memory-mem0:generated -->
-<!-- scope:user=hao.break.zero agent=turning_zero session=... -->
+<!-- scope:user=hao.break.zero agent=turning_zero -->
 
 ## Core Identity
-- [identity/identity.name] 用户叫昊。
+- [identity/identity.name] 昊，北京，UTC+8
 
 ## Core Goals & Constraints
-- [goals/goals.primary] 用户的主目标是成为一人公司创业者。
-- [constraints/constraints.turning_zero.external_action] turning_zero 对外部行动的默认要求是先确认。
+- [goals/goals.primary] 成为一人公司创业者
 
 ## Recent Context
 - 用户主要深耕分布式系统与高并发。
@@ -559,53 +514,25 @@ score = Σ(factor × weight)
 <!-- memory-mem0:end -->
 
 ## Manual Notes
-（用户手工维护内容，同步时保留）
+（用户手工维护的内容，同步时不覆盖）
 ```
-
-**注意：**
-
-- 生成块与手动内容分离，不会覆盖手工维护的内容
-- 支持多 Agent 各自同步到对应 workspace 的 MEMORY.md
-- `quality=durable` 的 free-text 记忆优先进入 Recent Context
 
 ---
 
-## 5. 安全机制
+### 5.9 安全机制
 
-### 5.1 注入攻击防御
+#### 注入攻击防御
 
-```typescript
-// 检测并拦截以下模式：
-INJECTION_PATTERNS = [
-  /ignore all previous instructions/i,
-  /you are now/i,
-  /system:/i,
-  /jailbreak/i,
-  /DAN mode/i,
-  // ... 共 13 个模式
-]
-```
+写入 Core Memory 前均通过 `shouldStoreCoreMemory()` 校验：
+- key 格式：`/^[a-z0-9][a-z0-9_.-]{1,79}$/`
+- value 最大长度截断
+- 13 个注入模式检测（`ignore all previous instructions`、`you are now`、`jailbreak` 等）
 
-所有即将写入 Core Memory 的内容都经过 `shouldStoreCoreMemory()` 校验：
-1. Key 格式校验（`/^[a-z0-9][a-z0-9_.-]{1,79}$/`）
-2. Value 最大长度截断
-3. 注入模式检测
-4. 敏感信息检测
+#### 敏感信息过滤
 
-### 5.2 敏感信息过滤
+自动拦截：中国手机号、美国电话、电子邮件、中国身份证、SSN、API Key（sk-/pk-/rk- 前缀）。
 
-自动过滤以下内容：
-
-| 类型 | 检测模式 |
-| --- | --- |
-| 中国手机号 | `1[3-9]\d{9}` |
-| 美国电话 | `\d{3}[-.]?\d{3}[-.]?\d{4}` |
-| 电子邮件 | `[\w.-]+@[\w.-]+\.\w{2,}` |
-| 中国身份证 | 18位标准格式 |
-| SSN | `\d{3}-\d{2}-\d{4}` |
-| API Key | `sk-/pk-/rk-` 前缀 |
-
-### 5.3 上下文注入 XML 转义
+#### XML 转义
 
 所有注入到 Prompt 的记忆文本均经过 `escapeForInjection()` 处理，防止特殊字符破坏 XML 结构。
 
@@ -613,9 +540,7 @@ INJECTION_PATTERNS = [
 
 ## 6. 配置参考
 
-### 6.1 简化配置（推荐）
-
-v1.1.0 引入了顶层简化配置，减少重复字段：
+### 最小配置
 
 ```jsonc
 {
@@ -624,16 +549,14 @@ v1.1.0 引入了顶层简化配置，减少重复字段：
       "memory-mem0": {
         "enabled": true,
         "config": {
-          // 顶层简化配置
-          "dataDir": "~/.openclaw/data/memory-mem0",      // 统一数据目录
-          "kimiApiKey": "YOUR_KIMI_CODING_API_KEY",       // 共享 API Key（classifier、llmGate、mem0 LLM）
-
+          "dataDir": "~/.openclaw/data/memory-mem0",
+          "kimiApiKey": "YOUR_KIMI_CODING_API_KEY",
           "mem0": {
             "mode": "open-source",
             "oss": {
               "llm": {
                 "provider": "kimi_coding",
-                "config": { "model": "k2p5" }  // apiKey 继承自 kimiApiKey
+                "config": { "model": "k2p5" }
               },
               "embedder": {
                 "provider": "ollama",
@@ -645,30 +568,7 @@ v1.1.0 引入了顶层简化配置，减少重复字段：
               }
             }
           },
-          "scope": {
-            "userId": "your-user-id"
-          },
-          "recall": {
-            "threshold": 0.25,    // 召回阈值（原 scoreThreshold）
-            "maxChars": 1500      // 注入预算（原 maxContextChars）
-          },
-          "core": {
-            "alwaysInjectLimit": 800  // always-inject 字符限制（原 maxAlwaysInjectChars）
-          },
-          "capture": {
-            "maxConversationTurns": 4 // 建议控制在 3~4，避免窗口过长
-          },
-          "sync": {
-            "enabled": true,      // 原 flushToMarkdown
-            "intervalMs": 300000, // 原 flushIntervalSec * 1000
-            "memoryFilePath": "MEMORY.md"
-          },
-          "classifier": {
-            "enabled": true       // 统一意图分类器
-          },
-          "smartRouter": {
-            "enabled": false      // 智能模型路由（可选）
-          }
+          "scope": { "userId": "your-user-id" }
         }
       }
     }
@@ -676,194 +576,163 @@ v1.1.0 引入了顶层简化配置，减少重复字段：
 }
 ```
 
-### 6.2 完整配置结构（高级）
-
-以下为完整配置字段，大部分有合理默认值：
+### 完整配置
 
 ```jsonc
 {
-  "plugins": {
-    "entries": {
-      "memory-mem0": {
-        "enabled": true,
-        "config": {
-          "dataDir": "~/.openclaw/data/memory-mem0",
-          "kimiApiKey": "YOUR_KIMI_CODING_API_KEY",
-          "backend": {
-            "freeText": { "provider": "mem0" }
-          },
-          "mem0": {
-            "mode": "open-source",
-            "enableGraph": false,
-            "searchThreshold": 0.3,
-            "topK": 5,
-            "oss": {
-              // 可选：显式指定 mem0 OSS 的 history DB 路径
-              "historyDbPath": "~/.openclaw/data/memory-mem0/memory.db",
-              "embedder": {
-                "provider": "ollama",
-                "config": {
-                  "url": "http://127.0.0.1:11434",
-                  "model": "bge-m3:latest",
-                  "embeddingDims": 1024
-                }
-              },
-              "vectorStore": {
-                "provider": "qdrant",
-                "config": {
-                  "host": "localhost",
-                  "port": 6333
-                }
-              },
-              "llm": {
-                "provider": "kimi_coding",
-                "config": {
-                  "model": "k2p5"
-                }
-              }
-            }
-          },
-          "scope": {
-            "userId": "your-user-id"
-          },
-          "capture": {
-            "maxConversationTurns": 4
-          },
-          "sync": {
-            "memoryFilePath": "MEMORY.md"
-          },
-          "recall": {
-            "enabled": true,
-            "topK": 5,
-            "threshold": 0.25,
-            "maxChars": 1500,
-            "cacheTtlMs": 60000,
-            "cacheMaxSize": 100
-          },
-          "core": {
-            "enabled": true,
-            "topK": 10,
-            "maxItemChars": 300,
-            "autoExtractProposals": true,
-            "humanReviewRequired": false,
-            "touchOnRecall": true,
-            "proposalQueueMax": 200,
-            "alwaysInjectTiers": ["profile", "general"],
-            "alwaysInjectLimit": 800,
-            "consolidation": {
-              "enabled": true,
-              "intervalMs": 3600000,       // 最短整理间隔（ms），防止高频重跑
-              "similarityThreshold": 0.85, // 在线合并去重阈值
-              // 五因子评分权重（总和应为 1.0）
-              "weights": {
-                "recency": 0.30,
-                "accessFreq": 0.20,
-                "novelty": 0.20,
-                "typePrior": 0.15,
-                "explicitImportance": 0.15
-              },
-              // Ebbinghaus 遗忘曲线参数
-              "decay": {
-                "stabilityDays": 14         // 记忆稳定性（天），越大越不容易被淘汰
-              },
-              // 裁决分数阈值
-              "thresholds": {
-                "keep": 0.65,               // ≥keep → 保留
-                "downgrade": 0.45,          // ≥downgrade → 降级
-                "archive": 0.25,            // ≥archive → 归档（跳过注入）
-                "delete": 0.10,             // <delete → 删除（写 dead-letter）
-                "llmLow": 0.35,             // LLM 边界区间下界
-                "llmHigh": 0.55             // LLM 边界区间上界
-              },
-              // 整理调度（daily/weekly/monthly）
-              "schedule": {
-                "daily":   { "enabled": true, "hourOfDay": 3 },
-                "weekly":  { "enabled": true, "hourOfDay": 4, "dayOfWeek": 1 },   // 周一 04:00
-                "monthly": { "enabled": true, "hourOfDay": 5, "dayOfMonth": 1 }   // 每月1日 05:00
-              },
-              // 边界区间 LLM 裁决（任意 OpenAI-compatible 端点）
-              "llm": {
-                "enabled": false,                          // 默认关闭，需手动开启
-                "apiBase": "http://localhost:11434/v1",    // 本地 Ollama（也可用 Kimi/OpenAI）
-                "model": "qwen2.5:14b",
-                "timeoutMs": 30000,
-                "maxBatchSize": 20
-              }
-            },
-            "llmGate": {
-              "enabled": true,
-              "apiBase": "https://api.kimi.com/coding/",
-              "model": "k2p5",
-              "maxTokensPerBatch": 4000,
-              "timeoutMs": 60000
-            }
-          },
-          "capture": {
-            "enabled": true,
-            "minChars": 20,
-            "maxChars": 600,
-            "maxConversationTurns": 4,
-            "dedupeThreshold": 0.8,
-            "candidateQueue": {
-              "enabled": true,
-              "intervalMs": 10000,
-              "maxBatchSize": 50
-            }
-          },
-          "outbox": {
-            "enabled": true,
-            "concurrency": 2,
-            "batchSize": 10,
-            "maxRetries": 5,
-            "drainTimeoutMs": 5000,
-            "flushIntervalMs": 10000
-          },
-          "sync": {
-            "enabled": true,
-            "intervalMs": 300000,
-            "memoryFilePath": "MEMORY.md"
-          },
-          "classifier": {
-            "enabled": true,
-            "model": "gemini-2.0-flash-lite",
-            "apiBase": "https://generativelanguage.googleapis.com/v1beta/openai",
-            "cacheTtlMs": 300000,
-            "cacheMaxSize": 200
-          },
-          "smartRouter": {
-            "enabled": false,
-            "tierModels": {
-              "SIMPLE": "gemini-2.0-flash-lite",
-              "MEDIUM": "gemini-2.5-flash",
-              "COMPLEX": "gemini-2.5-pro",
-              "REASONING": "claude-sonnet-4-6"
-            }
-          }
-        }
+  "dataDir": "~/.openclaw/data/memory-mem0",   // 统一数据目录（替代多个 persistPath 字段）
+  "kimiApiKey": "YOUR_KEY",                     // 共享 API Key，classifier/llmGate/mem0 均继承
+
+  "mem0": {
+    "mode": "open-source",       // "platform" 使用 mem0 云服务
+    "enableGraph": false,        // 开启 Neo4j 图谱记忆（需额外配置）
+    "searchThreshold": 0.3,
+    "topK": 5,
+    "customInstructions": "",    // 写入 mem0 时的额外指令
+    "oss": {
+      "embedder":   { "provider": "ollama",      "config": { "model": "bge-m3:latest", "embeddingDims": 1024 } },
+      "vectorStore":{ "provider": "qdrant",      "config": { "host": "localhost", "port": 6333 } },
+      "llm":        { "provider": "kimi_coding", "config": { "model": "k2p5" } },
+      "historyDbPath": "~/.openclaw/data/memory-mem0/memory.db"
+    }
+  },
+
+  "scope": {
+    "userId": "your-user-id",
+    "agentId": "main",
+    "userIdByAgent": {            // 多 Agent 使用不同 userId
+      "agent_a": "user_a",
+      "agent_b": "user_b"
+    }
+  },
+
+  "recall": {
+    "enabled": true,
+    "topK": 5,
+    "threshold": 0.25,           // 召回阈值（bge-m3 对短句偏低，建议 0.20–0.25）
+    "maxChars": 1500,            // Prompt 注入字符预算
+    "cacheTtlMs": 60000,
+    "cacheMaxSize": 100
+  },
+
+  "core": {
+    "enabled": true,
+    "topK": 10,
+    "maxItemChars": 300,
+    "autoExtractProposals": true,
+    "humanReviewRequired": false, // true 时所有 Core 候选需人工审核
+    "touchOnRecall": true,        // 被注入时更新 touchedAt（影响整理评分）
+    "alwaysInjectTiers": ["profile", "general"],
+    "alwaysInjectLimit": 800,     // always-inject 字符上限
+
+    "consolidation": {
+      "enabled": true,
+      "intervalMs": 3600000,      // 最短整理间隔（防止高频重跑）
+      "similarityThreshold": 0.85,// 在线合并去重阈值
+
+      "weights": {
+        "recency": 0.30, "accessFreq": 0.20, "novelty": 0.20,
+        "typePrior": 0.15, "explicitImportance": 0.15
+      },
+      "decay": { "stabilityDays": 14 },
+
+      "thresholds": {
+        "keep": 0.65, "downgrade": 0.45, "archive": 0.25, "delete": 0.10,
+        "llmLow": 0.35, "llmHigh": 0.55
+      },
+
+      "schedule": {
+        "daily":   { "enabled": true, "hourOfDay": 3 },
+        "weekly":  { "enabled": true, "hourOfDay": 4, "dayOfWeek": 1 },
+        "monthly": { "enabled": true, "hourOfDay": 5, "dayOfMonth": 1 }
+      },
+
+      "llm": {
+        "enabled": false,                        // 默认关闭，需手动开启
+        "apiBase": "http://localhost:11434/v1",   // 任意 OpenAI-compat 端点
+        "model": "qwen2.5:14b",
+        "timeoutMs": 30000,
+        "maxBatchSize": 20
       }
+    },
+
+    "llmGate": {
+      "enabled": false,           // 开启后对 Regex 未命中的候选做 LLM 三分类
+      "apiBase": "https://api.kimi.com/coding/",
+      "model": "k2p5",
+      "maxTokensPerBatch": 4000,
+      "timeoutMs": 60000
+      // apiKey 继承自 kimiApiKey
+    }
+  },
+
+  "capture": {
+    "enabled": true,
+    "minChars": 20,
+    "maxChars": 600,
+    "maxConversationTurns": 6,    // 建议 3–4，避免窗口过长
+    "dedupeThreshold": 0.8,
+    "candidateQueue": {
+      "enabled": true,
+      "intervalMs": 10000,        // 批处理间隔（ms）
+      "maxBatchSize": 50
+    }
+  },
+
+  "outbox": {
+    "enabled": true,
+    "concurrency": 2,
+    "batchSize": 10,
+    "maxRetries": 5,
+    "drainTimeoutMs": 5000,
+    "flushIntervalMs": 10000
+  },
+
+  "sync": {
+    "enabled": true,
+    "intervalMs": 300000,
+    "memoryFilePath": "MEMORY.md"  // 相对于 agent workspace 的路径
+  },
+
+  "classifier": {
+    "enabled": true,
+    "model": "k2p5",
+    "apiBase": "https://api.kimi.com/coding/",
+    "cacheTtlMs": 300000,
+    "cacheMaxSize": 200
+    // apiKey 继承自 kimiApiKey
+  },
+
+  "smartRouter": {
+    "enabled": false,             // 开启后按复杂度层级路由模型
+    "tierModels": {
+      "SIMPLE": "gemini-2.0-flash-lite",
+      "MEDIUM": "gemini-2.5-flash",
+      "COMPLEX": "gemini-2.5-pro",
+      "REASONING": "claude-sonnet-4-6"
     }
   }
 }
 ```
 
-### 6.3 配置优化建议
+### 常见调优建议
 
-| 场景 | 参数 | 建议值 | 说明 |
-| --- | --- | --- | --- |
-| 中文召回准确率低 | `recall.threshold` | 0.20~0.25 | bge-m3 对短句分布偏低 |
-| 记忆噪音多 | `core.llmGate.enabled` | true | 开启 LLM 质量门控 |
-| 人工控制写入 | `core.humanReviewRequired` | true | 所有 core 候选需审核 |
-| 捕获窗口过长 | `capture.maxConversationTurns` | 3~4 | 降低长窗口被 `maxChars` 过滤的概率 |
-| 智能模型路由 | `smartRouter.enabled` | true | 根据查询复杂度选择模型 |
+| 场景 | 参数 | 建议值 |
+|------|------|--------|
+| 中文召回准确率低 | `recall.threshold` | 0.20–0.25 |
+| 记忆噪音多 | `core.llmGate.enabled` | `true` |
+| 人工控制写入 | `core.humanReviewRequired` | `true` |
+| 捕获窗口过长 | `capture.maxConversationTurns` | 3–4 |
+| 整理过于激进 | `consolidation.decay.stabilityDays` | 增大（如 21） |
+| 整理不够及时 | `consolidation.decay.stabilityDays` | 减小（如 7–10） |
+| LLM 裁决太多 | `consolidation.thresholds.llmLow/High` | 收窄区间 |
 
 ---
 
 ## 7. 工具 API
 
-### 7.1 可用工具列表
-
-| 工具 | 功能 |
-| --- | --- |
+| 工具 | 说明 |
+|------|------|
 | `memory_recall` | 手动触发语义检索 |
 | `memory_store` | 显式存储一条 free-text 记忆 |
 | `memory_forget` | 删除指定记忆 |
@@ -871,74 +740,59 @@ v1.1.0 引入了顶层简化配置，减少重复字段：
 | `memory_core_list` | 列出 Core Memory |
 | `memory_core_upsert` | 手动写入/更新 Core Memory |
 | `memory_core_delete` | 删除 Core Memory 条目 |
-| `memory_core_touch` | 刷新记忆的访问时间（防止被合并淘汰） |
+| `memory_core_touch` | 刷新记录访问时间（防止被整理淘汰） |
 | `memory_core_proposals` | 审核 LLM 提取的候选记忆 |
 
-### 7.2 工具使用示例
-
-**查看记忆状态：**
+**示例：**
 
 ```
-memory_stats() → 返回 Recall 延迟/Capture 量/Outbox 队列/Circuit Breaker 状态
-```
-
-**手动写入 Core Memory：**
-
-```
+// 手动写入
 memory_core_upsert(
-  category="goals",
-  key="goals.2026_q1",
-  value="用户2026年Q1目标是完成iOS应用MVP并上架AppStore。",
+  category="goals", key="goals.2026_q1",
+  value="2026年Q1完成iOS应用MVP并上架AppStore",
   importance=8
 )
-```
 
-**审核提案：**
-
-```
-memory_core_proposals(action="list")   → 查看待审核列表
+// 审核提案
+memory_core_proposals(action="list")
 memory_core_proposals(action="approve", proposalId="xxx")
-memory_core_proposals(action="reject", proposalId="xxx")
+memory_core_proposals(action="reject",  proposalId="xxx")
 ```
 
 ---
 
 ## 8. CLI 命令（/memu）
 
-所有命令通过 `/memu <action>` 调用：
-
 ### 基础命令
 
 | 命令 | 说明 |
-| --- | --- |
-| `/memu status` | 查看插件运行状态（outbox、core、recall 统计） |
+|------|------|
+| `/memu status` | 插件运行状态（outbox、core、recall 统计） |
 | `/memu search <query>` | 手动语义搜索 |
 | `/memu flush` | 立即刷新 outbox 队列 |
 | `/memu dashboard` | 完整指标看板 |
-| `/memu audit` | 查看审计日志 |
+| `/memu audit` | 审计日志 |
 | `/memu core list` | 列出 Core Memory |
-| `/memu core touch <id>` | 刷新记录访问时间 |
+| `/memu core touch <id>` | 刷新访问时间 |
 
 ### 整理系统命令
 
 | 命令 | 说明 |
-| --- | --- |
-| `/memu consolidate status` | 查看整理调度状态（上次运行时间、总运行次数、最近报告） |
-| `/memu consolidate run [cycle]` | 立即执行整理（cycle 可选 daily/weekly/monthly，默认 daily） |
-| `/memu consolidate run [cycle] --dry-run` | 干跑（显示将要发生的变更，不实际修改） |
-| `/memu consolidate report [limit]` | 查看最近整理报告（limit 默认 5 条） |
+|------|------|
+| `/memu consolidate status` | 查看调度状态（上次运行时间、总次数、最近报告） |
+| `/memu consolidate run [cycle]` | 立即执行整理（daily/weekly/monthly，默认 daily） |
+| `/memu consolidate run [cycle] --dry-run` | 干跑预览，不修改数据 |
+| `/memu consolidate report [n]` | 查看最近 n 条整理报告（默认 5） |
 
-**干跑示例：**
+**干跑示例输出：**
 
 ```
-/memu consolidate run daily --dry-run
-
 🧹 Consolidation dry-run (daily) — 82 records scored
   keep      (≥0.65): 61
   downgrade (≥0.45):  8
   archive   (≥0.25):  9
   delete    (<0.10):  4
-  llm-boundary (0.35–0.55): 6 → would call LLM
+  llm-boundary:       6 → would call LLM
 
   Would DELETE:
     [general/memu_server.monthly_cost] score=0.041 — 月费用 0 美元
@@ -947,164 +801,89 @@ memory_core_proposals(action="reject", proposalId="xxx")
 
 ---
 
-## 9. 记忆作用域（Scope）隔离
+## 9. 作用域隔离（Scope）
 
-### 9.1 隔离维度
-
-```
-Scope = {
-  userId: "hao.break.zero",       // 用户维度
-  agentId: "turning_zero",        // Agent 维度（自动从 sessionKey 推断）
-  sessionKey: "agent:turning_zero:main"
-}
-```
-
-**多 Agent 隔离机制：**
-
-- Core Memory 按 `(userId, agentId)` 过滤，不同 Agent 数据完全隔离
-- Free-text 检索传入完整 scope，mem0 按 userId+agentId 隔离向量空间
-- 支持 `scope.userIdByAgent` 配置不同 Agent 使用不同 userId
-
-### 9.2 运行时 Scope 推断
+所有操作通过 `MemoryScope` 隔离：
 
 ```typescript
-buildDynamicScope(config.scope, ctx)
-  // ctx.agentId 来自运行时（优先级 > 配置值）
-  // ctx.sessionKey 来自 OpenClaw 会话（agentId 从 "agent:xxx:main" 解析）
+type MemoryScope = {
+  userId: string;     // 用户维度
+  agentId: string;    // Agent 维度（从 sessionKey 自动推断）
+  sessionKey: string; // 会话维度
+  tenantId?: string;  // 租户维度（可选）
+};
+```
+
+**多 Agent 隔离：**
+- Core Memory 按 `(userId, agentId)` 过滤
+- free-text 检索传入完整 scope，mem0 按 userId+agentId 隔离向量空间
+- `scope.userIdByAgent` 支持不同 Agent 映射到不同 userId
+
+**运行时推断：**
+
+```
+ctx.agentId（来自运行时） > sessionKey 解析（"agent:xxx:main"）> 配置值
 ```
 
 ---
 
-## 10. 性能分析
+## 10. 数据文件
 
-### 10.1 关键延迟来源
+所有文件默认在 `~/.openclaw/data/memory-mem0/`：
 
-| 阶段 | 典型延迟 | 影响因素 |
-| --- | --- | --- |
-| Core Memory 查询 | < 1ms | 本地 JSON 文件（已缓存） |
-| Free-text 向量检索 | 2000~5000ms | Ollama bge-m3 推理 |
-| 工作区 Fallback 检索 | 10~50ms | 文件读取 + token 匹配 |
-| LLM Gate 判断 | 500~3000ms | Gemini API 网络 |
-| Outbox 写入 mem0 | 异步，不阻塞 | 后台队列 |
-
-### 10.2 缓存策略
-
-| 缓存层 | 生命周期 | 说明 |
-| --- | --- | --- |
-| LRU Cache（free-text） | `cacheTtlMs`（60s） | 相同查询结果复用 |
-| Session Core Cache | 90s | 同一 session Core 列表复用 |
-| Session Relevant Cache | 90s | 相同语义查询 free-text 复用 |
-| 注入去重 Window | 30s | 防止同内容重复注入 |
-
-### 10.3 当前 turning_zero 配置下的性能表现
-
-基于 `memory_stats` 实测数据：
-
-- 平均召回延迟：**2714ms**（主要为向量检索）
-- Outbox Pending：**0**（无积压）
-- Dead Letters：**0**
-- Core Memory 条目：**10条**（全部已补充 tier 分类）
+| 文件 | 内容 | 说明 |
+|------|------|------|
+| `core-memory.json` | Core Memory 主存储 | 直接可读 JSON，可手动编辑 |
+| `outbox-queue.json` | 待发送队列 | 异常时可手动清空 |
+| `outbox-deadletter.json` | Outbox 死信 | 需人工介入 |
+| `candidate-queue.json` | 捕获候选缓冲 | 批处理前的暂存 |
+| `core-proposals.json` | 人工审核队列 | humanReviewRequired=true 时使用 |
+| `consolidation-dead-letter.jsonl` | 整理删除记录 | JSONL，每行一条被删记录，可用于误删恢复 |
+| `consolidation-state.json` | 整理调度状态 | lastDailyRun / lastWeeklyRun / lastMonthlyRun |
+| `memory.db` | mem0 SQLite 历史库 | mem0 OSS 内部使用 |
+| `inbound-message-cache.json` | 入站消息缓存 | 辅助捕获去重 |
+| `MEMORY.md`（workspace） | Markdown 同步输出 | Agent 启动时直接读取 |
 
 ---
 
-## 11. 常见问题 FAQ
+## 11. FAQ
 
 **Q: 为什么有些内容没有被自动记忆？**
 
-A: 以下情况会被过滤：
-1. 内容 < 16 字符（minChars）
-2. 命中低信号模式（"好的"、"测试"、"今天"等）
-3. 与最近捕获的内容相似度 >= 0.8
-4. 含有注入攻击模式或敏感信息
+捕获过滤掉以下情况：内容 < 20 字符 / > 600 字符；命中低信号模式（"好的"、"测试"、"今天"等）；含系统片段前缀；与最近捕获的内容相似度 ≥ 0.8；captureHint=skip（问候/纯代码等）。
 
 **Q: LLM Gate 不工作？**
 
-A: 检查 `llmGate.apiKey` 是否配置。没有 apiKey 时 LLM Gate 静默跳过，仅 Regex 提取生效。
+检查 `core.llmGate.enabled=true` 且 `llmGate.apiKey` 已配置（或 `kimiApiKey` 已设置）。无 apiKey 时静默跳过。
 
 **Q: Core Memory 会越来越多吗？**
 
-A: 每小时触发 consolidation，自动合并相似度 >= 0.85 的记忆；同 key 的记录只保留最新一条。目前暂无 maxItems 上限，建议定期手动审查。
+不会无限增长。整理调度器定期淘汰低分记忆；在线三元组去重会合并重复写入。建议跑一周后运行 `npx tsx scripts/tune-params.ts` 查看评分分布，视情况调整 `stabilityDays`。
 
-**Q: 如何查看向量数据库有多少条记忆？**
+**Q: 整理系统会误删重要记忆吗？**
 
-A: `memory_stats()` 中目前不直接显示向量条数，可通过检查 `outbox.sent` 指标估算历史写入量。
+删除前会写入 `consolidation-dead-letter.jsonl`，可手动恢复。建议先用 `--dry-run` 预览。
+
+**Q: 整理 LLM 必须用 Qwen/Ollama 吗？**
+
+不是，支持任意 OpenAI-compatible 端点。配置 `core.consolidation.llm.apiBase` 和 `model` 即可。不配置 LLM（`enabled=false`）也完全可用，仅用阈值裁决。
+
+**Q: 整理跑了但没有删除任何记忆？**
+
+正常现象。新鲜记忆的 recency 评分偏高（Ebbinghaus 衰减需要时间），通常需要 2–3 周才开始出现删除。运行 `npx tsx scripts/tune-params.ts` 可估算首次删除发生时间。
 
 **Q: 多个 Agent 的记忆会互相影响吗？**
 
-A: 不会。插件会把运行时 `agentId` 带入 scope，Core Memory 与 free-text 检索默认都按 `(userId, agentId)` 隔离；若多个 Agent 需要映射到不同用户，还可以配置 `scope.userIdByAgent`。
+不会。Core Memory 和 free-text 检索均按 `(userId, agentId)` 隔离。如需多 Agent 共享同一用户记忆，将多个 agentId 映射到同一 userId 即可（`scope.userIdByAgent`）。
 
-**Q: mem0 OSS 模式报错 "unable to open database file"？**
+**Q: mem0 OSS 报错 "unable to open database file"？**
 
-A: `historyDbPath` 仍然支持，并会自动展开 `~` 为用户主目录。优先检查 `dataDir`、`historyDbPath` 的父目录是否存在且可写。
+检查 `dataDir` 父目录是否存在且可写。`historyDbPath` 会自动展开 `~`。
 
-**Q: 启用 Graph Memory 时报错 "401 Incorrect API key provided"？**
+**Q: 启用 Graph Memory 时 LLM 认证失败？**
 
-A: 现在推荐直接使用 mem0 原生 `kimi_coding` provider。通常不需要再手动写 `graph_store.llm`；如果你要显式覆盖，可以这样写：
-
-```jsonc
-"mem0": {
-  "enableGraph": true,
-  "oss": {
-    "llm": {
-      "provider": "kimi_coding",
-      "config": {
-        "api_key": "YOUR_KIMI_CODING_API_KEY",
-        "model": "k2p5"
-      }
-    },
-    "graph_store": {
-      "provider": "neo4j",
-      "config": { ... }
-    }
-  }
-}
-```
-
-**Q: 意图分类器报错 "failed to parse response"？**
-
-A: 分类器使用 Gemini Flash Lite 进行快速分类，有时响应会被截断。插件已增加：
-1. 精简的中文 System Prompt（减少 token 消耗）
-2. `response_format: { type: "json_object" }` 强制 JSON 输出
-3. 回退正则解析（从截断响应中提取 tier/queryType/captureHint）
-
-如果分类失败，会默认返回 `MEDIUM` tier 和 `full` captureHint，不影响主流程。
-
-**Q: 整理系统会不会误删重要记忆？**
-
-A: 不会直接丢失。删除前会将完整记录写入 `consolidation-dead-letter.jsonl`。可用 `/memu consolidate run --dry-run` 预览将要发生的变更。若误删，从 dead-letter 文件中手动恢复即可。
-
-**Q: 整理 LLM 是否必须用 Qwen/Ollama？**
-
-A: 不是。支持任意 OpenAI-compatible 端点。`core.consolidation.llm` 中配置 `apiBase` 和 `model` 即可：
-- 本地 Ollama：`apiBase="http://localhost:11434/v1"`
-- Kimi Coding：`apiBase="https://api.kimi.com/coding/v1"`, `model="k2p5"`
-- OpenAI：`apiBase="https://api.openai.com/v1"`, `model="gpt-4o-mini"`
-- 不配置 LLM（`llm.enabled=false`）也完全可用，仅用评分阈值裁决。
-
-**Q: 整理系统跑了但没有删除任何记忆？**
-
-A: 正常。记忆创建后两周内 recency 分数仍然偏高（Ebbinghaus 衰减需要时间）。运行 `npx tsx scripts/tune-params.ts` 可以诊断当前评分分布，并估算首次出现删除记录的时间。
-
-**Q: 如何手动触发整理？**
-
-A: `/memu consolidate run daily`（或 weekly/monthly）。加 `--dry-run` 只预览不执行。
+推荐直接在 `oss.llm` 配置 `kimi_coding` provider，插件会自动将 Kimi/Gemini provider 改写为 OpenAI-compatible 格式传给 mem0，通常不需要单独配置 `oss.graph_store.llm`。
 
 ---
 
-## 12. 数据文件速查
-
-| 文件路径 | 内容 | 说明 |
-| --- | --- | --- |
-| `data/memory-mem0/core-memory.json` | Core Memory 主存储 | 直接可读 JSON |
-| `data/memory-mem0/outbox-queue.json` | 待发送队列 | 异常时可手动清空 |
-| `data/memory-mem0/outbox-deadletter.json` | Outbox 死信队列 | 需人工介入 |
-| `data/memory-mem0/candidate-queue.json` | 捕获候选 | 批处理前的缓冲 |
-| `data/memory-mem0/core-proposals.json` | 人工审核队列 | 待审核的 core 候选 |
-| `data/memory-mem0/consolidation-dead-letter.jsonl` | 整理删除记录 | 每行一条被删记录，可用于误删恢复 |
-| `data/memory-mem0/consolidation-state.json` | 整理调度状态 | 记录 lastDailyRun/lastWeeklyRun/lastMonthlyRun |
-| `data/memory-mem0/mem0-vector-store.db` | SQLite 向量数据库 | 含 bge-m3 1024维向量 |
-| `workspace-*/MEMORY.md` | Markdown 同步输出 | Agent 启动时直接读取 |
-
----
-
-> 文档基于 memory-mem0 v1.1.0 源码分析，最后更新 2026-03-22
+> 基于 memory-mem0 v1.1.0 源码 · 最后更新 2026-03-22
