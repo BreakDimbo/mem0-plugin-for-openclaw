@@ -45,6 +45,17 @@ export function isKimiCodingBaseUrl(apiBase: string | undefined): boolean {
   return apiBase.replace(/\/+$/, "") === KIMI_CODING_BASE_URL.replace(/\/+$/, "");
 }
 
+export function isLocalOllamaBaseUrl(apiBase: string | undefined): boolean {
+  if (typeof apiBase !== "string") return false;
+  try {
+    const parsed = new URL(apiBase);
+    if (!/^https?:$/.test(parsed.protocol)) return false;
+    return (parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1") && parsed.port === "11434";
+  } catch {
+    return false;
+  }
+}
+
 export function buildKimiMessagesUrl(apiBase: string | undefined): string {
   const base = isKimiCodingBaseUrl(apiBase) ? KIMI_CODING_BASE_URL : (apiBase || KIMI_CODING_BASE_URL);
   return `${base.replace(/\/+$/, "")}/v1/messages`;
@@ -72,6 +83,11 @@ export function normalizeChatApiConfig(config: ChatApiConfig): Required<ChatApiC
 
 function toRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? value as Record<string, unknown> : {};
+}
+
+function shouldInheritApiKey(provider: string | undefined): boolean {
+  const normalized = normalizeProviderName(provider);
+  return normalized !== "" && normalized !== "ollama";
 }
 
 export function normalizeMem0LlmConfig(raw: Mem0LlmConfig | undefined, fallbackApiKey?: string): Mem0LlmConfig | undefined {
@@ -115,7 +131,7 @@ export function normalizeMem0LlmConfig(raw: Mem0LlmConfig | undefined, fallbackA
     };
   }
 
-  if (!sourceConfig.apiKey && apiKey) {
+  if (!sourceConfig.apiKey && apiKey && shouldInheritApiKey(raw.provider)) {
     return {
       provider: raw.provider,
       config: {

@@ -203,6 +203,24 @@ await test("graph config keeps non-google provider unchanged", () => {
   assertEqual(resolved.topLevelLlm?.config.baseURL, "https://api.openai.com/v1", "baseURL should remain unchanged");
 });
 
+await test("loadConfig does not inherit gemini api key for ollama llm", () => {
+  const cfg = loadConfig({
+    geminiApiKey: "gemini-key",
+    mem0: {
+      mode: "open-source",
+      oss: {
+        llm: {
+          provider: "ollama",
+          config: { model: "qwen2:7b", url: "http://127.0.0.1:11434" },
+        },
+      },
+    },
+  });
+
+  assertEqual(cfg.mem0.oss?.llm?.provider, "ollama", "provider should remain ollama");
+  assertEqual((cfg.mem0.oss?.llm?.config as Record<string, unknown>).apiKey, undefined, "ollama should not inherit apiKey");
+});
+
 await test("store maps non-main agents to namespaced user and preserves session scope", async () => {
   let capturedMessages: Array<{ role: string; content: string }> | null = null;
   let capturedOptions: Record<string, unknown> | null = null;

@@ -143,6 +143,35 @@ await test("judgeCandidates returns empty when no API key", async () => {
   assertEqual(results.length, 0, "no results without API key");
 });
 
+await test("judgeCandidates allows local ollama without API key", async () => {
+  const originalFetch = globalThis.fetch;
+  let capturedHeaders: Record<string, string> = {};
+
+  globalThis.fetch = async (_input: string | URL | Request, init?: RequestInit) => {
+    capturedHeaders = (init?.headers as Record<string, string>) ?? {};
+    return new Response(JSON.stringify({
+      choices: [{ message: { content: JSON.stringify([{ index: 1, verdict: "free_text", value: "本地 Ollama 可用" }]) } }],
+    }), { status: 200 });
+  };
+
+  try {
+    const config: LlmGateConfig = {
+      enabled: true,
+      apiBase: "http://127.0.0.1:11434/v1",
+      apiKey: undefined,
+      model: "qwen2.5:7b",
+      maxTokensPerBatch: 2000,
+      timeoutMs: 30_000,
+    };
+    const results = await judgeCandidates(["记住我喜欢乌龙茶"], config, testLogger);
+    assertEqual(results.length, 1, "local ollama should still run");
+    assertEqual(results[0].verdict, "free_text", "should parse ollama result");
+    assertEqual(capturedHeaders.Authorization, undefined, "should not send auth header to local ollama");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 await test("judgeCandidates returns empty for empty input", async () => {
   const config: LlmGateConfig = {
     enabled: true,

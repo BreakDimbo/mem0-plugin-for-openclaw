@@ -29,9 +29,13 @@ reports/
 
 # Claude Code
 .claude/
+.codex/
 
 # MCP config
 .mcp.json
 
 # TTADK
 .ttadk/
+
+# Local specs / scratch exports
+specs/

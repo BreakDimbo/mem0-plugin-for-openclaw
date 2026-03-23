@@ -6,7 +6,7 @@
 
 import type { LlmGateConfig } from "./types.js";
 import { sanitizeJsonLikeResponse } from "./backends/free-text/mem0.js";
-import { isKimiCodingBaseUrl, normalizeChatApiConfig } from "./llm-config.js";
+import { isKimiCodingBaseUrl, isLocalOllamaBaseUrl, normalizeChatApiConfig } from "./llm-config.js";
 
 type Logger = { info(msg: string): void; warn(msg: string): void };
 
@@ -104,16 +104,18 @@ export async function judgeCandidates(
   const apiKey = config.apiKey;
   logger.info(`llm-gate: apiKey present=${!!apiKey}, apiBase=${config.apiBase}, model=${config.model}`);
 
-  if (!apiKey) {
-    logger.info("llm-gate: skipped (no API key)");
-    return [];
-  }
-
   const { apiBase, model } = normalizeChatApiConfig({
     apiBase: config.apiBase,
     model: config.model,
   });
   const isKimi = isKimiCodingBaseUrl(apiBase);
+  const isLocalOllama = isLocalOllamaBaseUrl(apiBase);
+
+  if (!apiKey && !isLocalOllama) {
+    logger.info("llm-gate: skipped (no API key)");
+    return [];
+  }
+
   const url = `${apiBase.replace(/\/+$/, "")}/chat/completions`;
 
   const body = {
@@ -136,7 +138,7 @@ export async function judgeCandidates(
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
+        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
         ...(isKimi ? { "User-Agent": "claude-code/0.1.0" } : {}),
       },
       body: JSON.stringify(body),
