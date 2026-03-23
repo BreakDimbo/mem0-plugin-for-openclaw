@@ -138,7 +138,7 @@ function summarize(rows: Eval[]) {
 }
 
 async function storeWithRetry(
-  backend: { store(text: string, scope: MemoryScope, options?: { metadata?: Record<string, unknown> }): Promise<boolean>; provider: string },
+  backend: { store(messages: Array<{ role: "user" | "assistant"; content: string }>, scope: MemoryScope, options?: { metadata?: Record<string, unknown> }): Promise<boolean>; provider: string },
   text: string,
   scope: MemoryScope,
   metadata: Record<string, unknown>,
@@ -146,7 +146,7 @@ async function storeWithRetry(
 ): Promise<boolean> {
   for (let attempt = 1; attempt <= 3; attempt++) {
     const ok = await withTimeout(
-      backend.store(text, scope, { metadata }),
+      backend.store([{ role: "user", content: text }], scope, { metadata }),
       25_000,
       `${backend.provider} store timeout for ${label} attempt ${attempt}`,
     );

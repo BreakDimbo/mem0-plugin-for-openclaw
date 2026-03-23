@@ -188,8 +188,10 @@ function makeOpenAiCompatibleGoogleConfig(source?: Mem0LlmConfig, fallbackApiKey
   };
 }
 
-function resolveGraphLlmConfig(cfg: MemuPluginConfig["mem0"]): { topLevelLlm?: Mem0LlmConfig; graphStoreLlm?: Mem0LlmConfig } {
-  const fallbackApiKey = cfg.kimiApiKey ?? cfg.geminiApiKey;
+function resolveGraphLlmConfig(
+  cfg: MemuPluginConfig["mem0"],
+  fallbackApiKey?: string,
+): { topLevelLlm?: Mem0LlmConfig; graphStoreLlm?: Mem0LlmConfig } {
   const baseLlm = normalizeMem0LlmConfig(cfg.oss?.llm, fallbackApiKey);
   const graphLlm = normalizeMem0LlmConfig(cfg.oss?.graph_store?.llm ?? baseLlm, fallbackApiKey);
   if (!cfg.enableGraph) {
@@ -208,8 +210,11 @@ function resolveGraphLlmConfig(cfg: MemuPluginConfig["mem0"]): { topLevelLlm?: M
   return { topLevelLlm: baseLlm, graphStoreLlm: graphLlm };
 }
 
-export function resolveOssLlmConfigForTests(cfg: MemuPluginConfig["mem0"]): { topLevelLlm?: Mem0LlmConfig; graphStoreLlm?: Mem0LlmConfig } {
-  return resolveGraphLlmConfig(cfg);
+export function resolveOssLlmConfigForTests(
+  cfg: MemuPluginConfig["mem0"],
+  fallbackApiKey?: string,
+): { topLevelLlm?: Mem0LlmConfig; graphStoreLlm?: Mem0LlmConfig } {
+  return resolveGraphLlmConfig(cfg, fallbackApiKey);
 }
 
 export function effectiveUserId(scope: MemoryScope): string {
@@ -250,7 +255,10 @@ export class Mem0FreeTextBackend implements FreeTextBackend {
       const imported = await import("mem0ai/oss");
       const MemoryCtor = (imported as Record<string, unknown>).Memory as new (cfg: Record<string, unknown>) => any;
       const resolvedHistoryDbPath = cfg.oss?.historyDbPath ? expandTilde(cfg.oss.historyDbPath) : undefined;
-      const { topLevelLlm, graphStoreLlm } = resolveGraphLlmConfig(cfg);
+      const { topLevelLlm, graphStoreLlm } = resolveGraphLlmConfig(
+        cfg,
+        this.config.kimiApiKey ?? this.config.geminiApiKey,
+      );
       // Check original providers before resolveGraphLlmConfig converts google→openai
       const stripResponseFormatWhenTools = isGoogleProvider(cfg.oss?.llm?.provider) || isGoogleProvider(cfg.oss?.graph_store?.llm?.provider);
       const graphStoreConfig = cfg.enableGraph && cfg.oss?.graph_store

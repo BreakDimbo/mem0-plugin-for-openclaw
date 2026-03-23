@@ -42,9 +42,9 @@ export class CandidateQueue {
   private readonly processor: CandidateProcessor;
   private readonly logger: Logger;
 
-  // Dedup: module-level set shared across all CandidateQueue instances in the same process.
-  // Prevents duplicate enqueues when OpenClaw registers the plugin multiple times concurrently.
-  private static readonly recentHashesGlobal = new Set<string>();
+  // Dedup: shared only by queue instances that point at the same persisted queue file.
+  // This keeps multi-registration protection while avoiding cross-test / cross-workspace bleed-through.
+  private static readonly recentHashesByFile = new Map<string, Set<string>>();
   private static readonly MAX_RECENT_HASHES = 200;
 
   // Stats
@@ -70,6 +70,15 @@ export class CandidateQueue {
 
   private get filePath(): string {
     return this.persistPath ? `${this.persistPath}/candidate-queue.json` : "";
+  }
+
+  private getRecentHashes(): Set<string> {
+    const key = this.filePath || "__candidate_queue_default__";
+    const existing = CandidateQueue.recentHashesByFile.get(key);
+    if (existing) return existing;
+    const created = new Set<string>();
+    CandidateQueue.recentHashesByFile.set(key, created);
+    return created;
   }
 
   private normalizePersistedItem(item: unknown): CandidateItem | null {
@@ -126,7 +135,7 @@ export class CandidateQueue {
           const normalized = this.normalizePersistedItem(item);
           if (!normalized) continue;
           this.queue.push(normalized);
-          CandidateQueue.recentHashesGlobal.add(normalized.id);
+          this.getRecentHashes().add(normalized.id);
         }
       }
       this.logger.info(`candidate-queue: loaded ${this.queue.length} items from disk`);
@@ -156,7 +165,8 @@ export class CandidateQueue {
     const id = this.makeId(messages, scope);
 
     // Dedup
-    if (CandidateQueue.recentHashesGlobal.has(id)) {
+    const recentHashes = this.getRecentHashes();
+    if (recentHashes.has(id)) {
       this._dropped++;
       return;
     }
@@ -169,10 +179,10 @@ export class CandidateQueue {
       metadata,
     });
 
-    CandidateQueue.recentHashesGlobal.add(id);
-    if (CandidateQueue.recentHashesGlobal.size > CandidateQueue.MAX_RECENT_HASHES) {
-      const first = CandidateQueue.recentHashesGlobal.values().next().value;
-      if (first) CandidateQueue.recentHashesGlobal.delete(first);
+    recentHashes.add(id);
+    if (recentHashes.size > CandidateQueue.MAX_RECENT_HASHES) {
+      const first = recentHashes.values().next().value;
+      if (first) recentHashes.delete(first);
     }
 
     this._enqueued++;

@@ -3,8 +3,6 @@
 // Phase 2/3: full scope config, metrics, persistence, audit, graceful shutdown
 // ============================================================================
 
-import type { OpenClawPluginDefinition, OpenClawPluginApi } from "openclaw/plugin-sdk";
-
 import { buildDynamicScope } from "./types.js";
 import { loadConfig } from "./types.js";
 import type { MemuMemoryRecord, ClassificationResult } from "./types.js";
@@ -41,6 +39,25 @@ import { createCoreProposalTool } from "./tools/core-proposals.js";
 import { createMemuCommand } from "./cli.js";
 import { ConsolidationRunner } from "./consolidation/runner.js";
 import { ConsolidationScheduler } from "./consolidation/scheduler.js";
+
+type PluginLogger = { info(msg: string): void; warn(msg: string): void };
+
+type OpenClawPluginApi = {
+  pluginConfig?: unknown;
+  logger: PluginLogger;
+  runtime?: unknown;
+  on(event: string, handler: unknown, options?: { priority?: number }): void;
+  registerTool(factory: unknown): void;
+  registerCommand(command: unknown): void;
+  registerService(service: { id: string; start(ctx: unknown): Promise<void>; stop(ctx: unknown): Promise<void> }): void;
+};
+
+type OpenClawPluginDefinition = {
+  id: string;
+  name: string;
+  description: string;
+  register(api: OpenClawPluginApi): void;
+};
 
 const HOOK_PRIORITY = {
   smartRouter: 200,

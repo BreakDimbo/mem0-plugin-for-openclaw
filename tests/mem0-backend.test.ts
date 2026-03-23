@@ -77,7 +77,7 @@ await test("graph config rewrites google llm to OpenAI-compatible config", () =>
     },
   });
 
-  const resolved = resolveOssLlmConfigForTests(cfg.mem0);
+  const resolved = resolveOssLlmConfigForTests(cfg.mem0, cfg.kimiApiKey ?? cfg.geminiApiKey);
   assertEqual(resolved.topLevelLlm?.provider, "openai", "top-level provider should be rewritten");
   assertEqual(resolved.graphStoreLlm?.provider, "openai", "graph provider should be rewritten");
   assertEqual(resolved.topLevelLlm?.config.baseURL, "https://generativelanguage.googleapis.com/v1beta/openai", "should inject Google OpenAI-compatible baseURL");
@@ -175,7 +175,7 @@ await test("graph config preserves explicit OpenAI-compatible baseURL", () => {
     },
   });
 
-  const resolved = resolveOssLlmConfigForTests(cfg.mem0);
+  const resolved = resolveOssLlmConfigForTests(cfg.mem0, cfg.kimiApiKey ?? cfg.geminiApiKey);
   assertEqual(resolved.topLevelLlm?.config.baseURL, "https://example.test/openai", "should preserve explicit baseURL");
   assertEqual(resolved.topLevelLlm?.config.apiKey, "explicit-key", "should preserve explicit apiKey");
 });
@@ -198,7 +198,7 @@ await test("graph config keeps non-google provider unchanged", () => {
     },
   });
 
-  const resolved = resolveOssLlmConfigForTests(cfg.mem0);
+  const resolved = resolveOssLlmConfigForTests(cfg.mem0, cfg.kimiApiKey ?? cfg.geminiApiKey);
   assertEqual(resolved.topLevelLlm?.provider, "openai", "provider should remain openai");
   assertEqual(resolved.topLevelLlm?.config.baseURL, "https://api.openai.com/v1", "baseURL should remain unchanged");
 });

@@ -176,7 +176,12 @@ async function restoreConfig(originalConfigText: string): Promise<void> {
 
 async function restartGateway(): Promise<void> {
   await execFileAsync("openclaw", ["gateway", "restart"], {
-    cwd: `${process.env.HOME}/.openclaw`,(message: string): Promise<string> {
+    cwd: `${process.env.HOME}/.openclaw`,
+    maxBuffer: 4 * 1024 * 1024,
+  });
+}
+
+async function runAgentQuery(message: string): Promise<string> {
   const parsed = await runAgentCommand(message);
   return String(parsed?.result?.payloads?.[0]?.text ?? "").trim();
 }

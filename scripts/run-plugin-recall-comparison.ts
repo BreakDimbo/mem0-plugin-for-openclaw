@@ -1,10 +1,12 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
 import { LRUCache } from "../cache.js";
 import { CoreMemoryRepository } from "../core-repository.js";
 import { createRecallHook } from "../hooks/recall.js";
-import { loadConfig, buildDynamicScope } from "../types.js";
+import { loadConfig, buildDynamicScope, type MemuMemoryRecord } from "../types.js";
 import { createPrimaryFreeTextBackend } from "../backends/free-text/factory.js";
 import { includesExpected } from "./layered-benchmark.js";
 import { BENCHMARK_E2E_CASES } from "./benchmark-e2e-fixtures.js";
@@ -105,7 +107,7 @@ async function buildCurrentRecallHook(config: ReturnType<typeof loadConfig>) {
   };
   const primary = createPrimaryFreeTextBackend(config, { logger });
   const coreRepo = new CoreMemoryRepository(config.core.persistPath, logger, config.core.maxItemChars);
-  const cache = new LRUCache(config.recall.cacheMaxSize, config.recall.cacheTtlMs);
+  const cache = new LRUCache<MemuMemoryRecord[]>(config.recall.cacheMaxSize, config.recall.cacheTtlMs);
   const inbound = { getBySender: async () => "" };
   const metrics = {
     recallTotal: 0,
@@ -121,7 +123,7 @@ async function buildCurrentRecallHook(config: ReturnType<typeof loadConfig>) {
 }
 
 async function buildOfficialRecallHook(rawConfig: any, currentConfig: ReturnType<typeof loadConfig>) {
-  const mod = await import("~/Project/github/mem0ai/mem0/openclaw/index.ts");
+  const mod = await import(pathToFileURL(resolveOfficialPluginEntry()).href);
   const plugin = mod.default as { register(api: Record<string, unknown>): void };
   let beforeAgentStart:
     | ((event: { prompt?: string }, ctx: { sessionKey?: string }) => Promise<{ prependContext?: string } | void>)
@@ -156,6 +158,17 @@ async function buildOfficialRecallHook(rawConfig: any, currentConfig: ReturnType
     throw new Error("Official mem0 plugin did not register before_agent_start hook");
   }
   return beforeAgentStart;
+}
+
+function resolveOfficialPluginEntry(): string {
+  const configured = process.env.OFFICIAL_MEM0_PLUGIN_ENTRY;
+  if (!configured) {
+    throw new Error("Set OFFICIAL_MEM0_PLUGIN_ENTRY to the official mem0 plugin entry file before running this comparison");
+  }
+  if (configured.startsWith("~/")) {
+    return `${process.env.HOME}${configured.slice(1)}`;
+  }
+  return resolve(configured);
 }
 
 async function renderCurrentContext(

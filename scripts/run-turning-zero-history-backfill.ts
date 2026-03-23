@@ -39,14 +39,14 @@ async function main() {
       extra: {
         memory_kind: fact.memoryKind,
         quality: "durable",
-        source_session: fact.sourceSession,
+        source_session: fact.sourceLabel,
         source_label: fact.sourceLabel,
         backfill: true,
         backfill_batch: batchId,
       },
     });
     const ok = await withTimeout(
-      backend.store(fact.text, scope, { metadata }),
+      backend.store([{ role: "user", content: fact.text }], scope, { metadata }),
       60_000,
       `store timeout for ${fact.id}`,
     );

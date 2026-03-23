@@ -5,7 +5,7 @@ import { promisify } from "node:util";
 import { LRUCache } from "../cache.js";
 import { CoreMemoryRepository } from "../core-repository.js";
 import { createRecallHook } from "../hooks/recall.js";
-import { buildDynamicScope, loadConfig } from "../types.js";
+import { buildDynamicScope, loadConfig, type MemuMemoryRecord } from "../types.js";
 import { createPrimaryFreeTextBackend } from "../backends/free-text/factory.js";
 import { includesExpected, summarizeLayeredRows, type LayeredBenchmarkRow } from "./layered-benchmark.js";
 import { BENCHMARK_E2E_CASES } from "./benchmark-e2e-fixtures.js";
@@ -78,7 +78,7 @@ async function buildRecallHook(config: ReturnType<typeof loadConfig>) {
   };
   const primary = createPrimaryFreeTextBackend(config, { logger });
   const coreRepo = new CoreMemoryRepository(config.core.persistPath, logger, config.core.maxItemChars);
-  const cache = new LRUCache(config.recall.cacheMaxSize, config.recall.cacheTtlMs);
+  const cache = new LRUCache<MemuMemoryRecord[]>(config.recall.cacheMaxSize, config.recall.cacheTtlMs);
   const inbound = { getBySender: async () => "" };
   const metrics = {
     recallTotal: 0,
