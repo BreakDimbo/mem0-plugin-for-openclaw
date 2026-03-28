@@ -228,8 +228,11 @@ function deduplicateAgainstCore(
 ): MemuMemoryRecord[] {
   if (coreItems.length === 0) return relevant;
 
+  // Tokenize only the VALUE, not the key path — key paths like "preferences.editor"
+  // generate generic tokens ("preferences", "editor") that would falsely match
+  // free-text discussing those concepts in a different context.
   const coreValueTokens = new Set(
-    coreItems.flatMap((c) => tokenizeDocument(`${c.key} ${c.value}`)),
+    coreItems.flatMap((c) => tokenizeDocument(c.value)),
   );
 
   return relevant.filter((item) => {

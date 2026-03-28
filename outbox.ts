@@ -25,6 +25,7 @@ type OutboxRecentEvent = {
 };
 
 const BACKOFF_DELAYS = [1_000, 5_000, 30_000, 120_000];
+const MAX_DEAD_LETTERS = 500;
 
 type LegacyOutboxPayload = {
   text?: string;
@@ -221,7 +222,11 @@ export class OutboxWorker {
       const data = await readFile(this.deadLetterFilePath, "utf-8");
       const parsed = JSON.parse(data);
       if (Array.isArray(parsed)) {
-        this.deadLetters = parsed;
+        // Apply cap on load so a file written by an older version with more items
+        // doesn't exceed the in-memory limit.
+        this.deadLetters = parsed.length > MAX_DEAD_LETTERS
+          ? parsed.slice(-MAX_DEAD_LETTERS)
+          : parsed;
       }
     } catch {
       // Start fresh
@@ -391,7 +396,6 @@ export class OutboxWorker {
               };
               this.deadLetters.push(dlItem);
               // Cap dead-letter list to prevent unbounded growth
-              const MAX_DEAD_LETTERS = 500;
               if (this.deadLetters.length > MAX_DEAD_LETTERS) {
                 this.deadLetters.splice(0, this.deadLetters.length - MAX_DEAD_LETTERS);
               }

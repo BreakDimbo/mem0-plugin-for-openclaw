@@ -6,7 +6,7 @@
 import { OutboxWorker } from "../outbox.js";
 import type { FreeTextBackend } from "../backends/free-text/base.js";
 import type { MemoryScope, ConversationMessage, DeadLetterItem } from "../types.js";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -149,30 +149,25 @@ await test("saveDeadLetters() writes readable file with correct content", async 
   assert(parsed.some((item) => item.id === "dl-persist"), "contains expected item id");
 });
 
-// Test 5: Dead-letter cap — loading 600 items keeps only 500
-await test("dead-letters capped at 500 on flush overflow", async () => {
+// Test 5: loadFromDisk() caps dead-letters to 500 when file has 600 items
+await test("loadFromDisk() caps dead-letters at 500 when file contains more", async () => {
   const dir = await mkdtemp(join(tmpdir(), "memu-dl-"));
-  const outbox = await makeOutbox(alwaysFailBackend(), dir, 1); // maxRetries=1
+  await mkdir(dir, { recursive: true });
 
-  // Seed 600 dead-letter items directly
+  // Write a dead-letter file with 600 items directly (simulates old version writing more)
   const items: DeadLetterItem[] = Array.from({ length: 600 }, (_, i) =>
     makeDeadLetterItem(`dl-${i.toString().padStart(4, "0")}`),
   );
-  (outbox as any).deadLetters = items;
+  await writeFile(join(dir, "outbox-deadletter.json"), JSON.stringify(items), "utf-8");
 
-  // Trigger a flush that would normally push more dead-letters
-  // Add a new failing item and flush (forces the cap check in the flush path)
-  (outbox as any).queue.push({
-    id: "new-fail",
-    createdAt: Date.now(),
-    scope,
-    payload: { messages: [{ role: "user", content: "new failing message" }] },
-    retryCount: 1, // already at maxRetries-1, so next failure = dead-letter
-    nextRetryAt: 0,
-  });
-  await outbox.flush();
+  // Load — should cap to 500, keeping the NEWEST 500 (last 500 items)
+  const outbox = await makeOutbox(alwaysFailBackend(), dir);
+  assertEqual(outbox.deadLetterCount, 500, "exactly 500 dead-letters after load");
 
-  assert(outbox.deadLetterCount <= 500, `dead-letters capped at 500, got ${outbox.deadLetterCount}`);
+  // Should keep the newest 500 (dl-0100 through dl-0599, indices 100-599)
+  const loadedIds = outbox.getDeadLetters().map((dl) => dl.id);
+  assert(!loadedIds.includes("dl-0000"), "oldest item evicted");
+  assert(loadedIds.includes("dl-0599"), "newest item retained");
 });
 
 // Summary

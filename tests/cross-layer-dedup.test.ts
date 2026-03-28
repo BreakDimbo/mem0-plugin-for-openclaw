@@ -66,8 +66,9 @@ function deduplicateAgainstCore(
   coreItems: Array<{ key: string; value: string }>,
 ): Array<{ id?: string; text: string }> {
   if (coreItems.length === 0) return relevant;
+  // Tokenize only VALUES (not keys) to avoid false positives from generic key-path tokens
   const coreValueTokens = new Set(
-    coreItems.flatMap((c) => tokenizeDocument(`${c.key} ${c.value}`)),
+    coreItems.flatMap((c) => tokenizeDocument(c.value)),
   );
   return relevant.filter((item) => {
     const itemTokens = tokenizeDocument(item.text);
@@ -140,16 +141,26 @@ await test("sanitizePromptQuery export from recall.ts works after T6 edit", () =
   assert(result.length > 0, "returns non-empty");
 });
 
-// Test 7: multiple core items combined for dedup
-await test("multiple core items combined create broader dedup surface", () => {
+// Test 7: multiple core items combined for dedup (only values counted)
+await test("multiple core item values combined create broader dedup surface", () => {
   const core = [
     { key: "preferences.editor", value: "vim" },
     { key: "preferences.theme", value: "dark" },
   ];
-  // Only contains tokens from core
+  // Contains only value tokens — "vim" and "dark" — no key-path tokens
   const freeText = [{ text: "vim dark" }];
   const result = deduplicateAgainstCore(freeText, core);
-  assertEqual(result.length, 0, "fully covered by multiple core items");
+  assertEqual(result.length, 0, "fully covered by multiple core values");
+});
+
+// Test 8: key-path tokens do NOT cause false positives
+await test("key-path tokens (preferences, editor) do not cause false positives", () => {
+  const core = [{ key: "preferences.editor", value: "vim" }];
+  // Free-text mentions "editor preferences" — would falsely match if we tokenized the key
+  const freeText = [{ text: "user has specific editor preferences for python projects" }];
+  const result = deduplicateAgainstCore(freeText, core);
+  // Only "vim" is from values; "editor"/"preferences" come from key and must NOT be counted
+  assertEqual(result.length, 1, "key-path tokens do not inflate overlap");
 });
 
 // Summary
