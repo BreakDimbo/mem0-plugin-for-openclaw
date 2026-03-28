@@ -5,6 +5,15 @@ import type { FreeTextBackend, FreeTextBackendStatus, FreeTextForgetOptions, Fre
 import { matchesMetadataFilters } from "../../metadata.js";
 import { isGoogleProvider, normalizeMem0LlmConfig } from "../../llm-config.js";
 
+// Patterns matching mem0-internal system strings that were erroneously extracted
+// as "facts" by the mem0 LLM fact extractor. These never represent real user facts.
+const GARBAGE_MEMORY_PATTERNS: RegExp[] = [
+  /^new\s+fact\s+added\.?$/i,
+  /^new\s+retrieved\s+fact\s+\d+\.?$/i,
+  /^add\s+new\s+retrieved\s+facts?\s+to\s+(the\s+)?memory\.?$/i,
+  /^new\s+retrieved\s+facts?\s+are\s+mentioned/i,
+];
+
 function expandTilde(p: string): string {
   if (p.startsWith("~/")) return homedir() + p.slice(1);
   if (p === "~") return homedir();
@@ -352,6 +361,11 @@ export class Mem0FreeTextBackend implements FreeTextBackend {
         return typeof expiresAt !== "number" || expiresAt > now;
       });
     }
+
+    // Filter mem0-generated garbage strings — these are system-internal phrases
+    // that mem0's LLM fact extractor mistakenly promotes to "facts".
+    // Always filtered; no option to bypass (they are never valid user facts).
+    filtered = filtered.filter((item) => !GARBAGE_MEMORY_PATTERNS.some((p) => p.test(item.text ?? "")));
 
     // Exclude transient-quality items by default — they are debugging/session context not
     // suitable for long-term injection into future prompts.

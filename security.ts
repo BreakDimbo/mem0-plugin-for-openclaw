@@ -66,6 +66,11 @@ const KNOWLEDGE_DUMP_PATTERNS: RegExp[] = [
   /第\s*[一二三四五六七八九十百\d]+\s*条/,    // Law article references (any form)
   /(?:[；;][^；;\n]{8,}){3,}/,               // ≥3 semicolon-separated clauses of ≥8 chars each
   /(?:\d+[)）][^)）\n]{2,}){4,}/,           // ≥4 consecutive numbered items (study note lists)
+  // System / operational noise — no durable user facts
+  /HEARTBEAT/i,                              // Heartbeat check messages (any variant)
+  /心跳检查|无紧急事项/,                      // Chinese heartbeat / status-ok phrases
+  /\bThe current time is (Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\b/i, // Timestamp-only messages
+  /\bThe user requested the system to read\b/i, // Agent self-narration with no user content
 ];
 
 export function isKnowledgeDump(value: string): boolean {

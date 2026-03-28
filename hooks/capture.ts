@@ -31,6 +31,12 @@ const LOW_SIGNAL_PATTERNS = [
   /\b明天\b|\b今天\b|\b今晚\b/,
   /\btest(ing)?\b|\bdebug\b|\boutbox\b|\bmemu\b/i,
   /测试|调试|联调|修复/,
+  // Heartbeat / system-health messages — no durable user facts
+  /HEARTBEAT/i,
+  /心跳检查|无紧急事项/,
+  // Timestamp-only messages — current time has no long-term value
+  /\bThe current time is (Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\b/i,
+  /\bThe user requested the system to read\b/i,
 ];
 
 function isSystemFragment(text: string): boolean {
