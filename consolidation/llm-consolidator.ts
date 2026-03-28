@@ -13,7 +13,7 @@ type Logger = { info(msg: string): void; warn(msg: string): void };
 
 // ── Prompt building ──────────────────────────────────────────────────────────
 
-function buildPrompt(records: ScoredMemory<CoreMemoryRecord>[]): string {
+export function buildPrompt(records: ScoredMemory<CoreMemoryRecord>[]): string {
   const items = records.map((s, i) =>
     `${i + 1}. [id:${s.record.id}] [${s.record.category ?? "general"}/${s.record.key}] ` +
     `score=${s.score.toFixed(3)} — "${s.record.value.slice(0, 120)}"`,

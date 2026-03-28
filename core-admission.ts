@@ -4,7 +4,7 @@
 // Uses OpenAI-compatible chat completions API (works with Gemini, DeepSeek, etc.)
 // ============================================================================
 
-import type { LlmGateConfig } from "./types.js";
+import type { LlmGateConfig, ClassificationResult, CaptureHint } from "./types.js";
 import { sanitizeJsonLikeResponse } from "./backends/free-text/mem0.js";
 import { isKimiCodingBaseUrl, isLocalOllamaBaseUrl, normalizeChatApiConfig } from "./llm-config.js";
 
@@ -54,6 +54,58 @@ Value格式要求：
 export function buildUserPrompt(texts: string[]): string {
   const numbered = texts.map((t, i) => `${i + 1}. ${t}`).join("\n");
   return `消息列表:\n${numbered}`;
+}
+
+/**
+ * Build a context-enriched text string for a candidate message.
+ * Includes up to `maxContextTurns` preceding user/assistant turns
+ * so the LLM gate can judge ambiguous messages with surrounding context.
+ * Returns plain lastUserContent when no preceding turns are available.
+ */
+export function buildCandidateContextText(
+  messages: Array<{ role: string; content: string }>,
+  maxContextTurns = 2,
+): string {
+  let lastUserIdx = -1;
+  for (let j = messages.length - 1; j >= 0; j--) {
+    if (messages[j].role === "user") { lastUserIdx = j; break; }
+  }
+  if (lastUserIdx < 0) return "";
+
+  const parts: string[] = [];
+  let turns = 0;
+  for (let j = lastUserIdx - 1; j >= 0 && turns < maxContextTurns; j--) {
+    const m = messages[j];
+    if (m.role === "user" || m.role === "assistant") {
+      parts.unshift(`[${m.role}] ${m.content.slice(0, 300)}`);
+      turns++;
+    }
+  }
+  if (parts.length > 0) {
+    parts.push(`[user] ${messages[lastUserIdx].content}`);
+    return parts.join("\n");
+  }
+  return messages[lastUserIdx].content;
+}
+
+/**
+ * Resolve capture routing flags from the classifier result.
+ *
+ * skipCapture — skip free-text AND core extraction entirely
+ *   triggers on: greeting queryType, or captureHint="skip"
+ *
+ * skipLlmGate — write to free-text outbox directly, bypass core LLM judgment
+ *   triggers on: skipCapture=true, or captureHint="light"
+ */
+export function resolveCaptureRouting(classification: ClassificationResult | undefined): {
+  skipCapture: boolean;
+  skipLlmGate: boolean;
+} {
+  const skipCapture = !!classification &&
+    (classification.queryType === "greeting" || classification.captureHint === "skip");
+  const skipLlmGate = skipCapture ||
+    (!!classification && (classification.captureHint as CaptureHint) === "light");
+  return { skipCapture, skipLlmGate };
 }
 
 export function parseAdmissionResponse(raw: unknown): AdmissionResult[] {

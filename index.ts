@@ -18,7 +18,7 @@ import { createPrimaryFreeTextBackend } from "./backends/free-text/factory.js";
 import { resolveWorkspaceDir } from "./workspace-facts.js";
 import { extractCoreProposal } from "./core-proposals.js";
 import { buildFreeTextMetadata } from "./metadata.js";
-import { judgeCandidates } from "./core-admission.js";
+import { judgeCandidates, buildCandidateContextText, resolveCaptureRouting } from "./core-admission.js";
 import { isKnowledgeDump } from "./security.js";
 import { UnifiedIntentClassifier } from "./classifier.js";
 
@@ -142,14 +142,7 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
           api.logger.info(`capture-processor: [${i}] text="${itemText.slice(0, 80)}${itemText.length > 80 ? '...' : ''}"`);
 
           const itemClassification = item.metadata?.classification as ClassificationResult | undefined;
-          // Skip capture entirely: greetings or classifier explicitly says "skip"
-          const skipCapture = itemClassification &&
-            (itemClassification.queryType === "greeting" ||
-             itemClassification.captureHint === "skip");
-          // Bypass LLM gate but still write to free-text: "light" hint means
-          // free-text only, no core LLM judgment needed (e.g. code/debug context)
-          const skipLlmGate = skipCapture ||
-            (itemClassification && itemClassification.captureHint === "light");
+          const { skipCapture, skipLlmGate } = resolveCaptureRouting(itemClassification);
 
           // Skip greeting / explicit-skip entirely — not worth storing anywhere
           if (skipCapture) {
@@ -206,30 +199,9 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
         // Batch LLM gate for deferred candidates
         if (llmCandidates.length > 0) {
           api.logger.info(`capture-processor: LLM gate batch processing ${llmCandidates.length} candidates`);
-          const texts = llmCandidates.map((c) => {
-            const msgs = c.item.messages;
-            // Find last user message index
-            let lastUserIdx = -1;
-            for (let j = msgs.length - 1; j >= 0; j--) {
-              if (msgs[j].role === "user") { lastUserIdx = j; break; }
-            }
-            if (lastUserIdx < 0) return "";
-            // Include up to 2 preceding turns for disambiguation context
-            const parts: string[] = [];
-            let turns = 0;
-            for (let j = lastUserIdx - 1; j >= 0 && turns < 2; j--) {
-              const m = msgs[j];
-              if (m.role === "user" || m.role === "assistant") {
-                parts.unshift(`[${m.role}] ${m.content.slice(0, 300)}`);
-                turns++;
-              }
-            }
-            if (parts.length > 0) {
-              parts.push(`[user] ${msgs[lastUserIdx].content}`);
-              return parts.join("\n");
-            }
-            return msgs[lastUserIdx].content;
-          });
+          const texts = llmCandidates.map((c) =>
+            buildCandidateContextText(c.item.messages),
+          );
           const results = await judgeCandidates(texts, config.core.llmGate, api.logger);
 
           api.logger.info(`capture-processor: LLM gate returned ${results.length} results`);
