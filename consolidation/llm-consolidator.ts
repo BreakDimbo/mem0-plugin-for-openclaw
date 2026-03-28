@@ -25,6 +25,7 @@ Review each memory entry and decide what to do with it.
 Verdicts:
 - "keep"      — still useful, should be retained
 - "downgrade" — borderline, lower priority but keep
+- "merge"     — duplicates or heavily overlaps another entry; combine into one (provide mergedValue)
 - "archive"   — rarely useful, should not be injected but preserve
 - "delete"    — stale, redundant, or low-value; safe to remove
 

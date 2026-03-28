@@ -142,14 +142,16 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
           api.logger.info(`capture-processor: [${i}] text="${itemText.slice(0, 80)}${itemText.length > 80 ? '...' : ''}"`);
 
           const itemClassification = item.metadata?.classification as ClassificationResult | undefined;
+          // Skip capture entirely: greetings or classifier explicitly says "skip"
           const skipCapture = itemClassification &&
             (itemClassification.queryType === "greeting" ||
-             itemClassification.captureHint === "light");
-          const skipLlmGate = skipCapture || (itemClassification &&
-            (itemClassification.queryType === "code" ||
-             itemClassification.queryType === "debug"));
+             itemClassification.captureHint === "skip");
+          // Bypass LLM gate but still write to free-text: "light" hint means
+          // free-text only, no core LLM judgment needed (e.g. code/debug context)
+          const skipLlmGate = skipCapture ||
+            (itemClassification && itemClassification.captureHint === "light");
 
-          // Skip greeting/light entirely — not worth storing in free-text
+          // Skip greeting / explicit-skip entirely — not worth storing anywhere
           if (skipCapture) {
             api.logger.info(`capture-processor: [${i}] SKIPPED (classification=${itemClassification?.queryType}, hint=${itemClassification?.captureHint})`);
             continue;
@@ -180,10 +182,10 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
           }
 
           // Routing decision for free-text (outbox):
-          // - regex matched: write now (high-confidence content)
+          // - regex matched: write now (high-confidence regex hit → core already stored above)
           // - LLM gate disabled: write now (permissive fallback)
-          // - LLM gate enabled + not skipped: defer to LLM gate verdict
-          // - skipLlmGate (code/debug): write now (code/debug still worth capturing as free-text, just no core extraction)
+          // - skipLlmGate ("light" hint): write now (free-text only, skip core LLM judgment)
+          // - otherwise: defer to LLM gate for core/free_text/discard verdict
           if (regexMatched || !config.core.llmGate.enabled || skipLlmGate || !itemText) {
             if (itemText) {
               outbox.enqueue(
@@ -205,8 +207,28 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
         if (llmCandidates.length > 0) {
           api.logger.info(`capture-processor: LLM gate batch processing ${llmCandidates.length} candidates`);
           const texts = llmCandidates.map((c) => {
-            const lastUserMsg = [...c.item.messages].reverse().find(m => m.role === "user");
-            return lastUserMsg?.content ?? "";
+            const msgs = c.item.messages;
+            // Find last user message index
+            let lastUserIdx = -1;
+            for (let j = msgs.length - 1; j >= 0; j--) {
+              if (msgs[j].role === "user") { lastUserIdx = j; break; }
+            }
+            if (lastUserIdx < 0) return "";
+            // Include up to 2 preceding turns for disambiguation context
+            const parts: string[] = [];
+            let turns = 0;
+            for (let j = lastUserIdx - 1; j >= 0 && turns < 2; j--) {
+              const m = msgs[j];
+              if (m.role === "user" || m.role === "assistant") {
+                parts.unshift(`[${m.role}] ${m.content.slice(0, 300)}`);
+                turns++;
+              }
+            }
+            if (parts.length > 0) {
+              parts.push(`[user] ${msgs[lastUserIdx].content}`);
+              return parts.join("\n");
+            }
+            return msgs[lastUserIdx].content;
           });
           const results = await judgeCandidates(texts, config.core.llmGate, api.logger);
 

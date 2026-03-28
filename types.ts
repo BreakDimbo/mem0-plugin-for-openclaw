@@ -486,7 +486,7 @@ export const DEFAULT_CONFIG: MemuPluginConfig = {
       apiBase: getKimiCodingBaseUrl(),
       apiKey: undefined,
       model: getKimiCodingDefaultModel(),
-      maxTokensPerBatch: 4000,
+      maxTokensPerBatch: 1000,
       timeoutMs: 60_000,
     },
   },
