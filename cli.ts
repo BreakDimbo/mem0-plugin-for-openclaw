@@ -447,6 +447,41 @@ export function createMemuCommand(
         };
       }
 
+      if (action === "dead-letter") {
+        const sub = tokens[1]?.toLowerCase() ?? "list";
+
+        if (sub === "list") {
+          const items = outbox.getDeadLetters();
+          if (items.length === 0) return { text: "No dead-letter items." };
+          const lines = items.map((dl) => {
+            const failedAt = new Date(dl.failedAt).toISOString();
+            return `- ${dl.id} [agent=${dl.scope.agentId}] failed=${failedAt} retries=${dl.retryCount} error=${dl.lastError}`;
+          });
+          return { text: ["Dead Letters:", "─────────────", ...lines].join("\n") };
+        }
+
+        if (sub === "replay") {
+          const id = tokens[2]?.trim();
+          const result = await outbox.replayDeadLetters(id ? [id] : undefined);
+          return { text: `Dead-letter replay: ${result.replayed} re-queued, ${result.skipped} skipped.` };
+        }
+
+        if (sub === "clear") {
+          await outbox.clearDeadLetters();
+          return { text: "Dead-letter list cleared." };
+        }
+
+        return {
+          text: [
+            "Usage:",
+            "  /memu dead-letter list           — list dead-letter items",
+            "  /memu dead-letter replay         — replay all dead-letters",
+            "  /memu dead-letter replay <id>    — replay specific item",
+            "  /memu dead-letter clear          — clear all dead-letters",
+          ].join("\n"),
+        };
+      }
+
       return {
         text: [
           "Usage:",
@@ -457,6 +492,7 @@ export function createMemuCommand(
           "  /memu dashboard               — full metrics dashboard",
           "  /memu audit [limit]           — view audit log",
           "  /memu consolidate ...         — consolidation scheduler & reports",
+          "  /memu dead-letter ...         — manage dead-letter items",
           "  /memu core ...                — manage core memories and proposals",
         ].join("\n"),
       };

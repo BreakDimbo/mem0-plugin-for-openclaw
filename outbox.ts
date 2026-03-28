@@ -9,6 +9,7 @@ import { dirname, basename } from "node:path";
 import { homedir } from "node:os";
 import type { OutboxItem, DeadLetterItem, MemoryScope, ConversationMessage } from "./types.js";
 import type { FreeTextBackend } from "./backends/free-text/base.js";
+import { isKnowledgeDump } from "./security.js";
 
 type Logger = { info(msg: string): void; warn(msg: string): void };
 
@@ -325,6 +326,17 @@ export class OutboxWorker {
 
         const results = await Promise.allSettled(
           chunk.map(async (item) => {
+            // Quality guard: reject knowledge dumps before they reach the vector store.
+            // Treat as success (not dead-letter) — the content is intentionally excluded.
+            const userText = item.payload.messages
+              .filter((m) => m.role === "user")
+              .map((m) => m.content)
+              .join("\n")
+              .slice(0, 2000);
+            if (isKnowledgeDump(userText)) {
+              this.logger.info(`outbox: quality-reject id=${item.id} (knowledge-dump)`);
+              return item.id;
+            }
             const ok = await this.primaryBackend.store(item.payload.messages, item.scope, {
               metadata: item.payload.metadata,
               sessionScoped: false,
@@ -486,6 +498,33 @@ export class OutboxWorker {
 
   get deadLetterCount(): number {
     return this.deadLetters.length;
+  }
+
+  getDeadLetters(): DeadLetterItem[] {
+    return [...this.deadLetters];
+  }
+
+  async replayDeadLetters(ids?: string[]): Promise<{ replayed: number; skipped: number }> {
+    const toReplay = ids
+      ? this.deadLetters.filter((dl) => ids.includes(dl.id))
+      : [...this.deadLetters];
+
+    let replayed = 0;
+    for (const dl of toReplay) {
+      const item = this.normalizeOutboxItem({ ...dl });
+      if (!item) continue;
+      this.queue.push({ ...item, retryCount: 0, nextRetryAt: 0 });
+      this.deadLetters = this.deadLetters.filter((d) => d.id !== dl.id);
+      replayed++;
+    }
+    await this.saveToDisk();
+    await this.saveDeadLetters();
+    return { replayed, skipped: toReplay.length - replayed };
+  }
+
+  async clearDeadLetters(): Promise<void> {
+    this.deadLetters = [];
+    await this.saveDeadLetters();
   }
 
   get lastSentAt(): number | null {

@@ -312,12 +312,15 @@ export class Mem0FreeTextBackend implements FreeTextBackend {
   }
 
   private buildBaseMetadata(scope: MemoryScope, captureKind?: string, extra?: Record<string, unknown>): Record<string, unknown> {
+    const ttlDays = this.config.mem0.defaultTtlDays ?? 90;
+    const expiresAt = ttlDays > 0 ? Date.now() + ttlDays * 86_400_000 : undefined;
     return {
       scope_user_id: scope.userId,
       scope_agent_id: scope.agentId,
       scope_session_key: scope.sessionKey,
       source: "memory-mem0",
       content_kind: "free-text",
+      ...(expiresAt !== undefined ? { expires_at: expiresAt } : {}),
       ...(captureKind ? { capture_kind: captureKind } : {}),
       ...(extra ?? {}),
     };
@@ -339,7 +342,17 @@ export class Mem0FreeTextBackend implements FreeTextBackend {
   }
 
   private filterResults(items: MemuMemoryRecord[], options?: FreeTextSearchOptions): MemuMemoryRecord[] {
+    const now = Date.now();
     let filtered = items;
+
+    // Filter expired items unless caller explicitly requests them
+    if (!options?.includeExpired) {
+      filtered = filtered.filter((item) => {
+        const expiresAt = (item.metadata as Record<string, unknown> | undefined)?.["expires_at"];
+        return typeof expiresAt !== "number" || expiresAt > now;
+      });
+    }
+
     // Exclude transient-quality items by default — they are debugging/session context not
     // suitable for long-term injection into future prompts.
     // Exception: if the caller explicitly requests a quality filter (e.g. for admin/debug),

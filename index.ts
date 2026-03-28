@@ -19,8 +19,10 @@ import { resolveWorkspaceDir } from "./workspace-facts.js";
 import { extractCoreProposal } from "./core-proposals.js";
 import { buildFreeTextMetadata } from "./metadata.js";
 import { judgeCandidates } from "./core-admission.js";
+import { isKnowledgeDump } from "./security.js";
 import { UnifiedIntentClassifier } from "./classifier.js";
 
+import { CaptureDedupStore } from "./capture-dedup-store.js";
 import { createRecallHook } from "./hooks/recall.js";
 import { createCaptureHook } from "./hooks/capture.js";
 import { createMessageReceivedHook } from "./hooks/message-received.js";
@@ -110,6 +112,7 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
       flushIntervalMs: config.outbox.flushIntervalMs,
     });
 
+    const captureDedupStore = new CaptureDedupStore(config.outbox.persistPath);
     const sync = new MarkdownSync(primaryFreeTextBackend, scopeResolver, coreRepo, config, api.logger);
 
     const consolidationRunner = new ConsolidationRunner(coreRepo, config.core.consolidation, api.logger, primaryFreeTextBackend);
@@ -272,6 +275,10 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
             const candidate = llmCandidates[j];
             const lastUserMsg = [...candidate.item.messages].reverse().find(m => m.role === "user");
             const itemText = lastUserMsg?.content ?? "";
+            if (isKnowledgeDump(itemText)) {
+              api.logger.info(`capture-processor: quality-reject [${j}] (knowledge-dump) → skipping outbox`);
+              continue;
+            }
             outbox.enqueue(
               candidate.item.messages,
               candidate.item.scope,
@@ -337,7 +344,7 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
     }
 
     if (config.capture.enabled) {
-      api.on("agent_end", createCaptureHook(outbox, coreRepo, proposalQueue, cache, config, api.logger, metrics, sync, candidateQueue, inbound), {
+      api.on("agent_end", createCaptureHook(outbox, coreRepo, proposalQueue, cache, config, api.logger, metrics, sync, candidateQueue, inbound, captureDedupStore), {
         priority: HOOK_PRIORITY.capture,
       });
     }

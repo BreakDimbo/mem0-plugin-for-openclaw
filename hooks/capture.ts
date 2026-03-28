@@ -4,6 +4,7 @@
 // and routes to CandidateQueue for async processing with LLM gate.
 // ============================================================================
 
+import { createHash } from "node:crypto";
 import type { OutboxWorker } from "../outbox.js";
 import type { LRUCache } from "../cache.js";
 import type { Metrics } from "../metrics.js";
@@ -18,6 +19,7 @@ import type { CandidateQueue } from "../candidate-queue.js";
 import type { InboundMessageCache } from "../inbound-cache.js";
 import { judgeCandidates } from "../core-admission.js";
 import { stripInjectedBlocks } from "./utils.js";
+import type { CaptureDedupStore } from "../capture-dedup-store.js";
 
 type Logger = { info(msg: string): void; warn(msg: string): void };
 
@@ -211,6 +213,7 @@ export function createCaptureHook(
   sync: MarkdownSync,
   candidateQueue?: CandidateQueue,
   inbound?: InboundMessageCache,
+  dedupStore?: CaptureDedupStore,
 ) {
   return async (event: { messages?: unknown[]; prompt?: string; success?: boolean }, ctx: PluginHookContext) => {
     logger.info("capture-hook: agent_end triggered");
@@ -271,6 +274,18 @@ export function createCaptureHook(
       logger.info(`capture-hook: filtered (low signal)`);
       metrics.captureFiltered++;
       return;
+    }
+
+    // Persistent cross-session dedup: skip if identical content was captured before
+    if (dedupStore) {
+      const scopeKey = `${scope.userId}::${scope.agentId}`;
+      const contentHash = createHash("sha256").update(lastUserText.trim().toLowerCase()).digest("hex").slice(0, 16);
+      if (await dedupStore.has(scopeKey, contentHash)) {
+        logger.info(`capture-hook: filtered (persistent-dedup hash=${contentHash})`);
+        metrics.captureDeduped++;
+        return;
+      }
+      await dedupStore.add(scopeKey, contentHash);
     }
 
     // CandidateQueue path (preferred): enqueue for async batch processing

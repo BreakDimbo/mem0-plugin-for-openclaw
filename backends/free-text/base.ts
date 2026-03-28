@@ -13,6 +13,8 @@ export type FreeTextSearchOptions = {
   quality?: "durable" | "transient";
   memoryKinds?: string[];
   captureKind?: "explicit" | "auto";
+  /** Include expired items (default: false — expired items are filtered out) */
+  includeExpired?: boolean;
 };
 
 export type FreeTextStoreOptions = {

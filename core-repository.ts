@@ -95,6 +95,7 @@ export function inferTierFromCategory(category: string): CoreMemoryTier {
     case "preferences":
     case "goals":
     case "relationships":
+    case "constraints":
       return "profile";
     case "technical":
     case "architecture":

@@ -313,6 +313,11 @@ export type MemuPluginConfig = {
     topK: number;
     customInstructions?: string;
     customPrompt?: string;
+    /**
+     * Default TTL for free-text memories in days.
+     * 0 = never expire. Default: 90 days.
+     */
+    defaultTtlDays: number;
     oss?: {
       embedder?: { provider: string; config: Record<string, unknown> };
       vectorStore?: { provider: string; config: Record<string, unknown> };
@@ -410,6 +415,7 @@ export const DEFAULT_CONFIG: MemuPluginConfig = {
     topK: 5,
     customInstructions: undefined,
     customPrompt: undefined,
+    defaultTtlDays: 90,
     oss: undefined,
   },
   scope: {
@@ -717,6 +723,7 @@ export function loadConfig(raw?: Record<string, unknown>): MemuPluginConfig {
       topK: numInRange(mem0.topK, DEFAULT_CONFIG.mem0.topK, 1, 50),
       customInstructions: optStr(mem0.customInstructions),
       customPrompt: optStr(mem0.customPrompt),
+      defaultTtlDays: numInRange(mem0.defaultTtlDays, DEFAULT_CONFIG.mem0.defaultTtlDays, 0, 3650),
       oss,
     },
     scope: {

@@ -217,6 +217,29 @@ function dedupeMemories(items: MemuMemoryRecord[]): MemuMemoryRecord[] {
   return output;
 }
 
+/**
+ * Remove free-text memories whose content is already covered by core memory.
+ * A free-text item is considered covered when ≥80% of its tokens appear in
+ * the combined core key+value token set — injecting it would be redundant.
+ */
+function deduplicateAgainstCore(
+  relevant: MemuMemoryRecord[],
+  coreItems: Array<{ key: string; value: string }>,
+): MemuMemoryRecord[] {
+  if (coreItems.length === 0) return relevant;
+
+  const coreValueTokens = new Set(
+    coreItems.flatMap((c) => tokenizeDocument(`${c.key} ${c.value}`)),
+  );
+
+  return relevant.filter((item) => {
+    const itemTokens = tokenizeDocument(item.text);
+    if (itemTokens.length === 0) return true;
+    const overlapCount = itemTokens.filter((t) => coreValueTokens.has(t)).length;
+    return overlapCount / itemTokens.length < 0.8;
+  });
+}
+
 function selectRelevantCoreMemories<T extends { score?: number }>(items: T[], queryPartCount: number): T[] {
   if (items.length <= 1) return items;
   const topScore = items[0]?.score ?? 0;
@@ -864,6 +887,11 @@ export function createRecallHook(
 
         const classInfo = classification ? ` [type=${classification.queryType}]` : "";
         logger.info(`recall-hook: scope user=${scope.userId} agent=${scope.agentId} core=${coreMemories.length} (always=${alwaysInjectPool.length} retrieval=${selectedRetrieval.length})${classInfo}`);
+      }
+
+      // Remove free-text items already covered by core memories to avoid duplicate injection
+      if (config.core.enabled && filteredMemories.length > 0 && coreMemories.length > 0) {
+        filteredMemories = deduplicateAgainstCore(filteredMemories, coreMemories);
       }
 
       if (filteredMemories.length > 0) {
