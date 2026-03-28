@@ -523,6 +523,15 @@ export class OutboxWorker {
     }
     await this.saveToDisk();
     await this.saveDeadLetters();
+
+    // Kick off an immediate background flush so replayed items are retried
+    // without waiting for the next interval tick — same as enqueue() does.
+    if (replayed > 0) {
+      this.flush().catch((err) => {
+        this.logger.warn(`outbox: replay flush error: ${String(err)}`);
+      });
+    }
+
     return { replayed, skipped: toReplay.length - replayed };
   }
 

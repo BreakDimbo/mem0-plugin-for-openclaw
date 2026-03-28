@@ -118,6 +118,27 @@ await test("replayDeadLetters() moves all items back to queue", async () => {
   assert(queueItems.every((q) => q.retryCount === 0), "retryCount reset to 0");
 });
 
+// Test 2b: replayDeadLetters() triggers immediate flush
+await test("replayDeadLetters() triggers immediate flush — items processed without waiting for interval", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "memu-dl-"));
+  const backend = alwaysSucceedBackend();
+  let storeCalled = 0;
+  const origStore = backend.store.bind(backend);
+  (backend as any).store = async (...args: Parameters<typeof origStore>) => {
+    storeCalled++;
+    return origStore(...args);
+  };
+  const outbox = await makeOutbox(backend, dir);
+  // Do NOT call outbox.start() — no interval timer running
+
+  (outbox as any).deadLetters.push(makeDeadLetterItem("immediate-1"));
+  await outbox.replayDeadLetters();
+
+  // Give the background flush a tick to complete
+  await new Promise((r) => setTimeout(r, 50));
+  assert(storeCalled > 0, "store() called immediately after replay without needing interval tick");
+});
+
 // Test 3: replayDeadLetters(ids) only replays specified ids
 await test("replayDeadLetters([id]) only replays matching item", async () => {
   const dir = await mkdtemp(join(tmpdir(), "memu-dl-"));
