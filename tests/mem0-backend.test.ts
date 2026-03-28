@@ -1,4 +1,4 @@
-import { Mem0FreeTextBackend, effectiveUserId, resolveOssLlmConfigForTests, sanitizeJsonLikeResponse } from "../backends/free-text/mem0.js";
+import { Mem0FreeTextBackend, effectiveUserId, resolveOssLlmConfigForTests, sanitizeJsonLikeResponse, patchRerankerBatch } from "../backends/free-text/mem0.js";
 import { loadConfig } from "../types.js";
 
 type TestResult = { name: string; passed: boolean; error?: string };
@@ -412,6 +412,148 @@ await test("search applies metadata filters before returning results", async () 
 
   assertEqual(results.length, 1, "only durable preference should remain");
   assertEqual(results[0]?.text, "The user prefers jasmine tea over coffee.", "expected durable preference");
+});
+
+// ── patchRerankerBatch ────────────────────────────────────────────────────────
+
+function makeMockLlm(response: string) {
+  const calls: string[] = [];
+  return {
+    calls,
+    llm: {
+      generateResponse: async (messages: Array<{ role: string; content: string }>) => {
+        calls.push(messages[0].content);
+        return response;
+      },
+    },
+  };
+}
+
+function makeMemoryWithReranker(llm: unknown, serialCallCount = { n: 0 }) {
+  return {
+    llm,
+    reranker: {
+      config: { top_k: null },
+      llm,  // reranker.llm also points to same instance
+      rerank: async (
+        _query: string,
+        documents: Array<Record<string, unknown>>,
+        _topK?: number,
+      ) => {
+        serialCallCount.n += documents.length;  // track serial calls
+        return documents;
+      },
+    },
+  };
+}
+
+await test("patchRerankerBatch: marks rerank as patched", async () => {
+  const { llm } = makeMockLlm("[0.9, 0.5]");
+  const memory = makeMemoryWithReranker(llm) as unknown as Record<string, unknown>;
+  patchRerankerBatch(memory);
+  assert(
+    !!((memory as any).reranker.rerank as any).__memoryMemuBatchPatched,
+    "rerank method should be marked as batch patched",
+  );
+});
+
+await test("patchRerankerBatch: idempotent — double patch has no effect", async () => {
+  const { llm, calls } = makeMockLlm("[0.9, 0.5]");
+  const memory = makeMemoryWithReranker(llm) as unknown as Record<string, unknown>;
+  patchRerankerBatch(memory);
+  patchRerankerBatch(memory);
+  const docs = [{ memory: "doc1" }, { memory: "doc2" }];
+  await (memory as any).reranker.rerank("query", docs);
+  assertEqual(calls.length, 1, "only 1 LLM call despite double patch");
+});
+
+await test("patchRerankerBatch: N docs → 1 LLM call (not N)", async () => {
+  const { llm, calls } = makeMockLlm("[0.9, 0.2, 0.7]");
+  const memory = makeMemoryWithReranker(llm) as unknown as Record<string, unknown>;
+  patchRerankerBatch(memory);
+
+  const docs = [
+    { memory: "doc A" },
+    { memory: "doc B" },
+    { memory: "doc C" },
+  ];
+  await (memory as any).reranker.rerank("test query", docs);
+  assertEqual(calls.length, 1, "exactly 1 LLM call for 3 documents");
+});
+
+await test("patchRerankerBatch: scores parsed and docs sorted descending", async () => {
+  const { llm } = makeMockLlm("[0.3, 0.9, 0.6]");
+  const memory = makeMemoryWithReranker(llm) as unknown as Record<string, unknown>;
+  patchRerankerBatch(memory);
+
+  const docs = [
+    { memory: "low relevance" },
+    { memory: "high relevance" },
+    { memory: "medium relevance" },
+  ];
+  const result = await (memory as any).reranker.rerank("query", docs) as Array<Record<string, unknown>>;
+  assertEqual((result[0] as any).memory, "high relevance", "highest score first");
+  assertEqual((result[1] as any).memory, "medium relevance", "second score second");
+  assertEqual((result[2] as any).memory, "low relevance", "lowest score last");
+  assertEqual((result[0] as any).rerank_score, 0.9, "score attached correctly");
+});
+
+await test("patchRerankerBatch: prompt includes query and all doc texts", async () => {
+  const { llm, calls } = makeMockLlm("[0.8, 0.4]");
+  const memory = makeMemoryWithReranker(llm) as unknown as Record<string, unknown>;
+  patchRerankerBatch(memory);
+
+  await (memory as any).reranker.rerank("进行清理", [
+    { memory: "无紧急事项需要关注" },
+    { memory: "用户偏好 vim 编辑器" },
+  ]);
+  const prompt = calls[0];
+  assert(prompt.includes("进行清理"), "prompt contains query");
+  assert(prompt.includes("无紧急事项需要关注"), "prompt contains doc 1");
+  assert(prompt.includes("用户偏好 vim 编辑器"), "prompt contains doc 2");
+});
+
+await test("patchRerankerBatch: fallback to serial on LLM error", async () => {
+  const serialCount = { n: 0 };
+  const brokenLlm = {
+    generateResponse: async () => { throw new Error("LLM unavailable"); },
+  };
+  const memory = makeMemoryWithReranker(brokenLlm, serialCount) as unknown as Record<string, unknown>;
+  patchRerankerBatch(memory);
+
+  const docs = [{ memory: "doc1" }, { memory: "doc2" }, { memory: "doc3" }];
+  await (memory as any).reranker.rerank("query", docs);
+  assertEqual(serialCount.n, 3, "fell back to serial reranker after LLM error");
+});
+
+await test("patchRerankerBatch: fallback to serial when score count mismatches", async () => {
+  const serialCount = { n: 0 };
+  // Returns only 2 scores for 3 documents — count mismatch
+  const { llm } = makeMockLlm("[0.9, 0.5]");
+  const memory = makeMemoryWithReranker(llm, serialCount) as unknown as Record<string, unknown>;
+  patchRerankerBatch(memory);
+
+  const docs = [{ memory: "a" }, { memory: "b" }, { memory: "c" }];
+  await (memory as any).reranker.rerank("query", docs);
+  assertEqual(serialCount.n, 3, "fell back to serial on count mismatch");
+});
+
+await test("patchRerankerBatch: single doc uses original path (no batch)", async () => {
+  const serialCount = { n: 0 };
+  const { llm, calls } = makeMockLlm("[0.9]");
+  const memory = makeMemoryWithReranker(llm, serialCount) as unknown as Record<string, unknown>;
+  patchRerankerBatch(memory);
+
+  await (memory as any).reranker.rerank("query", [{ memory: "only doc" }]);
+  assertEqual(calls.length, 0, "no batch LLM call for single doc");
+  assertEqual(serialCount.n, 1, "original reranker used for single doc");
+});
+
+await test("patchRerankerBatch: no reranker on memory object — no-op", async () => {
+  const memory: Record<string, unknown> = { llm: makeMockLlm("[0.9]").llm };
+  // Should not throw
+  patchRerankerBatch(memory);
+  assert(!(memory as any).reranker, "no reranker added when none existed");
 });
 
 await test("sanitizeJsonLikeResponse trims trailing fence noise after JSON", () => {

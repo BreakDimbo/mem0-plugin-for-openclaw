@@ -5,13 +5,30 @@ import type { FreeTextBackend, FreeTextBackendStatus, FreeTextForgetOptions, Fre
 import { matchesMetadataFilters } from "../../metadata.js";
 import { isGoogleProvider, normalizeMem0LlmConfig } from "../../llm-config.js";
 
-// Patterns matching mem0-internal system strings that were erroneously extracted
-// as "facts" by the mem0 LLM fact extractor. These never represent real user facts.
+// Patterns matching records that must be suppressed at recall time.
+// Two sources:
+//   A) mem0-internal system strings erroneously extracted as "facts"
+//   B) Operational/status noise — synced from LOW_SIGNAL_PATTERNS (capture.ts)
+//      and KNOWLEDGE_DUMP_PATTERNS (security.ts) so Layer 2 mirrors Layer 1.
+//      Historical records written before Layer 1 existed are caught here.
 const GARBAGE_MEMORY_PATTERNS: RegExp[] = [
+  // ── A: mem0 system placeholder strings ──────────────────────────────────
   /^new\s+fact\s+added\.?$/i,
   /^new\s+retrieved\s+fact\s+\d+\.?$/i,
   /^add\s+new\s+retrieved\s+facts?\s+to\s+(the\s+)?memory\.?$/i,
   /^new\s+retrieved\s+facts?\s+are\s+mentioned/i,
+
+  // ── B: Operational noise (synced from Layer 1) ───────────────────────────
+  /HEARTBEAT/i,                                // English heartbeat messages
+  /心跳检查|无紧急事项/,                        // Chinese heartbeat / status-ok phrases
+  /\bThe current time is (Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\b/i,
+  /\bThe user requested the system to read\b/i,
+
+  // ── C: Structured report null-value lines ────────────────────────────────
+  // Matches items like "4. 模式推广：无需要推广的模式" and
+  // "2. 错误 - 重复错误：无需要解决的重复错误" — periodic health check
+  // templates where each entry reports "nothing to do".
+  /无需要.{1,30}的/,
 ];
 
 function expandTilde(p: string): string {
@@ -157,6 +174,87 @@ function patchLlmGenerateResponse(llm: JsonCapableLlm, stripResponseFormatWhenTo
   llm.generateResponse = wrapped;
 }
 
+/**
+ * Replace mem0's serial per-document LLM reranker with a single batch call.
+ *
+ * mem0's LLMReranker.rerank() loops over documents and calls generateResponse()
+ * once per document — N docs → N LLM calls. We replace it with a single call
+ * that asks the LLM to score all documents at once and return a JSON score array.
+ *
+ * Uses memory.llm (the main LLM instance, already patched, no max_tokens cap)
+ * rather than reranker.llm (created with max_tokens=50, too small for batches).
+ */
+export function patchRerankerBatch(memory: Record<string, unknown>): void {
+  const reranker = (memory as any).reranker;
+  if (!reranker || typeof reranker.rerank !== "function") return;
+  if ((reranker.rerank as any).__memoryMemuBatchPatched) return;
+
+  // Prefer memory.llm — already initialized, patched, and has generous token limits.
+  const llm = (memory.llm ?? reranker.llm) as JsonCapableLlm | undefined;
+  if (!llm || typeof llm.generateResponse !== "function") return;
+
+  const original = reranker.rerank.bind(reranker) as (
+    query: string,
+    documents: Array<Record<string, unknown>>,
+    topK?: number,
+  ) => Promise<Array<Record<string, unknown>>>;
+
+  const batchRerank = async (
+    query: string,
+    documents: Array<Record<string, unknown>>,
+    topK?: number,
+  ): Promise<Array<Record<string, unknown>>> => {
+    if (documents.length === 0) return documents;
+    // Single doc: no batch benefit, use original path
+    if (documents.length === 1) return original(query, documents, topK);
+
+    const docLines = documents
+      .map((doc, i) => {
+        const text =
+          typeof doc.memory === "string" ? doc.memory :
+          typeof doc.text === "string" ? doc.text :
+          typeof doc.content === "string" ? doc.content :
+          String(doc);
+        return `${i + 1}. "${text.slice(0, 200)}"`;
+      })
+      .join("\n");
+
+    const prompt =
+      `You are a relevance scoring assistant. Score how relevant each document is to the query.\n\n` +
+      `Query: "${query.slice(0, 200)}"\n\n` +
+      `Documents:\n${docLines}\n\n` +
+      `Return ONLY a JSON array of ${documents.length} scores between 0.0 and 1.0, one per document, in order.\n` +
+      `Example: [0.9, 0.1, 0.7]`;
+
+    try {
+      const response = await llm.generateResponse([{ role: "user", content: prompt }]);
+      const raw = typeof response === "string" ? response : String(response ?? "");
+      const arrMatch = raw.match(/\[[\s\S]*?\]/);
+      if (!arrMatch) throw new Error("no array in response");
+
+      const scores = JSON.parse(arrMatch[0]) as unknown[];
+      if (!Array.isArray(scores) || scores.length !== documents.length) {
+        throw new Error(`expected ${documents.length} scores, got ${scores.length}`);
+      }
+
+      const scored = documents.map((doc, i) => ({
+        ...doc,
+        rerank_score: Math.min(Math.max(typeof scores[i] === "number" ? (scores[i] as number) : 0.5, 0.0), 1.0),
+      }));
+      scored.sort((a, b) => (b.rerank_score as number) - (a.rerank_score as number));
+
+      const limit = topK ?? (reranker.config?.top_k as number | undefined);
+      return limit ? scored.slice(0, limit) : scored;
+    } catch {
+      // Fall back to original serial reranker — correctness over speed on error
+      return original(query, documents, topK);
+    }
+  };
+
+  (batchRerank as any).__memoryMemuBatchPatched = true;
+  reranker.rerank = batchRerank;
+}
+
 function patchOssMemoryLlm(memory: Record<string, unknown>, stripResponseFormatWhenTools = false): void {
   const llm = memory.llm as JsonCapableLlm | undefined;
   if (llm && typeof llm.generateResponse === "function") {
@@ -174,6 +272,9 @@ function patchOssMemoryLlm(memory: Record<string, unknown>, stripResponseFormatW
       }
     }
   }
+
+  // Replace serial per-doc reranker with a single batch LLM call
+  patchRerankerBatch(memory);
 }
 
 function toRecord(value: unknown): Record<string, unknown> {
@@ -278,11 +379,33 @@ export class Mem0FreeTextBackend implements FreeTextBackend {
             },
           }
         : {};
+
+      // Reranker: use explicit config if set, otherwise auto-derive llm_reranker from the
+      // configured LLM. This enables LLM-based relevance scoring during recall without
+      // requiring a separate reranker config entry.
+      // When llm is not configured (e.g. offline/embeddings-only mode), skip reranker.
+      const rerankerConfig: { provider: string; config: Record<string, unknown> } | undefined =
+        cfg.oss?.reranker ??
+        (topLevelLlm
+          ? {
+              provider: "llm_reranker",
+              config: {
+                provider: topLevelLlm.provider,
+                model: topLevelLlm.config.model as string ?? "",
+                // mem0 reranker config uses snake_case; our llm config uses camelCase apiKey
+                ...(topLevelLlm.config.apiKey ? { api_key: topLevelLlm.config.apiKey } : {}),
+                temperature: 0.0,
+                max_tokens: 50,  // Reranker only needs a short score like "0.85"
+              },
+            }
+          : undefined);
+
       const memory = new MemoryCtor({
         version: "v1.1",
         ...(cfg.oss?.embedder ? { embedder: cfg.oss.embedder } : {}),
         ...(cfg.oss?.vectorStore ? { vectorStore: cfg.oss.vectorStore } : {}),
         ...(topLevelLlm ? { llm: topLevelLlm } : {}),
+        ...(rerankerConfig ? { reranker: rerankerConfig } : {}),
         // Use historyStore config (not top-level historyDbPath) to ensure proper db path resolution
         historyStore: {
           provider: "sqlite",

@@ -217,6 +217,58 @@ await test("L2: legitimate memory mentioning 'fact' not incorrectly filtered", a
   assertEqual(listed.length, 2, "legitimate 'fact' mentions not filtered");
 });
 
+// ── Layer 2: Chinese operational noise (B+C patterns) ────────────────────────
+
+await test("L2: 无紧急事项需要关注 excluded from search()", async () => {
+  const items: MockItem[] = [
+    { id: "noise-1", memory: "无紧急事项需要关注", score: 0.85 },
+    { id: "valid-7", memory: "用户偏好 vim 编辑器", score: 0.7 },
+  ];
+  const backend = new Mem0FreeTextBackend(makeConfig(), logger, async () => makeMockProvider([], items));
+  const found = await backend.search("清理", scope);
+  assert(!found.some((r) => r.id === "noise-1"), "无紧急事项 excluded");
+  assert(found.some((r) => r.id === "valid-7"), "valid memory retained");
+});
+
+await test("L2: 心跳检查 excluded from list()", async () => {
+  const items: MockItem[] = [
+    { id: "noise-2", memory: "已执行心跳检查，所有检查项目均通过" },
+    { id: "valid-8", memory: "用户使用 TypeScript 开发后端" },
+  ];
+  const backend = new Mem0FreeTextBackend(makeConfig(), logger, async () => makeMockProvider(items));
+  const listed = await backend.list(scope);
+  assert(!listed.some((r) => r.id === "noise-2"), "心跳检查 excluded");
+  assert(listed.some((r) => r.id === "valid-8"), "valid memory retained");
+});
+
+await test("L2: structured report null-value lines excluded (无需要X的X)", async () => {
+  const items: MockItem[] = [
+    { id: "noise-3", memory: "4. 模式推广：无需要推广的模式", score: 0.8 },
+    { id: "noise-4", memory: "2. 错误 - 重复错误：无需要解决的重复错误", score: 0.75 },
+    { id: "valid-9", memory: "验证报告指出，确认窗口与 OOS 高度一致，策略无性能退化。", score: 0.7 },
+  ];
+  const backend = new Mem0FreeTextBackend(makeConfig(), logger, async () => makeMockProvider([], items));
+  const found = await backend.search("进行清理", scope);
+  assert(!found.some((r) => r.id === "noise-3"), "模式推广：无需要... excluded");
+  assert(!found.some((r) => r.id === "noise-4"), "重复错误：无需要... excluded");
+  assert(found.some((r) => r.id === "valid-9"), "legitimate validation report retained");
+});
+
+await test("L2: HEARTBEAT and English patterns excluded from list()", async () => {
+  const items: MockItem[] = [
+    { id: "noise-5", memory: "HEARTBEAT_OK status check passed" },
+    { id: "noise-6", memory: "The current time is Saturday, March 28, 2026." },
+    { id: "noise-7", memory: "The user requested the system to read the file." },
+    { id: "valid-10", memory: "User is based in Beijing, UTC+8" },
+  ];
+  const backend = new Mem0FreeTextBackend(makeConfig(), logger, async () => makeMockProvider(items));
+  const listed = await backend.list(scope);
+  assert(!listed.some((r) => r.id === "noise-5"), "HEARTBEAT excluded");
+  assert(!listed.some((r) => r.id === "noise-6"), "timestamp excluded");
+  assert(!listed.some((r) => r.id === "noise-7"), "agent self-narration excluded");
+  assert(listed.some((r) => r.id === "valid-10"), "valid memory retained");
+});
+
 // Summary
 console.log();
 const passed = results.filter((r) => r.passed).length;

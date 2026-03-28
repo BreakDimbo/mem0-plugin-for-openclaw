@@ -322,6 +322,8 @@ export type MemuPluginConfig = {
       embedder?: { provider: string; config: Record<string, unknown> };
       vectorStore?: { provider: string; config: Record<string, unknown> };
       llm?: { provider: string; config: Record<string, unknown> };
+      /** Explicit reranker config. When omitted and llm is configured, llm_reranker is auto-derived. */
+      reranker?: { provider: string; config: Record<string, unknown> };
       historyDbPath?: string;
       graph_store?: { provider: string; config: Record<string, unknown>; llm?: { provider: string; config: Record<string, unknown> } };
     };
@@ -679,6 +681,9 @@ export function loadConfig(raw?: Record<string, unknown>): MemuPluginConfig {
           ? (ossRaw.vectorStore as { provider: string; config: Record<string, unknown> })
           : undefined,
         llm: parseMem0Llm(ossRaw.llm, kimiApiKey),
+        reranker: ossRaw.reranker && typeof ossRaw.reranker === "object"
+          ? (ossRaw.reranker as { provider: string; config: Record<string, unknown> })
+          : undefined,
         historyDbPath: typeof ossRaw.historyDbPath === "string" ? ossRaw.historyDbPath : undefined,
         graph_store: ossRaw.graph_store && typeof ossRaw.graph_store === "object"
           ? {

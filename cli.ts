@@ -18,7 +18,7 @@ import type { ConsolidationScheduler } from "./consolidation/scheduler.js";
 import { loadState } from "./consolidation/scheduler.js";
 import type { ConsolidationCycle } from "./consolidation/types.js";
 
-function inferPeerKindFromId(id: string): "direct" | "group" | "channel" {
+export function inferPeerKindFromId(id: string): "direct" | "group" | "channel" {
   const raw = id.trim().toLowerCase();
   if (!raw) return "direct";
   if (raw.startsWith("channel:")) return "channel";
@@ -31,7 +31,7 @@ function inferPeerKindFromId(id: string): "direct" | "group" | "channel" {
   return "direct";
 }
 
-function looksLikeConversationId(id: string): boolean {
+export function looksLikeConversationId(id: string): boolean {
   const raw = id.trim().toLowerCase();
   if (!raw) return false;
   if (raw.startsWith("user:")) return true;
@@ -68,7 +68,7 @@ function resolvePeerFromPluginCommandCtx(ctx: any): { kind: "direct" | "group" |
   };
 }
 
-function parseCoreRef(raw: string | undefined): { id?: string; key?: string } {
+export function parseCoreRef(raw: string | undefined): { id?: string; key?: string } {
   const token = (raw ?? "").trim();
   if (!token) return {};
   if (token.startsWith("id:")) return { id: token.slice(3).trim() || undefined };
