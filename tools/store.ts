@@ -22,8 +22,9 @@ export function createStoreTool(outbox: OutboxWorker, config: MemuPluginConfig, 
       required: ["content"] as const,
     },
     execute: async (_id: string, args: { content: string; context?: string }) => {
-      if (!shouldCapture(args.content, config.capture.minChars, config.capture.maxChars)) {
-        return { text: "Content rejected: too short, too long, or contains sensitive/suspicious content." };
+      const captureCheck = shouldCapture(args.content, config.capture.minChars, config.capture.maxChars);
+      if (!captureCheck.allowed) {
+        return { text: `Content rejected: ${captureCheck.reason ?? "too short, too long, or contains sensitive/suspicious content."}` };
       }
 
       const scope = buildDynamicScope(config.scope, toolCtx);

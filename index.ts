@@ -293,7 +293,7 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
           if (now - lastConsolidateAt >= config.core.consolidation.intervalMs) {
             lastConsolidateAt = now;
             const scope = batch[0].scope;
-            coreRepo.consolidate(scope, {
+            await coreRepo.consolidate(scope, {
               similarityThreshold: config.core.consolidation.similarityThreshold,
             }).catch((err) => {
               api.logger.warn(`memory-mem0: consolidation failed: ${String(err)}`);

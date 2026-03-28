@@ -47,11 +47,37 @@ export function sanitizeCoreValue(text: string, maxChars: number): string {
   return stripped.length > maxChars ? stripped.slice(0, maxChars) : stripped;
 }
 
+/**
+ * Detect knowledge dumps: domain content, regulation text, multi-clause lists.
+ * Core Memory is for personal facts only. This blocks study notes, law articles,
+ * and multi-point reference content.
+ *
+ * Patterns:
+ *   - Circled numbers ①②③ — used as enumeration markers in study notes
+ *   - Chinese official document citation markers: （来源：, （出处：
+ *   - Chinese official document numbers: 〔YYYY〕N号
+ *   - Law/regulation article references: 第N条 (any form)
+ *   - ≥2 long semicolon-separated clauses (≥8 chars each) — regulation paraphrase format
+ */
+const KNOWLEDGE_DUMP_PATTERNS: RegExp[] = [
+  /[①②③④⑤⑥⑦⑧⑨⑩]/,                     // Circled number enumeration markers
+  /（来源：|（出处：/,                         // Citation markers common in study notes
+  /〔\d{4}〕\d+号/,                           // Chinese official document numbers
+  /第\s*[一二三四五六七八九十百\d]+\s*条/,    // Law article references (any form)
+  /(?:[；;][^；;\n]{8,}){3,}/,               // ≥3 semicolon-separated clauses of ≥8 chars each
+  /(?:\d+[)）][^)）\n]{2,}){4,}/,           // ≥4 consecutive numbered items (study note lists)
+];
+
+export function isKnowledgeDump(value: string): boolean {
+  return KNOWLEDGE_DUMP_PATTERNS.some((p) => p.test(value));
+}
+
 export function shouldStoreCoreMemory(key: string, value: string, maxChars: number): boolean {
   if (!isValidCoreKey(key)) return false;
   const normalized = sanitizeCoreValue(value, maxChars);
   if (normalized.length < 3) return false;
   if (isSensitiveContent(normalized)) return false;
+  if (isKnowledgeDump(normalized)) return false;
   return true;
 }
 
@@ -100,9 +126,10 @@ export function applyInjectionBudget(sections: string[], budgetChars: number): s
       used += separator + chunk.length;
       continue;
     }
-    const truncated = chunk.slice(0, Math.max(0, room - 20)).trimEnd();
+    const TRUNCATION_MARKER = "\n[truncated by injection budget]";
+    const truncated = chunk.slice(0, Math.max(0, room - TRUNCATION_MARKER.length)).trimEnd();
     if (!truncated) break;
-    out.push(`${truncated}\n[truncated by injection budget]`);
+    out.push(`${truncated}${TRUNCATION_MARKER}`);
     break;
   }
   return out.join("\n\n");

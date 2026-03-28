@@ -5,16 +5,18 @@ import { buildDynamicScope } from "../types.js";
 export function createCoreUpsertTool(repo: CoreMemoryRepository, config: MemuPluginConfig, toolCtx?: PluginHookContext) {
   return {
     name: "memory_core_upsert",
-    description: "Create or update a core memory key/value for the current scope.",
+    description: "Store or update a durable personal fact about the user in Core Memory. " +
+      "ONLY use this for stable personal attributes: identity, preferences, goals, constraints, relationships, work background, skills, habits. " +
+      "Do NOT use for: domain knowledge, study notes, law/regulation text, session tasks, debugging context, temporary role assignments, or time-specific information.",
     parameters: {
       type: "object" as const,
       properties: {
-        category: { type: "string" as const, description: "Core memory category (default: general)" },
-        key: { type: "string" as const, description: "Core memory key (for example: preference.editor)" },
-        value: { type: "string" as const, description: "Core memory value to store" },
-        importance: { type: "number" as const, description: "Optional importance score" },
+        category: { type: "string" as const, description: "Core memory category (identity | preferences | goals | constraints | relationships | general)" },
+        key: { type: "string" as const, description: "Core memory key (for example: preferences.editor, identity.name, goals.primary)" },
+        value: { type: "string" as const, description: "Core memory value — concise personal fact, plain language, no bullet lists, no citations" },
+        importance: { type: "number" as const, description: "Optional importance score (0-10)" },
         provenance: { type: "string" as const, description: "Optional provenance/source label" },
-        validUntil: { type: "string" as const, description: "Optional expiry timestamp (ISO 8601)" },
+        validUntil: { type: "string" as const, description: "Optional expiry timestamp (ISO 8601). Use for temporary facts (e.g. active projects, short-term goals)." },
         items: {
           type: "array" as const,
           description: "Batch upsert items",

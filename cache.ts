@@ -1,6 +1,6 @@
 // ============================================================================
 // Generic LRU Cache with TTL
-// Aligned with §13: scope-aware key, evict oldest 10%
+// Aligned with §13: scope-aware key, evict oldest entry on overflow
 // ============================================================================
 
 import { createHash } from "node:crypto";

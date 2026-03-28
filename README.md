@@ -11,7 +11,7 @@ Automatically recalls relevant memories before prompt building, and captures dur
 - **LLM Admission Gate** — optional Gemini-powered quality filter classifies candidate memories as `core` / `free_text` / `discard` before storage, eliminating noise.
 - **Async Capture Pipeline** — `CandidateQueue → LLM Gate → Outbox → mem0`, with hash-based dedup, batch processing, retry with backoff, and disk persistence. Zero impact on agent response latency.
 - **Chinese-First** — CJK bigram tokenization, Chinese numeral normalization (第一 ↔ 1), and cross-language semantic matching.
-- **Multi-Agent / Multi-Tenant** — full scope isolation via `userId + agentId + sessionKey + tenantId`. Per-agent userId mapping for shared deployments.
+- **Multi-Agent / Multi-Tenant** — scope isolation via `userId + agentId + tenantId`. Per-agent userId mapping for shared deployments. Free-text backend uses `userId` as primary key; core memory enforces `userId + agentId + tenantId`.
 - **9 Agent Tools** — `memory_recall`, `memory_store`, `memory_forget`, `memory_stats`, `memory_core_list`, `memory_core_upsert`, `memory_core_delete`, `memory_core_touch`, `memory_core_proposals`.
 - **CLI Dashboard** — `/memu status`, `/memu search`, `/memu flush`, `/memu dashboard`, `/memu audit`.
 
@@ -189,8 +189,11 @@ If you enable `mem0.enableGraph` with Kimi Coding, the plugin forwards `kimi_cod
 ```bash
 openclaw gateway restart
 openclaw agent --agent main --message "记住我叫张三，我是后端工程师"
+# Wait ~15 seconds for async capture pipeline to flush
 openclaw agent --agent main --message "我叫什么名字？"
 ```
+
+> **Note:** Memory capture is async (CandidateQueue → LLM Gate → Outbox → mem0). After storing, allow ~10–15 seconds for the pipeline to flush before querying. Use `/memu status` to check queue state.
 
 See [INSTALL.md](./INSTALL.md) for full configuration reference.
 
@@ -257,7 +260,7 @@ npx tsx scripts/run-agent-plugin-e2e-comparison.ts       # Agent-level compariso
 
 4. **Chinese-first tokenization** — CJK text doesn't have word boundaries. The metadata layer uses bigram tokenization and Chinese numeral normalization to enable accurate semantic matching.
 
-5. **Session-level dedup** — prevents re-injecting the same memory within a conversation, keeping context budgets tight.
+5. **Time-window dedup** — prevents re-injecting the same memory within a 30-second window, keeping context budgets tight while allowing re-injection when conversation context changes.
 
 ## Dependencies
 

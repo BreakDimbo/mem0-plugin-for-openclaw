@@ -12,7 +12,7 @@ export function createForgetTool(backend: FreeTextBackend, config: MemuPluginCon
   return {
     name: "memory_forget",
     description:
-      "Delete memories from long-term storage. Provide a memoryId for single-item deletion, or use confirm=true without memoryId to clear all memories for the current user+agent scope. Requires explicit confirmation.",
+      "Delete memories from long-term storage. Provide a memoryId for single-item deletion, or provide a query to delete matching memories. Requires explicit confirmation.",
     parameters: {
       type: "object" as const,
       properties: {
@@ -29,9 +29,7 @@ export function createForgetTool(backend: FreeTextBackend, config: MemuPluginCon
 
       const scope = buildDynamicScope(config.scope, toolCtx);
 
-      // If memoryId is provided, attempt targeted deletion
-      // Note: memU-server /clear API currently only supports scope-level clearing.
-      // When memU adds per-item delete, this should call a dedicated endpoint.
+      // If memoryId is provided, attempt targeted deletion via backend
       if (args.memoryId) {
         audit(
           "forget",
@@ -40,19 +38,27 @@ export function createForgetTool(backend: FreeTextBackend, config: MemuPluginCon
           `targeted forget: memoryId="${args.memoryId}"${args.query ? `, query="${args.query}"` : ""}`,
         );
 
-        // For now, fall through to scope-level clear with a warning
+        const result = await backend.forget(scope, { memoryId: args.memoryId });
+        if (!result) {
+          return {
+            text: `Failed to delete memory (memoryId=${args.memoryId}). The backend may not support per-item deletion.`,
+          };
+        }
         return {
-          text: [
-            `Note: Per-item deletion (memoryId=${args.memoryId}) is not yet supported by the memU server.`,
-            "Use without memoryId to clear all memories for the current user+agent scope.",
-          ].join("\n"),
+          text: `Deleted memory: memoryId=${args.memoryId} (items purged: ${result.purged_items})`,
+        };
+      }
+
+      if (!args.query) {
+        return {
+          text: "Please provide a memoryId for single-item deletion or a query to delete matching memories. Scope-level clear-all is not supported by the current backend.",
         };
       }
 
       const result = await backend.forget(scope, { query: args.query });
 
       if (!result) {
-        return { text: "Failed to clear memories. The memU server may be unavailable." };
+        return { text: "Failed to clear memories. The backend may not support this operation." };
       }
 
       // Audit log the deletion

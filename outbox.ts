@@ -89,10 +89,9 @@ export class OutboxWorker {
   }
 
   private makeId(messages: ConversationMessage[], scope: MemoryScope): string {
-    const bucket = Math.floor(Date.now() / 60_000);
-    // Hash concatenation of message contents
+    // Content-only hash — no time bucket so identical messages always dedup
     const content = messages.map(m => `${m.role}:${m.content}`).join("|");
-    const input = `${scope.sessionKey}:${content}:${bucket}`;
+    const input = `${scope.sessionKey}:${content}`;
     return createHash("sha256").update(input).digest("hex").slice(0, 16);
   }
 
@@ -269,9 +268,10 @@ export class OutboxWorker {
       return;
     }
     GLOBAL_ENQUEUED_IDS.add(id);
-    if (GLOBAL_ENQUEUED_IDS.size > GLOBAL_ENQUEUED_MAX) {
+    while (GLOBAL_ENQUEUED_IDS.size > GLOBAL_ENQUEUED_MAX) {
       const first = GLOBAL_ENQUEUED_IDS.values().next().value;
       if (first) GLOBAL_ENQUEUED_IDS.delete(first);
+      else break;
     }
 
     this.queue.push({
@@ -378,6 +378,11 @@ export class OutboxWorker {
                 lastError: result.status === "rejected" ? String(result.reason) : "unknown",
               };
               this.deadLetters.push(dlItem);
+              // Cap dead-letter list to prevent unbounded growth
+              const MAX_DEAD_LETTERS = 500;
+              if (this.deadLetters.length > MAX_DEAD_LETTERS) {
+                this.deadLetters.splice(0, this.deadLetters.length - MAX_DEAD_LETTERS);
+              }
               await this.saveDeadLetters();
               this.pushRecentEvent({
                 type: "dead-letter",

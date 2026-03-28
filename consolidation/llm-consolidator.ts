@@ -123,8 +123,6 @@ export class LLMConsolidator {
         signal: controller.signal,
       });
 
-      clearTimeout(timer);
-
       if (!resp.ok) {
         const errText = await resp.text().catch(() => "");
         this.logger.warn(`llm-consolidator: HTTP ${resp.status} — ${errText.slice(0, 200)}`);
@@ -139,13 +137,14 @@ export class LLMConsolidator {
       this.logger.info(`llm-consolidator: received ${verdicts.length}/${batch.length} verdicts`);
       return verdicts;
     } catch (err) {
-      clearTimeout(timer);
       if ((err as Error).name === "AbortError") {
         this.logger.warn("llm-consolidator: timeout");
       } else {
         this.logger.warn(`llm-consolidator: error — ${String(err)}`);
       }
       return [];
+    } finally {
+      clearTimeout(timer);
     }
   }
 }

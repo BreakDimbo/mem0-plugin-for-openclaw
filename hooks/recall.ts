@@ -224,8 +224,8 @@ function selectRelevantCoreMemories<T extends { score?: number }>(items: T[], qu
   const threshold = queryPartCount <= 1
     ? Math.max(0.30, topScore * 0.40)
     : Math.max(0.15, topScore * 0.28);
-  const filtered = items.filter((item, index) => index === 0 || (item.score ?? 0) >= threshold);
-  return filtered.length > 0 ? filtered : items;
+  // index === 0 is always kept, so filtered is guaranteed non-empty when items.length > 0
+  return items.filter((item, index) => index === 0 || (item.score ?? 0) >= threshold);
 }
 
 function inferQueryIntent(query: string, queryPartCount: number): QueryIntent {
@@ -448,11 +448,19 @@ function getSessionCoreCache(sessionKey: string): SessionCoreCacheEntry | null {
   return entry;
 }
 
+const SESSION_CORE_CACHE_LIMIT = 100;
+
 function setSessionCoreCache(
   sessionKey: string,
   items: Array<{ id: string; category?: string; key: string; value: string; score?: number }>,
 ): void {
   SESSION_CORE_CACHE.set(sessionKey, { items, fetchedAt: Date.now() });
+  // Evict oldest entries to prevent unbounded growth
+  while (SESSION_CORE_CACHE.size > SESSION_CORE_CACHE_LIMIT) {
+    const oldest = SESSION_CORE_CACHE.keys().next().value;
+    if (oldest === undefined || oldest === sessionKey) break;
+    SESSION_CORE_CACHE.delete(oldest);
+  }
 }
 
 function getSessionRelevantCache(cacheKey: string): MemuMemoryRecord[] | null {
@@ -465,16 +473,26 @@ function getSessionRelevantCache(cacheKey: string): MemuMemoryRecord[] | null {
   return entry.items;
 }
 
+const SESSION_RELEVANT_CACHE_LIMIT = 200;
+
 function setSessionRelevantCache(cacheKey: string, items: MemuMemoryRecord[]): void {
   SESSION_RELEVANT_CACHE.set(cacheKey, { items, storedAt: Date.now() });
+  while (SESSION_RELEVANT_CACHE.size > SESSION_RELEVANT_CACHE_LIMIT) {
+    const oldest = SESSION_RELEVANT_CACHE.keys().next().value;
+    if (oldest === undefined || oldest === cacheKey) break;
+    SESSION_RELEVANT_CACHE.delete(oldest);
+  }
 }
 
 function rememberSessionInjection(key: string, signature: string): void {
   SESSION_INJECTION_CACHE.delete(key);
   SESSION_INJECTION_CACHE.set(key, { signature, timestamp: Date.now() });
-  if (SESSION_INJECTION_CACHE.size <= SESSION_INJECTION_CACHE_LIMIT) return;
-  const oldestKey = SESSION_INJECTION_CACHE.keys().next().value;
-  if (oldestKey) SESSION_INJECTION_CACHE.delete(oldestKey);
+  // Evict oldest entries (by insertion order) when over limit
+  while (SESSION_INJECTION_CACHE.size > SESSION_INJECTION_CACHE_LIMIT) {
+    const oldestKey = SESSION_INJECTION_CACHE.keys().next().value;
+    if (oldestKey === undefined || oldestKey === key) break; // never evict the entry we just added
+    SESSION_INJECTION_CACHE.delete(oldestKey);
+  }
 }
 
 function shouldSkipDuplicateSessionInjection(key: string, signature: string): boolean {
@@ -722,7 +740,12 @@ export function createRecallHook(
           const inflightKey = cacheKey;
           const existing = SEARCH_INFLIGHT.get(inflightKey);
           if (existing) {
-            memories = await existing;
+            try {
+              memories = await existing;
+            } catch (inflightErr) {
+              logger.warn(`recall-hook: inflight search rejected, retrying: ${String(inflightErr)}`);
+              memories = [];
+            }
           } else {
             const searchPromise = (async () => {
               try {
@@ -765,7 +788,12 @@ export function createRecallHook(
         } else {
           const existingCore = CORE_LIST_INFLIGHT.get(sessionCacheKey);
           if (existingCore) {
-            allCoreFacts = await existingCore;
+            try {
+              allCoreFacts = await existingCore;
+            } catch (inflightErr) {
+              logger.warn(`recall-hook: inflight core list rejected, retrying: ${String(inflightErr)}`);
+              allCoreFacts = [];
+            }
           } else {
             const corePromise = (async () => {
               try {
@@ -854,18 +882,8 @@ export function createRecallHook(
       }
       rememberSessionInjection(injectionKey, injected);
       if (config.core.enabled && config.core.touchOnRecall && coreMemories.length > 0) {
-        const injectedIds = coreMemories
-          .filter((m) => {
-            // Match new simplified format: [category/key] value
-            const category = m.category ?? "";
-            const key = m.key;
-            // Simplified key: if key starts with "category.", strip that prefix
-            const simplifiedKey = category && key.startsWith(`${category}.`)
-              ? `${category}/${key.slice(category.length + 1)}`
-              : category ? `${category}/${key}` : key;
-            return injected.includes(`[${escapeForInjection(simplifiedKey)}] ${escapeForInjection(m.value)}`);
-          })
-          .map((m) => m.id);
+        // Touch all core memories that were selected for injection (ID-based, not string match)
+        const injectedIds = coreMemories.map((m) => m.id);
         if (injectedIds.length > 0) {
           coreRepo.touch(scope, { ids: injectedIds, kind: "injected" }).catch(() => {});
         }

@@ -245,7 +245,13 @@ export function createCaptureHook(
       return;
     }
 
-    const scope = buildDynamicScope(config.scope, ctx);
+    let scope: ReturnType<typeof buildDynamicScope>;
+    try {
+      scope = buildDynamicScope(config.scope, ctx);
+    } catch (err) {
+      logger.warn(`capture-hook: invalid scope, skipping capture: ${String(err)}`);
+      return;
+    }
     metrics.captureTotal++;
 
     // Get the last user message for validation
@@ -309,9 +315,9 @@ export function createCaptureHook(
 // Track recently captured texts for dedup (module-level, survives across hook invocations)
 const recentCapturesByScope = new Map<string, string[]>();
 const MAX_RECENT_CAPTURES = 50;
+const MAX_DEDUP_SCOPES = 100; // cap map size to prevent unbounded growth in long-running processes
 
-function checkDedup(text: string, scope: { userId: string; agentId: string }, cache: LRUCache<MemuMemoryRecord[]>, threshold: number): boolean {
-  void cache;
+function checkDedup(text: string, scope: { userId: string; agentId: string }, _cache: LRUCache<MemuMemoryRecord[]>, threshold: number): boolean {
   if (threshold >= 1.0) return false; // dedup disabled
 
   const scopeKey = `${scope.userId}::${scope.agentId}`;
@@ -328,6 +334,11 @@ function checkDedup(text: string, scope: { userId: string; agentId: string }, ca
   recentCaptures.push(text);
   if (recentCaptures.length > MAX_RECENT_CAPTURES) {
     recentCaptures.splice(0, recentCaptures.length - MAX_RECENT_CAPTURES);
+  }
+  // Evict oldest scope entry if map is full
+  if (!recentCapturesByScope.has(scopeKey) && recentCapturesByScope.size >= MAX_DEDUP_SCOPES) {
+    const oldestKey = recentCapturesByScope.keys().next().value;
+    if (oldestKey !== undefined) recentCapturesByScope.delete(oldestKey);
   }
   recentCapturesByScope.set(scopeKey, recentCaptures);
 

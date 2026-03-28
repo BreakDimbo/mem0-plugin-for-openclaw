@@ -109,6 +109,7 @@ export type CoreMemoryRecord = {
   createdAt?: number;
   updatedAt?: number;
   touchedAt?: number;
+  expiresAt?: number;
 };
 
 export type CoreMemoryProposal = {
@@ -573,6 +574,9 @@ export function buildDynamicScope(cfg: ScopeConfig, ctx?: PluginHookContext): Me
   };
 
   const scope = buildScope(merged);
+  if (!scope.userId || !scope.agentId) {
+    throw new Error(`Invalid memory scope: userId="${scope.userId}" agentId="${scope.agentId}" must be non-empty`);
+  }
 
   // Prefer the real OpenClaw sessionKey when available.
   // This improves isolation/dedupe across conversations and aligns metadata/resource URLs.
@@ -588,7 +592,12 @@ function bool(v: unknown, def: boolean): boolean {
 }
 
 function num(v: unknown, def: number): number {
-  return typeof v === "number" && v > 0 ? v : def;
+  return typeof v === "number" && Number.isFinite(v) && v > 0 ? v : def;
+}
+
+/** Like num() but allows zero — use for configs where 0 is a valid explicit value */
+function numAllowZero(v: unknown, def: number): number {
+  return typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : def;
 }
 
 function numInRange(v: unknown, def: number, min: number, max: number): number {
@@ -678,8 +687,12 @@ export function loadConfig(raw?: Record<string, unknown>): MemuPluginConfig {
   const recallThreshold = typeof r.threshold === "number" ? r.threshold
     : typeof r.scoreThreshold === "number" ? r.scoreThreshold
     : DEFAULT_CONFIG.recall.threshold;
-  const recallMaxChars = num(r.maxChars, 0) || num(r.maxContextChars, 0) || num(r.injectionBudgetChars, DEFAULT_CONFIG.recall.maxChars);
-  const coreAlwaysInjectLimit = num(co.alwaysInjectLimit, 0) || num(co.maxAlwaysInjectChars, DEFAULT_CONFIG.core.alwaysInjectLimit);
+  // Use numAllowZero so explicit 0 disables injection instead of falling through to default
+  const recallMaxChars = typeof r.maxChars === "number" ? numAllowZero(r.maxChars, DEFAULT_CONFIG.recall.maxChars)
+    : typeof r.maxContextChars === "number" ? numAllowZero(r.maxContextChars, DEFAULT_CONFIG.recall.maxChars)
+    : num(r.injectionBudgetChars, DEFAULT_CONFIG.recall.maxChars);
+  const coreAlwaysInjectLimit = typeof co.alwaysInjectLimit === "number" ? numAllowZero(co.alwaysInjectLimit, DEFAULT_CONFIG.core.alwaysInjectLimit)
+    : num(co.maxAlwaysInjectChars, DEFAULT_CONFIG.core.alwaysInjectLimit);
   const syncEnabled = bool(s.enabled, bool(s.flushToMarkdown, DEFAULT_CONFIG.sync.enabled));
   const syncIntervalMs = num(s.intervalMs, 0) || num(s.flushIntervalSec, 0) * 1000 || DEFAULT_CONFIG.sync.intervalMs;
 

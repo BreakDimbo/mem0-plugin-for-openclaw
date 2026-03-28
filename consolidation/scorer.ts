@@ -37,6 +37,7 @@ function typePriorForRecord(r: CoreMemoryRecord): number {
 function recencyScore(record: CoreMemoryRecord, stabilityDays: number): number {
   const ts = record.touchedAt ?? record.updatedAt ?? record.createdAt;
   if (!ts) return 0.5; // unknown age → neutral
+  if (stabilityDays <= 0) return 0.5; // guard against division by zero
   const deltaDays = (Date.now() - ts) / (1000 * 60 * 60 * 24);
   return Math.exp(-deltaDays / stabilityDays);
 }

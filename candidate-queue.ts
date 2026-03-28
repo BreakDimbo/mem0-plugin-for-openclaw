@@ -51,6 +51,7 @@ export class CandidateQueue {
   private _enqueued = 0;
   private _processed = 0;
   private _dropped = 0;
+  private _consecutiveErrors = 0;
 
   constructor(
     processor: CandidateProcessor,
@@ -199,21 +200,28 @@ export class CandidateQueue {
     if (this.queue.length === 0) return;
 
     this.processing = true;
+    const batch = this.queue.splice(0, this.maxBatchSize);
     try {
-      const batch = this.queue.splice(0, this.maxBatchSize);
       this.logger.info(`candidate-queue: processing batch of ${batch.length} items`);
 
       await this.processor(batch);
 
       this._processed += batch.length;
+      this._consecutiveErrors = 0;
       await this.saveToDisk();
 
       this.logger.info(`candidate-queue: batch complete (processed=${this._processed}, remaining=${this.queue.length})`);
     } catch (err) {
-      this.logger.warn(`candidate-queue: batch error: ${String(err)}`);
-      // Items already spliced — they are lost on error. This is acceptable:
-      // candidates are best-effort, and retrying stale messages adds complexity
-      // for little benefit. The next batch of fresh messages will be captured.
+      // Re-enqueue failed items at the front for retry on next batch cycle
+      // Track consecutive failures to prevent infinite tight-loop retries
+      this._consecutiveErrors = (this._consecutiveErrors ?? 0) + 1;
+      if (this._consecutiveErrors <= 3) {
+        this.queue.unshift(...batch);
+        this.logger.warn(`candidate-queue: batch error (${batch.length} items re-enqueued, attempt ${this._consecutiveErrors}): ${String(err)}`);
+      } else {
+        this.logger.warn(`candidate-queue: batch error after ${this._consecutiveErrors} consecutive failures, dropping ${batch.length} items: ${String(err)}`);
+        this._consecutiveErrors = 0;
+      }
     } finally {
       this.processing = false;
     }

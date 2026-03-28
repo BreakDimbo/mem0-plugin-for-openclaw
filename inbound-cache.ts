@@ -85,7 +85,7 @@ export class InboundMessageCache {
     try {
       const parsed = JSON.parse(raw) as Partial<InboundStore>;
       const store: InboundStore = {
-        bySender: typeof parsed.bySender === "object" && parsed.bySender ? (parsed.bySender as Record<string, InboundEntry>) : {},
+        bySender: typeof parsed.bySender === "object" && parsed.bySender && !Array.isArray(parsed.bySender) ? (parsed.bySender as Record<string, InboundEntry>) : {},
       };
       this.sweep(store);
       this.clamp(store);

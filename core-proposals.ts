@@ -88,6 +88,7 @@ export class CoreProposalQueue {
         p.status === "pending" &&
         p.scope.userId === draft.scope.userId &&
         p.scope.agentId === draft.scope.agentId &&
+        (p.scope.tenantId ?? "") === (draft.scope.tenantId ?? "") &&
         p.key === candidateKey &&
         p.value === candidateValue,
     );
@@ -108,7 +109,7 @@ export class CoreProposalQueue {
     if (this.proposals.length > this.maxSize) {
       this.proposals.splice(0, this.proposals.length - this.maxSize);
     }
-    this.saveToDisk().catch(() => {});
+    this.saveToDisk().catch((err) => { this.logger.warn(`core-proposals: persist failed: ${String(err)}`); });
     return proposal;
   }
 
@@ -122,6 +123,7 @@ export class CoreProposalQueue {
       (p) =>
         p.scope.userId === scope.userId &&
         p.scope.agentId === scope.agentId &&
+        (p.scope.tenantId ?? "") === (scope.tenantId ?? "") &&
         (status === "all" || p.status === status),
     );
     return filtered.slice(-Math.max(1, limit)).reverse();
@@ -133,7 +135,7 @@ export class CoreProposalQueue {
     proposal.status = "approved";
     proposal.reviewedAt = Date.now();
     proposal.reviewer = reviewer;
-    this.saveToDisk().catch(() => {});
+    this.saveToDisk().catch((err) => { this.logger.warn(`core-proposals: persist failed: ${String(err)}`); });
     return proposal;
   }
 
@@ -143,13 +145,14 @@ export class CoreProposalQueue {
         p.id === id &&
         p.status === "pending" &&
         p.scope.userId === scope.userId &&
-        p.scope.agentId === scope.agentId,
+        p.scope.agentId === scope.agentId &&
+        (p.scope.tenantId ?? "") === (scope.tenantId ?? ""),
     );
     if (!proposal) return null;
     proposal.status = "approved";
     proposal.reviewedAt = Date.now();
     proposal.reviewer = reviewer;
-    this.saveToDisk().catch(() => {});
+    this.saveToDisk().catch((err) => { this.logger.warn(`core-proposals: persist failed: ${String(err)}`); });
     return proposal;
   }
 
@@ -159,7 +162,7 @@ export class CoreProposalQueue {
     proposal.status = "rejected";
     proposal.reviewedAt = Date.now();
     proposal.reviewer = reviewer;
-    this.saveToDisk().catch(() => {});
+    this.saveToDisk().catch((err) => { this.logger.warn(`core-proposals: persist failed: ${String(err)}`); });
     return proposal;
   }
 
@@ -169,13 +172,14 @@ export class CoreProposalQueue {
         p.id === id &&
         p.status === "pending" &&
         p.scope.userId === scope.userId &&
-        p.scope.agentId === scope.agentId,
+        p.scope.agentId === scope.agentId &&
+        (p.scope.tenantId ?? "") === (scope.tenantId ?? ""),
     );
     if (!proposal) return null;
     proposal.status = "rejected";
     proposal.reviewedAt = Date.now();
     proposal.reviewer = reviewer;
-    this.saveToDisk().catch(() => {});
+    this.saveToDisk().catch((err) => { this.logger.warn(`core-proposals: persist failed: ${String(err)}`); });
     return proposal;
   }
 }

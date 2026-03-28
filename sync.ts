@@ -5,7 +5,7 @@
 // ============================================================================
 
 import { readFile, writeFile, mkdir } from "node:fs/promises";
-import { dirname, isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import type { CoreMemoryRepository } from "./core-repository.js";
 import type { CoreMemoryRecord, MemuPluginConfig, MemoryScope, PluginHookContext } from "./types.js";
 import { audit } from "./security.js";
@@ -117,7 +117,15 @@ export class MarkdownSync {
     if (!workspaceDir) {
       return null;
     }
-    return join(workspaceDir, configured);
+    const resolved = resolve(join(workspaceDir, configured));
+    // Guard against path traversal (e.g., "../workspace-evil" or "../../etc/passwd").
+    // Use resolve() + trailing separator to prevent prefix collision
+    // (e.g., "/workspace-evil".startsWith("/workspace") would be true without the separator).
+    const base = resolve(workspaceDir);
+    if (resolved !== base && !resolved.startsWith(base + sep)) {
+      return null;
+    }
+    return resolved;
   }
 
   private renderCoreList(memories: CoreMemoryRecord[]): string[] {
@@ -421,12 +429,12 @@ export class MarkdownSync {
           : [];
       const markdown = this.buildMarkdown(scope, coreMemories, recallItems);
       let existing = "";
+      await mkdir(dirname(filePath), { recursive: true });
       try {
         existing = await readFile(filePath, "utf-8");
       } catch {
-        await mkdir(dirname(filePath), { recursive: true });
+        // File doesn't exist yet — will be created below
       }
-      await mkdir(dirname(filePath), { recursive: true });
       await writeFile(filePath, this.mergeWithExisting(existing, markdown), "utf-8");
 
       this._lastSyncAt = Date.now();

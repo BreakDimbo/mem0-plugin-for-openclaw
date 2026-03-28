@@ -49,7 +49,7 @@ function assignVerdict(
     return { verdict: "archive", reason: `score ${score.toFixed(3)} in [${t.archive}, ${t.downgrade})` };
   }
   if (score >= t.delete) {
-    return { verdict: "archive", reason: `score ${score.toFixed(3)} in [${t.delete}, ${t.archive})` };
+    return { verdict: "delete", reason: `score ${score.toFixed(3)} in [${t.delete}, ${t.archive})` };
   }
   return { verdict: "delete", reason: `score ${score.toFixed(3)} < delete threshold ${t.delete}` };
 }
@@ -277,7 +277,7 @@ export class ConsolidationRunner {
 
     if (!dryRun) {
       for (const entry of entries) {
-        if (entry.verdict === "delete" && entry.id && !entry.id.startsWith("ft-")) {
+        if (entry.verdict === "delete" && entry.id && !/^ft-\d+$/.test(entry.id)) {
           await backend.forget(scope, { memoryId: entry.id }).catch((err) => {
             this.logger.warn(`consolidation-ft: forget failed for id=${entry.id}: ${String(err)}`);
           });

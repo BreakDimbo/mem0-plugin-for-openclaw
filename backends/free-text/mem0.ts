@@ -333,13 +333,20 @@ export class Mem0FreeTextBackend implements FreeTextBackend {
         source: "memu_item" as const,
         scope,
         metadata: item.metadata,
-        createdAt: item.created_at ? Date.parse(item.created_at) : undefined,
+        createdAt: item.created_at ? (Number.isFinite(Date.parse(item.created_at)) ? Date.parse(item.created_at) : undefined) : undefined,
       }))
       .filter((item) => item.text.trim().length > 0);
   }
 
   private filterResults(items: MemuMemoryRecord[], options?: FreeTextSearchOptions): MemuMemoryRecord[] {
     let filtered = items;
+    // Exclude transient-quality items by default — they are debugging/session context not
+    // suitable for long-term injection into future prompts.
+    // Exception: if the caller explicitly requests a quality filter (e.g. for admin/debug),
+    // let that filter run instead so transient items can be retrieved on demand.
+    if (!options?.quality) {
+      filtered = filtered.filter((item) => (item.metadata as Record<string, unknown> | undefined)?.["quality"] !== "transient");
+    }
     if (options?.category) {
       filtered = filtered.filter((item) => item.category === options.category);
     }
@@ -378,10 +385,13 @@ export class Mem0FreeTextBackend implements FreeTextBackend {
         String(options?.metadata?.capture_kind ?? ""),
         options?.metadata as FreeTextMemoryMetadata | undefined,
       );
+      const isKimiCoding = this.config.mem0.oss?.llm?.provider === "kimi_coding";
       const addOptions: Record<string, unknown> = this.config.mem0.mode === "open-source"
         ? {
             userId: effectiveUid,
             ...(options?.sessionScoped ? { runId: scope.sessionKey } : {}),
+            // kimi_coding handles its own inference; passing infer=false prevents double-inference
+            ...(isKimiCoding ? { infer: false } : {}),
             metadata,
           }
         : {
@@ -393,7 +403,7 @@ export class Mem0FreeTextBackend implements FreeTextBackend {
             output_format: "v1.1",
           };
       const result = await provider.add(messages, addOptions);
-      return Array.isArray(result?.results) ? result.results.length >= 0 : true;
+      return Array.isArray(result?.results) ? result.results.length > 0 : true;
     } catch (err) {
       this.logger.warn(`mem0-backend: store failed: ${String(err)}`);
       return false;
@@ -482,6 +492,24 @@ export class Mem0FreeTextBackend implements FreeTextBackend {
         await provider.delete(options.memoryId);
         return { purged_categories: 0, purged_items: 1, purged_resources: 0 };
       }
+
+      // E1: Support query-based batch deletion
+      if (options?.query) {
+        const matches = await this.search(options.query, scope, { maxItems: 100 });
+        let deletedCount = 0;
+        for (const item of matches) {
+          if (item.id) {
+            try {
+              await provider.delete(item.id);
+              deletedCount++;
+            } catch (deleteErr) {
+              this.logger.warn(`mem0-backend: failed to delete ${item.id}: ${String(deleteErr)}`);
+            }
+          }
+        }
+        return { purged_categories: 0, purged_items: deletedCount, purged_resources: 0 };
+      }
+
       // OSS/platform delete_all semantics differ; keep Phase 1 conservative.
       return null;
     } catch (err) {

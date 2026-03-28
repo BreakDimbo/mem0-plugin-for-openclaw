@@ -21,6 +21,7 @@ type StoredCoreRecord = {
   createdAt: number;
   updatedAt: number;
   touchedAt?: number;
+  expiresAt?: number;
 };
 
 type CoreStoreFile = {
@@ -106,7 +107,12 @@ export function inferTierFromCategory(category: string): CoreMemoryTier {
 }
 
 function scopeMatches(scope: MemoryScope, record: StoredCoreRecord): boolean {
-  return record.scope.userId === scope.userId && record.scope.agentId === scope.agentId;
+  if (record.scope.userId !== scope.userId || record.scope.agentId !== scope.agentId) return false;
+  // Enforce tenantId isolation when present on either side
+  if (scope.tenantId || record.scope.tenantId) {
+    if (scope.tenantId !== record.scope.tenantId) return false;
+  }
+  return true;
 }
 
 function cloneRecord(record: StoredCoreRecord): CoreMemoryRecord {
@@ -123,6 +129,7 @@ function cloneRecord(record: StoredCoreRecord): CoreMemoryRecord {
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
     touchedAt: record.touchedAt,
+    expiresAt: record.expiresAt,
   };
 }
 
@@ -160,10 +167,26 @@ export class CoreMemoryRepository {
       const raw = await readFile(this.filePath, "utf-8");
       const parsed = JSON.parse(raw) as Partial<CoreStoreFile>;
       if (parsed && Array.isArray(parsed.items)) {
-        return {
-          version: 1,
-          items: parsed.items.filter((item): item is StoredCoreRecord => !!item && typeof item === "object"),
-        };
+        const now = Date.now();
+        // Validate schema, drop expired (TTL) items
+        const valid = parsed.items.filter((item): item is StoredCoreRecord =>
+          !!item && typeof item === "object" &&
+          typeof (item as Record<string, unknown>).id === "string" &&
+          typeof (item as Record<string, unknown>).key === "string" &&
+          typeof (item as Record<string, unknown>).value === "string" &&
+          typeof (item as Record<string, unknown>).scope === "object" && !!(item as Record<string, unknown>).scope &&
+          (!(item as StoredCoreRecord).expiresAt || (item as StoredCoreRecord).expiresAt! > now),
+        );
+        // Deduplicate: per (userId, agentId, tenantId, key) keep newest by updatedAt
+        const seen = new Map<string, StoredCoreRecord>();
+        for (const item of valid) {
+          const dedupeKey = `${item.scope.userId}\0${item.scope.agentId}\0${item.scope.tenantId ?? ""}\0${item.key}`;
+          const existing = seen.get(dedupeKey);
+          if (!existing || (item.updatedAt ?? 0) > (existing.updatedAt ?? 0)) {
+            seen.set(dedupeKey, item);
+          }
+        }
+        return { version: 1, items: Array.from(seen.values()) };
       }
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;
@@ -193,7 +216,10 @@ export class CoreMemoryRepository {
 
   async list(scope: MemoryScope, opts?: { query?: string; limit?: number; tiers?: CoreMemoryTier[] }): Promise<CoreMemoryRecord[]> {
     try {
-      let records = (await this.listScopeRecords(scope)).map(cloneRecord);
+      const now = Date.now();
+      let records = (await this.listScopeRecords(scope))
+        .filter((r) => !r.expiresAt || r.expiresAt > now)
+        .map(cloneRecord);
       const totalBeforeLimit = records.length;
 
       // Filter by tier if specified
@@ -244,6 +270,12 @@ export class CoreMemoryRepository {
     const value = sanitizeCoreValue(payload.value, this.maxItemChars);
     if (!shouldStoreCoreMemory(key, value, this.maxItemChars)) return false;
 
+    const expiresAt = payload.validUntil ? new Date(payload.validUntil).getTime() : undefined;
+    if (expiresAt !== undefined && (isNaN(expiresAt) || expiresAt <= Date.now())) {
+      this.logger.warn(`core-repo: upsert rejected — validUntil is invalid or already expired: key=${key}`);
+      return false;
+    }
+
     try {
       const state = await this.ensureLoaded();
       const category = normalizeCoreCategory(payload.category, key);
@@ -257,6 +289,7 @@ export class CoreMemoryRepository {
         existing.source = payload.source ?? existing.source ?? "memory-mem0";
         existing.metadata = payload.metadata ? { ...payload.metadata } : existing.metadata;
         existing.updatedAt = now;
+        existing.expiresAt = expiresAt;
       } else {
         state.items.push({
           id: randomUUID(),
@@ -270,6 +303,7 @@ export class CoreMemoryRepository {
           scope: { ...scope },
           createdAt: now,
           updatedAt: now,
+          expiresAt,
         });
       }
       await this.persist();
@@ -291,11 +325,13 @@ export class CoreMemoryRepository {
       validUntil?: string;
     }>,
   ): Promise<boolean> {
+    const now = Date.now();
     const normalizedItems = items
       .map((item) => {
         const key = item.key.trim().toLowerCase();
         const value = sanitizeCoreValue(item.value, this.maxItemChars);
         const category = normalizeCoreCategory(item.category, key);
+        const expiresAt = item.validUntil ? new Date(item.validUntil).getTime() : undefined;
         return {
           category,
           key,
@@ -303,15 +339,18 @@ export class CoreMemoryRepository {
           importance: item.importance,
           tier: inferTierFromCategory(category) as CoreMemoryTier,
           source: item.provenance ?? "memory-mem0",
+          expiresAt,
         };
       })
-      .filter((item) => shouldStoreCoreMemory(item.key, item.value, this.maxItemChars));
+      .filter((item) =>
+        shouldStoreCoreMemory(item.key, item.value, this.maxItemChars) &&
+        (item.expiresAt === undefined || (!isNaN(item.expiresAt) && item.expiresAt > now)),
+      );
 
     if (normalizedItems.length === 0) return false;
 
     try {
       const state = await this.ensureLoaded();
-      const now = Date.now();
       for (const item of normalizedItems) {
         const existing = state.items.find((record) => scopeMatches(scope, record) && record.category === item.category && record.key === item.key);
         if (existing) {
@@ -320,6 +359,7 @@ export class CoreMemoryRepository {
           existing.tier = item.tier;
           existing.source = item.source;
           existing.updatedAt = now;
+          existing.expiresAt = item.expiresAt;
         } else {
           state.items.push({
             id: randomUUID(),
@@ -332,6 +372,7 @@ export class CoreMemoryRepository {
             scope: { ...scope },
             createdAt: now,
             updatedAt: now,
+            expiresAt: item.expiresAt,
           });
         }
       }
@@ -395,7 +436,7 @@ export class CoreMemoryRepository {
       const now = Date.now();
       let touched = 0;
       for (const item of state.items) {
-        if (scopeMatches(scope, item) && ids.includes(item.id)) {
+        if (scopeMatches(scope, item) && ids.includes(item.id) && (!item.expiresAt || item.expiresAt > now)) {
           item.touchedAt = now;
           item.updatedAt = Math.max(item.updatedAt, now);
           touched += 1;
@@ -421,7 +462,8 @@ export class CoreMemoryRepository {
 
     try {
       const state = await this.ensureLoaded();
-      const scopeRecords = state.items.filter((item) => scopeMatches(scope, item));
+      const now = Date.now();
+      const scopeRecords = state.items.filter((item) => scopeMatches(scope, item) && (!item.expiresAt || item.expiresAt > now));
 
       // Group by (category, key) for exact-key dedup
       const byKey = new Map<string, StoredCoreRecord[]>();
@@ -438,9 +480,13 @@ export class CoreMemoryRepository {
       const toDelete = new Set<string>(); // record ids to remove
 
       // Step 1: Exact-key dedup — keep latest updatedAt per (category, key)
+      // Tie-break by createdAt for deterministic behavior when updatedAt is identical (batch upserts).
       for (const [, group] of byKey) {
         if (group.length <= 1) continue;
-        group.sort((a, b) => b.updatedAt - a.updatedAt);
+        group.sort((a, b) => {
+          const byUpdated = b.updatedAt - a.updatedAt;
+          return byUpdated !== 0 ? byUpdated : b.createdAt - a.createdAt;
+        });
         for (let i = 1; i < group.length; i++) {
           toDelete.add(group[i].id);
           deleted++;

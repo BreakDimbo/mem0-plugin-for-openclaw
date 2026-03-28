@@ -37,10 +37,12 @@ export function createRecallTool(
       const start = Date.now();
 
       try {
+        const query = typeof args.query === "string" ? args.query.trim() : "";
+        if (!query) return { text: "Please provide a non-empty query." };
         const scope = buildDynamicScope(config.scope, toolCtx);
-        const limit = args.limit ?? config.recall.topK;
+        const limit = Math.max(1, Math.floor(args.limit ?? config.recall.topK));
         const cacheKey = LRUCache.buildCacheKey(
-          `${primaryBackend.provider}\0${args.query}${args.category ? `\0${args.category}` : ""}`,
+          `${primaryBackend.provider}\0${query}${args.category ? `\0${args.category}` : ""}`,
           scope.sessionKey,
           limit,
         );
@@ -50,14 +52,14 @@ export function createRecallTool(
           metrics.recallHits++;
         } else {
           const searchLimit = Math.min(Math.max(limit * 2, limit), 10);
-          memories = await primaryBackend.search(args.query, scope, {
+          memories = await primaryBackend.search(query, scope, {
             maxItems: searchLimit,
             maxContextChars: config.recall.maxChars,
             category: args.category,
             includeSessionScope: true,
           });
           metrics.recallMisses++;
-          memories = rerankMemoryResults(args.query, memories).slice(0, limit);
+          memories = rerankMemoryResults(query, memories).slice(0, limit);
           if (memories.length > 0) {
             cache.set(cacheKey, memories);
           }
