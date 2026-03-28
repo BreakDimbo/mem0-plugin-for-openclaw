@@ -639,21 +639,32 @@ export class Mem0FreeTextBackend implements FreeTextBackend {
     try {
       const provider = await this.providerInstance();
       if (options?.memoryId) {
-        await provider.delete(options.memoryId);
+        try {
+          await provider.delete(options.memoryId);
+        } catch (deleteErr) {
+          // "not found" is idempotent — already deleted is the desired state.
+          if (!/not found/i.test(String(deleteErr))) throw deleteErr;
+        }
         return { purged_categories: 0, purged_items: 1, purged_resources: 0 };
       }
 
       // E1: Support query-based batch deletion
       if (options?.query) {
         const matches = await this.search(options.query, scope, { maxItems: 100 });
+        // Deduplicate IDs — multiple overlapping queries may return the same item.
+        const ids = [...new Set(matches.map((m) => m.id).filter(Boolean) as string[])];
         let deletedCount = 0;
-        for (const item of matches) {
-          if (item.id) {
-            try {
-              await provider.delete(item.id);
+        for (const id of ids) {
+          try {
+            await provider.delete(id);
+            deletedCount++;
+          } catch (deleteErr) {
+            const msg = String(deleteErr);
+            // "not found" is idempotent — the item is already gone, which is the desired state.
+            if (/not found/i.test(msg)) {
               deletedCount++;
-            } catch (deleteErr) {
-              this.logger.warn(`mem0-backend: failed to delete ${item.id}: ${String(deleteErr)}`);
+            } else {
+              this.logger.warn(`mem0-backend: failed to delete ${id}: ${msg}`);
             }
           }
         }
