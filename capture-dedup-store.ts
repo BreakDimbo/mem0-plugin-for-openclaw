@@ -11,7 +11,7 @@ import { homedir } from "node:os";
 
 export class CaptureDedupStore {
   private cache = new Map<string, string[]>();
-  private loaded = false;
+  private loadPromise: Promise<void> | null = null;
   private readonly filePath: string;
 
   constructor(
@@ -29,21 +29,23 @@ export class CaptureDedupStore {
   }
 
   private async ensureLoaded(): Promise<void> {
-    if (this.loaded) return;
-    this.loaded = true; // set before await to prevent concurrent double-loads
-    try {
-      const raw = await readFile(this.filePath, "utf-8");
-      const parsed: unknown = JSON.parse(raw);
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-        for (const [key, val] of Object.entries(parsed as Record<string, unknown>)) {
-          if (Array.isArray(val) && val.every((v) => typeof v === "string")) {
-            this.cache.set(key, val as string[]);
+    if (this.loadPromise) return this.loadPromise;
+    this.loadPromise = (async () => {
+      try {
+        const raw = await readFile(this.filePath, "utf-8");
+        const parsed: unknown = JSON.parse(raw);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          for (const [key, val] of Object.entries(parsed as Record<string, unknown>)) {
+            if (Array.isArray(val) && val.every((v) => typeof v === "string")) {
+              this.cache.set(key, val as string[]);
+            }
           }
         }
+      } catch {
+        // File not found or corrupted — start fresh
       }
-    } catch {
-      // File not found or corrupted — start fresh
-    }
+    })();
+    return this.loadPromise;
   }
 
   private async saveToDisk(): Promise<void> {

@@ -162,7 +162,7 @@ export async function judgeCandidates(
     return existing;
   }
 
-  const promise = (async () => { try {
+  const promise = (async () => {
   const apiKey = config.apiKey;
   logger.info(`llm-gate: apiKey present=${!!apiKey}, apiBase=${config.apiBase}, model=${config.model}`);
 
@@ -243,11 +243,11 @@ export async function judgeCandidates(
   } finally {
     clearTimeout(timer);
   }
-  } finally {
-    JUDGE_INFLIGHT.delete(inflightKey);
-  }
   })();
 
   JUDGE_INFLIGHT.set(inflightKey, promise);
+  // Ensure cleanup runs AFTER set(), regardless of whether the IIFE
+  // resolved synchronously (e.g. early return on missing apiKey) or async.
+  promise.finally(() => JUDGE_INFLIGHT.delete(inflightKey));
   return promise;
 }

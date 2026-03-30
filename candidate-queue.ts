@@ -181,9 +181,10 @@ export class CandidateQueue {
     });
 
     recentHashes.add(id);
-    if (recentHashes.size > CandidateQueue.MAX_RECENT_HASHES) {
+    while (recentHashes.size > CandidateQueue.MAX_RECENT_HASHES) {
       const first = recentHashes.values().next().value;
       if (first) recentHashes.delete(first);
+      else break;
     }
 
     this._enqueued++;
@@ -200,12 +201,17 @@ export class CandidateQueue {
     if (this.queue.length === 0) return;
 
     this.processing = true;
-    const batch = this.queue.splice(0, this.maxBatchSize);
+    // Slice first, only splice after successful processing to prevent data loss
+    // if processor succeeds but saveToDisk fails
+    const batchSize = Math.min(this.maxBatchSize, this.queue.length);
+    const batch = this.queue.slice(0, batchSize);
     try {
       this.logger.info(`candidate-queue: processing batch of ${batch.length} items`);
 
       await this.processor(batch);
 
+      // Processing succeeded — now remove from queue
+      this.queue.splice(0, batchSize);
       this._processed += batch.length;
       this._consecutiveErrors = 0;
       await this.saveToDisk();
@@ -214,11 +220,20 @@ export class CandidateQueue {
     } catch (err) {
       // Re-enqueue failed items at the front for retry on next batch cycle
       // Track consecutive failures to prevent infinite tight-loop retries
+      // Note: if processor threw, items are still in queue (not yet spliced)
+      // If saveToDisk threw, items are already spliced — re-add them
+      const itemsStillInQueue = this.queue.length >= batchSize &&
+        this.queue[0]?.id === batch[0]?.id;
       this._consecutiveErrors = (this._consecutiveErrors ?? 0) + 1;
       if (this._consecutiveErrors <= 3) {
-        this.queue.unshift(...batch);
+        if (!itemsStillInQueue) {
+          this.queue.unshift(...batch);
+        }
         this.logger.warn(`candidate-queue: batch error (${batch.length} items re-enqueued, attempt ${this._consecutiveErrors}): ${String(err)}`);
       } else {
+        if (itemsStillInQueue) {
+          this.queue.splice(0, batchSize);
+        }
         this.logger.warn(`candidate-queue: batch error after ${this._consecutiveErrors} consecutive failures, dropping ${batch.length} items: ${String(err)}`);
         this._consecutiveErrors = 0;
       }

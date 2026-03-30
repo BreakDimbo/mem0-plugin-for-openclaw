@@ -4,6 +4,7 @@
 // narrow fallback. We intentionally avoid "latest in channel" behavior.
 // ============================================================================
 
+import { createHash } from "node:crypto";
 import { LRUCache } from "../cache.js";
 import type { InboundMessageCache } from "../inbound-cache.js";
 import type { Metrics } from "../metrics.js";
@@ -445,7 +446,10 @@ function dedupeCoreMemories<T extends { id: string; score?: number }>(items: T[]
 
 function buildSessionInjectionKey(scope: MemoryScope, ctx: PluginHookContext, query: string): string {
   const sessionId = typeof ctx.sessionId === "string" && ctx.sessionId.trim() ? ctx.sessionId.trim() : "";
-  const queryFingerprint = normalizeForMatch(stripQueryBoilerplate(query)).slice(0, 60);
+  // Use a hash instead of truncation to avoid collisions between long queries
+  // that share a common 60-char prefix
+  const normalized = normalizeForMatch(stripQueryBoilerplate(query));
+  const queryFingerprint = createHash("sha256").update(normalized).digest("hex").slice(0, 16);
   return `${scope.sessionKey}::${sessionId || "session-unknown"}::${queryFingerprint}`;
 }
 
@@ -480,11 +484,13 @@ function setSessionCoreCache(
   sessionKey: string,
   items: Array<{ id: string; category?: string; key: string; value: string; score?: number }>,
 ): void {
+  // Delete first to refresh insertion order, then re-insert at the end
+  SESSION_CORE_CACHE.delete(sessionKey);
   SESSION_CORE_CACHE.set(sessionKey, { items, fetchedAt: Date.now() });
   // Evict oldest entries to prevent unbounded growth
   while (SESSION_CORE_CACHE.size > SESSION_CORE_CACHE_LIMIT) {
     const oldest = SESSION_CORE_CACHE.keys().next().value;
-    if (oldest === undefined || oldest === sessionKey) break;
+    if (oldest === undefined) break;
     SESSION_CORE_CACHE.delete(oldest);
   }
 }
@@ -502,10 +508,12 @@ function getSessionRelevantCache(cacheKey: string): MemuMemoryRecord[] | null {
 const SESSION_RELEVANT_CACHE_LIMIT = 200;
 
 function setSessionRelevantCache(cacheKey: string, items: MemuMemoryRecord[]): void {
+  // Delete first to refresh insertion order, then re-insert at the end
+  SESSION_RELEVANT_CACHE.delete(cacheKey);
   SESSION_RELEVANT_CACHE.set(cacheKey, { items, storedAt: Date.now() });
   while (SESSION_RELEVANT_CACHE.size > SESSION_RELEVANT_CACHE_LIMIT) {
     const oldest = SESSION_RELEVANT_CACHE.keys().next().value;
-    if (oldest === undefined || oldest === cacheKey) break;
+    if (oldest === undefined) break;
     SESSION_RELEVANT_CACHE.delete(oldest);
   }
 }
@@ -514,9 +522,10 @@ function rememberSessionInjection(key: string, signature: string): void {
   SESSION_INJECTION_CACHE.delete(key);
   SESSION_INJECTION_CACHE.set(key, { signature, timestamp: Date.now() });
   // Evict oldest entries (by insertion order) when over limit
+  // Safe: delete+set above guarantees `key` is at the end, so it won't be evicted
   while (SESSION_INJECTION_CACHE.size > SESSION_INJECTION_CACHE_LIMIT) {
     const oldestKey = SESSION_INJECTION_CACHE.keys().next().value;
-    if (oldestKey === undefined || oldestKey === key) break; // never evict the entry we just added
+    if (oldestKey === undefined) break;
     SESSION_INJECTION_CACHE.delete(oldestKey);
   }
 }
@@ -601,10 +610,11 @@ function filterAlwaysInject(
     return [];
   }
 
-  // Code/debug → only inject identity.name for minimal context
+  // Code/debug → only inject identity info for minimal context
   if (queryType === "code" || queryType === "debug") {
     return items.filter((item) =>
-      item.key === "identity.name" || item.key === "name"
+      item.key.startsWith("identity.") || item.key === "name" ||
+      item.key.startsWith("profile.name") || item.key.startsWith("user.name")
     );
   }
 
@@ -730,7 +740,7 @@ export function createRecallHook(
       }
     } else {
       // Fallback: regex-based greeting skip
-      if (/^(你好|hi|hello|hey|嗨|哈喽|早|晚安|早安|午安|在吗|在不在|嘿|yo)[\s!！。.？?~～]*$/i.test(query.trim())) return;
+      if (/^(你好|hi|hello|hey|嗨|哈喽|早|晚安|早安|午安|在吗|在不在|嘿|yo)+[\s!！。.？?~～]*$/i.test(query.trim())) return;
     }
 
     const recallQueries = splitRecallQueries(query);
@@ -769,7 +779,9 @@ export function createRecallHook(
             try {
               memories = await existing;
             } catch (inflightErr) {
-              logger.warn(`recall-hook: inflight search rejected, retrying: ${String(inflightErr)}`);
+              // Inflight promise failed — clear it so subsequent calls can retry fresh
+              SEARCH_INFLIGHT.delete(inflightKey);
+              logger.warn(`recall-hook: inflight search rejected, falling back to empty: ${String(inflightErr)}`);
               memories = [];
             }
           } else {
@@ -817,7 +829,8 @@ export function createRecallHook(
             try {
               allCoreFacts = await existingCore;
             } catch (inflightErr) {
-              logger.warn(`recall-hook: inflight core list rejected, retrying: ${String(inflightErr)}`);
+              CORE_LIST_INFLIGHT.delete(sessionCacheKey);
+              logger.warn(`recall-hook: inflight core list rejected, falling back to empty: ${String(inflightErr)}`);
               allCoreFacts = [];
             }
           } else {

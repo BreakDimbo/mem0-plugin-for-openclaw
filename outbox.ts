@@ -121,10 +121,14 @@ export class OutboxWorker {
   private normalizeOutboxItem(item: unknown): OutboxItem | null {
     if (!item || typeof item !== "object") return null;
     const record = item as Partial<PersistedOutboxItem>;
-    if (typeof record.id !== "string" || !record.scope) return null;
+    if (typeof record.id !== "string" || !record.scope) {
+      this.logger.warn(`outbox: dropping persisted item (missing id or scope): id=${(record as any)?.id}`);
+      return null;
+    }
 
     const scope = record.scope as MemoryScope;
     if (typeof scope.userId !== "string" || typeof scope.agentId !== "string" || typeof scope.sessionKey !== "string") {
+      this.logger.warn(`outbox: dropping persisted item (invalid scope): id=${record.id}`);
       return null;
     }
 
@@ -135,7 +139,10 @@ export class OutboxWorker {
       : typeof payload?.text === "string" && payload.text.trim().length > 0
         ? [{ role: "user" as const, content: payload.text.trim() }]
         : [];
-    if (normalizedMessages.length === 0) return null;
+    if (normalizedMessages.length === 0) {
+      this.logger.warn(`outbox: dropping persisted item (no messages): id=${record.id}`);
+      return null;
+    }
 
     return {
       id: record.id,

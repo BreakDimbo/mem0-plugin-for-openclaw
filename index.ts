@@ -68,12 +68,22 @@ const HOOK_PRIORITY = {
   messageReceived: 100,
 } as const;
 
+// Guard against duplicate registration on the SAME api instance.
+// The plugin is intentionally registered multiple times for different contexts
+// (gateway vs embedded agent), so we track per-instance, not globally.
+const _registeredApis = new WeakSet<object>();
+
 const memoryMemuPlugin: OpenClawPluginDefinition = {
   id: "memory-mem0",
   name: "memory-mem0",
   description: "Enhanced memory with memU for long-term structured recall, scoped retrieval, and async capture",
 
   register(api: OpenClawPluginApi) {
+    if (_registeredApis.has(api)) {
+      api.logger.warn("memory-mem0: register() called again on same api instance — skipping");
+      return;
+    }
+    _registeredApis.add(api);
     // -- Config --
     const config = loadConfig(api.pluginConfig as Record<string, unknown> | undefined);
 

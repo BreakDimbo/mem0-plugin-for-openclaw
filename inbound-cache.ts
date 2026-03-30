@@ -76,9 +76,11 @@ export class InboundMessageCache {
   }
 
   private cloneStore(store: InboundStore): InboundStore {
-    return {
-      bySender: { ...store.bySender },
-    };
+    const cloned: Record<string, InboundEntry> = {};
+    for (const [k, v] of Object.entries(store.bySender)) {
+      cloned[k] = { ...v };
+    }
+    return { bySender: cloned };
   }
 
   private parseStore(raw: string): InboundStore {

@@ -26,6 +26,13 @@ type BeforeModelResolveResult = {
 };
 
 
+// Per-session override tracking to prevent model-resolution ping-pong loops.
+// When the agent detects a model switch it re-triggers before_model_resolve;
+// without this guard the hook would re-override every time, causing an
+// infinite loop (~8 ms/cycle, 10k+ iterations observed in production).
+const SESSION_OVERRIDE_APPLIED = new Map<string, { provider?: string; model: string; ts: number }>();
+const SESSION_OVERRIDE_TTL_MS = 60_000; // 1 min — long enough to cover a full request
+
 export function createSmartRouterHook(
   classifier: UnifiedIntentClassifier | undefined,
   inbound: InboundMessageCache,
@@ -36,6 +43,17 @@ export function createSmartRouterHook(
     // Skip if smart router or classifier is disabled
     if (!config.smartRouter.enabled || !classifier) {
       return;
+    }
+
+    // --- Ping-pong guard: if we already overrode this session, skip ---
+    const sessionKey = ctx.sessionId ?? "__default";
+    const prev = SESSION_OVERRIDE_APPLIED.get(sessionKey);
+    if (prev) {
+      if (Date.now() - prev.ts < SESSION_OVERRIDE_TTL_MS) {
+        return;
+      }
+      // Expired — remove stale entry immediately
+      SESSION_OVERRIDE_APPLIED.delete(sessionKey);
     }
 
     // Extract senderId first (needed for inbound cache lookup)
@@ -98,13 +116,32 @@ export function createSmartRouterHook(
     if (modelOverride) {
       logger.info(`smart-router: tier=${classification.tier} queryType=${classification.queryType} → model=${modelOverride}`);
 
+      // Record that we've overridden this session so re-triggers are skipped
+      let result: BeforeModelResolveResult;
+
       // Parse provider/model if format is "provider/model"
       if (modelOverride.includes("/")) {
         const [provider, model] = modelOverride.split("/", 2);
-        return { providerOverride: provider, modelOverride: model };
+        result = { providerOverride: provider, modelOverride: model };
+      } else {
+        result = { modelOverride };
       }
 
-      return { modelOverride };
+      SESSION_OVERRIDE_APPLIED.set(sessionKey, {
+        provider: result.providerOverride,
+        model: result.modelOverride!,
+        ts: Date.now(),
+      });
+
+      // Evict stale entries periodically
+      if (SESSION_OVERRIDE_APPLIED.size > 200) {
+        const now = Date.now();
+        for (const [k, v] of SESSION_OVERRIDE_APPLIED) {
+          if (now - v.ts > SESSION_OVERRIDE_TTL_MS) SESSION_OVERRIDE_APPLIED.delete(k);
+        }
+      }
+
+      return result;
     }
 
     // No override configured for this tier, use default model

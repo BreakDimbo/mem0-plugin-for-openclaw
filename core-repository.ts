@@ -125,7 +125,7 @@ function cloneRecord(record: StoredCoreRecord): CoreMemoryRecord {
     importance: record.importance,
     tier: record.tier ?? inferTierFromCategory(record.category),
     source: record.source,
-    metadata: record.metadata,
+    metadata: record.metadata ? { ...record.metadata } : undefined,
     scope: { ...record.scope },
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,

@@ -196,12 +196,13 @@ export class UnifiedIntentClassifier {
     this.metrics.classifierCalls++;
     const start = Date.now();
 
-    const classifyPromise = (async () => { try {
+    const classifyPromise = (async () => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 10_000);
+      try {
       const isKimi = isKimiCodingBaseUrl(apiBase);
       const url = `${apiBase.replace(/\/+$/, "")}/chat/completions`;
 
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 10_000);
       const resp = await fetch(url, {
         method: "POST",
         headers: {
@@ -221,8 +222,6 @@ export class UnifiedIntentClassifier {
         }),
         signal: controller.signal,
       });
-
-      clearTimeout(timer);
 
       if (!resp.ok) {
         const errorText = await resp.text().catch(() => "");
@@ -255,6 +254,7 @@ export class UnifiedIntentClassifier {
       this.metrics.classifierErrors++;
       return DEFAULT_RESULT;
     } finally {
+      clearTimeout(timer);
       this.inflight.delete(cacheKey);
     }
     })();
