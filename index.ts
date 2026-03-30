@@ -223,9 +223,16 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
           for (const result of results) {
             api.logger.info(`capture-processor: LLM verdict [index=${result.index}] verdict=${result.verdict}${result.key ? ` key=${result.key}` : ''}${result.reason ? ` reason="${result.reason}"` : ''}`);
 
-            const candidate = llmCandidates[result.index - 1];
+            // When the batch has a single candidate, the LLM sometimes returns
+            // conversation-turn indices instead of the candidate index (1).
+            // Fall back to the only candidate rather than rejecting the verdict.
+            let candidate = llmCandidates[result.index - 1];
+            if (!candidate && llmCandidates.length === 1) {
+              candidate = llmCandidates[0];
+              api.logger.info(`capture-processor: LLM index ${result.index} out of range, clamped to single candidate`);
+            }
             if (!candidate) {
-              api.logger.info(`capture-processor: LLM verdict rejected (invalid index ${result.index})`);
+              api.logger.info(`capture-processor: LLM verdict rejected (invalid index ${result.index}, candidates=${llmCandidates.length})`);
               continue;
             }
 
@@ -235,7 +242,9 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
             }
 
             // free_text or core: approve for free-text write
-            approvedPositions.add(result.index - 1);
+            // Use the actual candidate's position in llmCandidates, not the LLM's index
+            const candidatePos = llmCandidates.indexOf(candidate);
+            approvedPositions.add(candidatePos);
 
             if (result.verdict === "core") {
               if (!result.key || !result.value) {
