@@ -37,14 +37,14 @@ type PersistedOutboxItem = Omit<OutboxItem, "payload"> & {
   payload?: LegacyOutboxPayload;
 };
 
-// Module-level dedup set shared across all OutboxWorker instances in the same process.
-// Prevents duplicate mem0 writes when multiple outbox instances receive the same item
-// due to multi-process plugin registration by OpenClaw.
-const GLOBAL_ENQUEUED_IDS = new Set<string>();
+// Per-path dedup sets — prevents duplicate mem0 writes when multiple outbox instances
+// point at the same persisted queue file, without cross-context contamination.
+const GLOBAL_ENQUEUED_BY_PATH = new Map<string, Set<string>>();
 const GLOBAL_ENQUEUED_MAX = 500;
 
 export class OutboxWorker {
   private queue: OutboxItem[] = [];
+  private queuedIds = new Set<string>(); // O(1) dedup mirror of this.queue
   private deadLetters: DeadLetterItem[] = [];
   private loaded = false;
   private primaryBackend: FreeTextBackend;
@@ -88,6 +88,15 @@ export class OutboxWorker {
     this.maxRetries = opts.maxRetries;
     this.persistPath = opts.persistPath.replace(/^~/, homedir());
     this.flushIntervalMs = opts.flushIntervalMs ?? 10_000;
+  }
+
+  private getGlobalEnqueuedIds(): Set<string> {
+    const key = this.persistPath || "__outbox_default__";
+    const existing = GLOBAL_ENQUEUED_BY_PATH.get(key);
+    if (existing) return existing;
+    const created = new Set<string>();
+    GLOBAL_ENQUEUED_BY_PATH.set(key, created);
+    return created;
   }
 
   private makeId(messages: ConversationMessage[], scope: MemoryScope): string {
@@ -171,16 +180,15 @@ export class OutboxWorker {
   }
 
   private mergeQueueItems(items: OutboxItem[]): void {
-    const seen = new Set(this.queue.map((item) => item.id));
     for (const item of items) {
       if (!item || typeof item !== "object" || typeof item.id !== "string") {
         continue;
       }
-      if (seen.has(item.id)) {
+      if (this.queuedIds.has(item.id)) {
         continue;
       }
       this.queue.push(item);
-      seen.add(item.id);
+      this.queuedIds.add(item.id);
     }
   }
 
@@ -203,6 +211,7 @@ export class OutboxWorker {
     if (!this.queueFilePath) return;
 
     this.queue = [];
+    this.queuedIds.clear();
 
     const primaryItems = await this.readQueueFile(this.queueFilePath);
     this.mergeQueueItems(primaryItems);
@@ -275,15 +284,16 @@ export class OutboxWorker {
     if (messages.length === 0) return;
     const id = this.makeId(messages, scope);
 
-    // Dedup: skip if already queued in this instance or any other instance in this process
-    if (this.queue.some((item) => item.id === id) || GLOBAL_ENQUEUED_IDS.has(id)) {
+    // Dedup: skip if already queued in this instance or any sibling instance sharing the same persist path
+    const globalIds = this.getGlobalEnqueuedIds();
+    if (this.queuedIds.has(id) || globalIds.has(id)) {
       this.logger.info(`outbox: dedup skip id=${id}`);
       return;
     }
-    GLOBAL_ENQUEUED_IDS.add(id);
-    while (GLOBAL_ENQUEUED_IDS.size > GLOBAL_ENQUEUED_MAX) {
-      const first = GLOBAL_ENQUEUED_IDS.values().next().value;
-      if (first) GLOBAL_ENQUEUED_IDS.delete(first);
+    globalIds.add(id);
+    while (globalIds.size > GLOBAL_ENQUEUED_MAX) {
+      const first = globalIds.values().next().value;
+      if (first) globalIds.delete(first);
       else break;
     }
 
@@ -295,6 +305,7 @@ export class OutboxWorker {
       retryCount: 0,
       nextRetryAt: 0,
     });
+    this.queuedIds.add(id);
     this._lastEnqueuedAt = Date.now();
     this.pushRecentEvent({
       type: "enqueued",
@@ -308,7 +319,9 @@ export class OutboxWorker {
     this.logger.info(`outbox: enqueued id=${id} (queue size: ${this.queue.length})`);
 
     // Async persist, don't block
-    this.saveToDisk().catch(() => {});
+    this.saveToDisk().catch((err) => {
+      this.logger.warn(`outbox: persist after enqueue failed: ${String(err)}`);
+    });
 
     // Kick off an immediate background flush so fresh stores do not appear
     // "stuck" while waiting for the next interval tick.
@@ -374,6 +387,7 @@ export class OutboxWorker {
           if (result.status === "fulfilled") {
             const idx = this.queue.findIndex((q) => q.id === item.id);
             if (idx !== -1) this.queue.splice(idx, 1);
+            this.queuedIds.delete(item.id);
             this._sent++;
             this._lastSentAt = Date.now();
             changed = true;
@@ -392,6 +406,7 @@ export class OutboxWorker {
               // Move to dead-letter
               const idx = this.queue.findIndex((q) => q.id === item.id);
               if (idx !== -1) this.queue.splice(idx, 1);
+              this.queuedIds.delete(item.id);
               this._failed++;
               this._lastFailedAt = Date.now();
               changed = true;
@@ -420,7 +435,7 @@ export class OutboxWorker {
 
               this.logger.warn(`outbox: dead-letter id=${item.id} after ${item.retryCount} retries: ${dlItem.lastError}`);
             } else {
-              const delay = BACKOFF_DELAYS[Math.min(item.retryCount - 1, BACKOFF_DELAYS.length - 1)];
+              const delay = BACKOFF_DELAYS[Math.max(0, Math.min(item.retryCount - 1, BACKOFF_DELAYS.length - 1))];
               item.nextRetryAt = Date.now() + delay;
               changed = true;
               this.pushRecentEvent({
@@ -480,8 +495,9 @@ export class OutboxWorker {
       this.logger.warn(`outbox: drain incomplete, ${this.queue.length} items remaining`);
     }
 
-    // Final persist
+    // Final persist (both queue and dead-letters in case items moved during flush)
     await this.saveToDisk();
+    await this.saveDeadLetters();
   }
 
   stop(): void {
@@ -524,7 +540,9 @@ export class OutboxWorker {
     for (const dl of toReplay) {
       const item = this.normalizeOutboxItem({ ...dl });
       if (!item) continue;
-      this.queue.push({ ...item, retryCount: 0, nextRetryAt: 0 });
+      const replayedItem = { ...item, retryCount: 0, nextRetryAt: 0 };
+      this.queue.push(replayedItem);
+      this.queuedIds.add(replayedItem.id);
       this.deadLetters = this.deadLetters.filter((d) => d.id !== dl.id);
       replayed++;
     }

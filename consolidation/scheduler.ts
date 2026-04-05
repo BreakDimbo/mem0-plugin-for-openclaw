@@ -85,6 +85,8 @@ export class ConsolidationScheduler {
   private timer: ReturnType<typeof setInterval> | undefined;
   private stopped = false;
   private inflight = new Map<ConsolidationCycle, Promise<void>>();
+  /** Serializes state file read-modify-write to prevent concurrent cycles from overwriting each other */
+  private stateWriteQueue: Promise<void> = Promise.resolve();
 
   constructor(
     runner: ConsolidationRunner,
@@ -107,11 +109,16 @@ export class ConsolidationScheduler {
     this.logger.info(`consolidation-scheduler: started (interval=${this.config.intervalMs}ms)`);
   }
 
-  stop(): void {
+  async stop(): Promise<void> {
     this.stopped = true;
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = undefined;
+    }
+    // Wait for in-flight runs to complete before returning
+    if (this.inflight.size > 0) {
+      this.logger.info(`consolidation-scheduler: waiting for ${this.inflight.size} in-flight run(s) to finish`);
+      await Promise.allSettled([...this.inflight.values()]);
     }
     this.logger.info("consolidation-scheduler: stopped");
   }
@@ -167,17 +174,21 @@ export class ConsolidationScheduler {
         const report = await this.runner.run(this.scope, cycle, dryRun);
 
         if (!dryRun) {
-          // Persist lastRun timestamp
-          const state = await loadState(this.config.statePath).catch(() => ({ totalRuns: 0 } as ConsolidationState));
-          const now = new Date().toISOString();
-          if (cycle === "daily")   state.lastDailyRun   = now;
-          if (cycle === "weekly")  state.lastWeeklyRun  = now;
-          if (cycle === "monthly") state.lastMonthlyRun = now;
-          state.totalRuns = (state.totalRuns ?? 0) + 1;
-          state.lastReport = report;
-          await saveState(this.config.statePath, state).catch((err) => {
-            this.logger.warn(`consolidation-scheduler: state persist failed: ${String(err)}`);
+          // Serialize state file updates to prevent concurrent cycles from
+          // overwriting each other's timestamps (read-modify-write race).
+          this.stateWriteQueue = this.stateWriteQueue.then(async () => {
+            const state = await loadState(this.config.statePath).catch(() => ({ totalRuns: 0 } as ConsolidationState));
+            const now = new Date().toISOString();
+            if (cycle === "daily")   state.lastDailyRun   = now;
+            if (cycle === "weekly")  state.lastWeeklyRun  = now;
+            if (cycle === "monthly") state.lastMonthlyRun = now;
+            state.totalRuns = (state.totalRuns ?? 0) + 1;
+            state.lastReport = report;
+            await saveState(this.config.statePath, state).catch((err) => {
+              this.logger.warn(`consolidation-scheduler: state persist failed: ${String(err)}`);
+            });
           });
+          await this.stateWriteQueue;
         }
       } finally {
         this.inflight.delete(cycle);

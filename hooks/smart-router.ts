@@ -105,7 +105,9 @@ export function createSmartRouterHook(
       classification = await classifier.classify(query);
       // Cache the result for later hooks
       if (ctx.channelId && senderId) {
-        inbound.setClassification(ctx.channelId, senderId, classification).catch(() => {});
+        inbound.setClassification(ctx.channelId, senderId, classification).catch((err) => {
+          logger.warn(`smart-router: setClassification failed: ${String(err)}`);
+        });
       }
     }
 
@@ -133,8 +135,9 @@ export function createSmartRouterHook(
         ts: Date.now(),
       });
 
-      // Evict stale entries periodically
-      if (SESSION_OVERRIDE_APPLIED.size > 200) {
+      // Evict stale entries — run on every override to prevent unbounded growth
+      // even in low-concurrency scenarios. Map iteration is cheap for typical sizes.
+      {
         const now = Date.now();
         for (const [k, v] of SESSION_OVERRIDE_APPLIED) {
           if (now - v.ts > SESSION_OVERRIDE_TTL_MS) SESSION_OVERRIDE_APPLIED.delete(k);

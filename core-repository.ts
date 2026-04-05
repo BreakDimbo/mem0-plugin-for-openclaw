@@ -202,10 +202,14 @@ export class CoreMemoryRepository {
     if (!this.filePath) return;
     const state = await this.ensureLoaded();
     this.writeQueue = this.writeQueue.then(async () => {
+      const tmpPath = `${this.filePath}.tmp`;
       await mkdir(this.persistPath, { recursive: true });
-      await writeFile(this.filePath, JSON.stringify(state, null, 2), "utf-8");
+      await writeFile(tmpPath, JSON.stringify(state, null, 2), "utf-8");
+      // Atomic rename so a crash during write doesn't corrupt the main file
+      const { rename } = await import("node:fs/promises");
+      await rename(tmpPath, this.filePath);
     }).catch((err) => {
-      this.logger.warn(`core-repo: persist failed: ${String(err)}`);
+      this.logger.warn(`core-repo: persist failed — in-memory state may diverge from disk: ${String(err)}`);
     });
     await this.writeQueue;
   }
@@ -527,7 +531,11 @@ export class CoreMemoryRepository {
         }
       }
 
-      const unchanged = scopeRecords.length - deleted - merged;
+      // `toDelete` contains all records to remove (from both exact-key dedup and value dedup).
+      // `deleted` counts exact-key dedup removals, `merged` counts value-dedup removals.
+      // Use toDelete.size for total removed count to avoid double-counting.
+      const totalRemoved = toDelete.size;
+      const unchanged = scopeRecords.length - totalRemoved;
 
       if (toDelete.size > 0 && !dryRun) {
         state.items = state.items.filter((item) => !toDelete.has(item.id));

@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { dirname } from "node:path";
 import { homedir } from "node:os";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 
 import type { CoreMemoryProposal, MemoryScope } from "./types.js";
 import { normalizeCoreCategory } from "./core-repository.js";
@@ -21,6 +21,7 @@ export type ProposalDraft = {
 
 export class CoreProposalQueue {
   private proposals: CoreMemoryProposal[] = [];
+  private writeQueue: Promise<void> = Promise.resolve();
   private readonly maxSize: number;
   private readonly persistPath: string;
   private readonly logger: Logger;
@@ -43,14 +44,24 @@ export class CoreProposalQueue {
     return this.persistPath ? `${this.persistPath}/core-proposals.json` : "";
   }
 
+  /** Serialized write: chains onto writeQueue to prevent concurrent disk overwrites */
+  private scheduleSave(): void {
+    this.writeQueue = this.writeQueue.then(async () => {
+      if (!this.filePath) return;
+      try {
+        const tmpPath = `${this.filePath}.tmp`;
+        await mkdir(dirname(this.filePath), { recursive: true });
+        await writeFile(tmpPath, JSON.stringify(this.proposals, null, 2), "utf-8");
+        await rename(tmpPath, this.filePath);
+      } catch (err) {
+        this.logger.warn(`core-proposals: failed to persist queue: ${String(err)}`);
+      }
+    });
+  }
+
   private async saveToDisk(): Promise<void> {
-    if (!this.filePath) return;
-    try {
-      await mkdir(dirname(this.filePath), { recursive: true });
-      await writeFile(this.filePath, JSON.stringify(this.proposals, null, 2), "utf-8");
-    } catch (err) {
-      this.logger.warn(`core-proposals: failed to persist queue: ${String(err)}`);
-    }
+    this.scheduleSave();
+    await this.writeQueue;
   }
 
   async loadFromDisk(): Promise<void> {
@@ -109,7 +120,7 @@ export class CoreProposalQueue {
     if (this.proposals.length > this.maxSize) {
       this.proposals.splice(0, this.proposals.length - this.maxSize);
     }
-    this.saveToDisk().catch((err) => { this.logger.warn(`core-proposals: persist failed: ${String(err)}`); });
+    this.scheduleSave();
     return proposal;
   }
 
@@ -135,7 +146,7 @@ export class CoreProposalQueue {
     proposal.status = "approved";
     proposal.reviewedAt = Date.now();
     proposal.reviewer = reviewer;
-    this.saveToDisk().catch((err) => { this.logger.warn(`core-proposals: persist failed: ${String(err)}`); });
+    this.scheduleSave();
     return proposal;
   }
 
@@ -152,7 +163,7 @@ export class CoreProposalQueue {
     proposal.status = "approved";
     proposal.reviewedAt = Date.now();
     proposal.reviewer = reviewer;
-    this.saveToDisk().catch((err) => { this.logger.warn(`core-proposals: persist failed: ${String(err)}`); });
+    this.scheduleSave();
     return proposal;
   }
 
@@ -162,7 +173,7 @@ export class CoreProposalQueue {
     proposal.status = "rejected";
     proposal.reviewedAt = Date.now();
     proposal.reviewer = reviewer;
-    this.saveToDisk().catch((err) => { this.logger.warn(`core-proposals: persist failed: ${String(err)}`); });
+    this.scheduleSave();
     return proposal;
   }
 
@@ -179,7 +190,7 @@ export class CoreProposalQueue {
     proposal.status = "rejected";
     proposal.reviewedAt = Date.now();
     proposal.reviewer = reviewer;
-    this.saveToDisk().catch((err) => { this.logger.warn(`core-proposals: persist failed: ${String(err)}`); });
+    this.scheduleSave();
     return proposal;
   }
 }

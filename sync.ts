@@ -17,7 +17,9 @@ type ScopeResolver = { resolveRuntimeScope(ctx?: PluginHookContext): MemoryScope
 
 // Module-level inflight map: prevents duplicate syncForAgent calls across MarkdownSync instances
 // when OpenClaw registers the plugin multiple times concurrently.
-const SYNC_INFLIGHT = new Map<string, Promise<void>>();
+// Entries include a timestamp so stale entries (e.g. from unhandled errors) can be pruned.
+const SYNC_INFLIGHT = new Map<string, { promise: Promise<void>; startedAt: number }>();
+const SYNC_INFLIGHT_TTL_MS = 10 * 60_000; // 10 minutes — safety net for orphaned entries
 
 const GENERATED_BLOCK_START = "<!-- memory-mem0:start -->";
 const GENERATED_BLOCK_END = "<!-- memory-mem0:end -->";
@@ -349,7 +351,9 @@ export class MarkdownSync {
           // No agents registered yet, nothing to sync
           return;
         }
-        for (const agentId of this.agentWorkspaces.keys()) {
+        // Snapshot keys to avoid issues if registerAgent() is called during iteration
+        const agentIds = [...this.agentWorkspaces.keys()];
+        for (const agentId of agentIds) {
           await this.syncForAgent(agentId);
         }
       }
@@ -363,7 +367,8 @@ export class MarkdownSync {
     if (agentId) {
       this.pendingAgents.add(agentId);
     } else {
-      for (const knownAgentId of this.agentWorkspaces.keys()) {
+      // Snapshot keys for defensive consistency (matches syncOnce pattern)
+      for (const knownAgentId of [...this.agentWorkspaces.keys()]) {
         this.pendingAgents.add(knownAgentId);
       }
     }
@@ -395,13 +400,21 @@ export class MarkdownSync {
     const inflightKey = agentId;
     const existing = SYNC_INFLIGHT.get(inflightKey);
     if (existing) {
-      return existing;
+      return existing.promise;
+    }
+
+    // Prune stale entries (safety net for orphaned promises)
+    const now = Date.now();
+    for (const [key, entry] of SYNC_INFLIGHT) {
+      if (now - entry.startedAt > SYNC_INFLIGHT_TTL_MS) {
+        SYNC_INFLIGHT.delete(key);
+      }
     }
 
     const promise = this._doSyncForAgent(agentId).finally(() => {
       SYNC_INFLIGHT.delete(inflightKey);
     });
-    SYNC_INFLIGHT.set(inflightKey, promise);
+    SYNC_INFLIGHT.set(inflightKey, { promise, startedAt: now });
     return promise;
   }
 

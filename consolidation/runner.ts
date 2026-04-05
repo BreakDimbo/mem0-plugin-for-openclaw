@@ -207,12 +207,12 @@ export class ConsolidationRunner {
     for (const entry of entries) {
       if (entry.verdict === "delete") {
         const s = scoredById.get(entry.id);
-        if (s) {
-          // Write to dead-letter before deleting
-          await appendDeadLetter(this.config.deadLetterPath, s.record, entry.reason).catch((err) => {
-            this.logger.warn(`consolidation: dead-letter write failed: ${String(err)}`);
-          });
-        }
+        // Always write to dead-letter before deleting for audit trail.
+        // Fall back to a minimal record if not found in scored map.
+        const record = s?.record ?? { id: entry.id, category: "unknown", key: "unknown", value: "", scope } as CoreMemoryRecord;
+        await appendDeadLetter(this.config.deadLetterPath, record, entry.reason).catch((err) => {
+          this.logger.warn(`consolidation: dead-letter write failed: ${String(err)}`);
+        });
         await this.repo.delete(scope, { id: entry.id }).catch((err) => {
           this.logger.warn(`consolidation: delete failed for id=${entry.id}: ${String(err)}`);
         });

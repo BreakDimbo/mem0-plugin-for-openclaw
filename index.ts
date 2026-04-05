@@ -223,16 +223,27 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
           for (const result of results) {
             api.logger.info(`capture-processor: LLM verdict [index=${result.index}] verdict=${result.verdict}${result.key ? ` key=${result.key}` : ''}${result.reason ? ` reason="${result.reason}"` : ''}`);
 
+            // Map LLM's 1-indexed result to 0-indexed llmCandidates array.
             // When the batch has a single candidate, the LLM sometimes returns
             // conversation-turn indices instead of the candidate index (1).
-            // Fall back to the only candidate rather than rejecting the verdict.
-            let candidate = llmCandidates[result.index - 1];
-            if (!candidate && llmCandidates.length === 1) {
-              candidate = llmCandidates[0];
-              api.logger.info(`capture-processor: LLM index ${result.index} out of range, clamped to single candidate`);
+            // For multi-candidate batches, clamp out-of-range indices to the
+            // nearest valid boundary to avoid silently discarding valid verdicts.
+            let candidateIdx = result.index - 1;
+            let candidate = llmCandidates[candidateIdx];
+            if (!candidate) {
+              if (llmCandidates.length === 1) {
+                candidateIdx = 0;
+                candidate = llmCandidates[0];
+                api.logger.info(`capture-processor: LLM index ${result.index} out of range, clamped to single candidate`);
+              } else if (result.index >= 1 && candidateIdx >= llmCandidates.length) {
+                // LLM returned an index beyond the batch size — clamp to last candidate
+                candidateIdx = llmCandidates.length - 1;
+                candidate = llmCandidates[candidateIdx];
+                api.logger.info(`capture-processor: LLM index ${result.index} exceeds batch size ${llmCandidates.length}, clamped to last candidate`);
+              }
             }
             if (!candidate) {
-              api.logger.info(`capture-processor: LLM verdict rejected (invalid index ${result.index}, candidates=${llmCandidates.length})`);
+              api.logger.warn(`capture-processor: LLM verdict rejected (invalid index ${result.index}, candidates=${llmCandidates.length})`);
               continue;
             }
 
@@ -442,7 +453,7 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
         await proposalQueue.stop();
 
         sync.stop();
-        consolidationScheduler.stop();
+        await consolidationScheduler.stop();
         cache.clear();
 
         api.logger.info("memory-mem0: service stopped");

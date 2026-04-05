@@ -302,7 +302,9 @@ export function createCaptureHook(
       logger.info(`capture-hook: enqueued ${messages.length} messages to candidateQueue`);
 
       // Ensure timer is started in this process
-      candidateQueue.start().catch(() => {});
+      candidateQueue.start().catch((err) => {
+        logger.warn(`capture-hook: candidateQueue start failed: ${String(err)}`);
+      });
 
       // Schedule sync after capture
       sync.scheduleSync(scope.agentId);
@@ -357,9 +359,12 @@ function checkDedup(text: string, scope: { userId: string; agentId: string }, _c
     recentCaptures.splice(0, recentCaptures.length - MAX_RECENT_CAPTURES);
   }
   // Evict oldest scope entry if map is full
-  if (!recentCapturesByScope.has(scopeKey) && recentCapturesByScope.size >= MAX_DEDUP_SCOPES) {
-    const oldestKey = recentCapturesByScope.keys().next().value;
-    if (oldestKey !== undefined) recentCapturesByScope.delete(oldestKey);
+  if (!recentCapturesByScope.has(scopeKey)) {
+    // Evict oldest scope if map is full before adding a new one
+    if (recentCapturesByScope.size >= MAX_DEDUP_SCOPES) {
+      const oldestKey = recentCapturesByScope.keys().next().value;
+      if (oldestKey !== undefined) recentCapturesByScope.delete(oldestKey);
+    }
   }
   recentCapturesByScope.set(scopeKey, recentCaptures);
 

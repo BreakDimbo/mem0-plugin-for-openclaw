@@ -61,10 +61,20 @@ export class LRUCache<T> {
     this.map.delete(key);
 
     if (this.map.size >= this.maxSize) {
-      // Evict single oldest entry to avoid thrashing
-      const oldest = this.map.keys().next().value;
-      if (oldest !== undefined) {
-        this.map.delete(oldest);
+      // First try to evict expired entries to reclaim space
+      const now = Date.now();
+      for (const [k, entry] of this.map) {
+        if (now - entry.timestamp > this.ttlMs) {
+          this.map.delete(k);
+        }
+        if (this.map.size < this.maxSize) break;
+      }
+      // If still full, evict oldest entry (LRU)
+      if (this.map.size >= this.maxSize) {
+        const oldest = this.map.keys().next().value;
+        if (oldest !== undefined) {
+          this.map.delete(oldest);
+        }
       }
     }
 

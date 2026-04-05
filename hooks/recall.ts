@@ -731,7 +731,9 @@ export function createRecallHook(
       classification = await classifier.classify(query);
       // Store classification for capture hook to use
       if (ctx.channelId && senderId) {
-        inbound.setClassification(ctx.channelId, senderId, classification).catch(() => {});
+        inbound.setClassification(ctx.channelId, senderId, classification).catch((err) => {
+          logger.warn(`recall-hook: setClassification failed: ${String(err)}`);
+        });
       }
       // Skip greetings entirely — no memory recall needed
       if (classification.queryType === "greeting") {
@@ -860,7 +862,7 @@ export function createRecallHook(
         const alwaysInjectTiers = config.core.alwaysInjectTiers;
         let alwaysInjectPool = allCoreFacts.filter((item) => {
           const tier = item.tier ?? inferTierFromCategory(item.category ?? "general");
-          return alwaysInjectTiers.includes(tier as any);
+          return alwaysInjectTiers.includes(tier as CoreMemoryTier);
         });
 
         // Apply classification-based filtering to always-inject pool
@@ -871,7 +873,7 @@ export function createRecallHook(
         const retrievalPool = allCoreFacts
           .filter((item) => {
             const tier = item.tier ?? inferTierFromCategory(item.category ?? "general");
-            return retrievalOnlyTiers.includes(tier as any);
+            return retrievalOnlyTiers.includes(tier as CoreMemoryTier);
           })
           .map((item) => ({
             ...item,
@@ -880,7 +882,7 @@ export function createRecallHook(
 
         const selectedRetrieval = trimCoreForInjection(
           selectRelevantCoreMemories(
-            dedupeCoreMemories(retrievalPool).slice(0, Math.max(config.core.topK * 2, config.core.topK)),
+            dedupeCoreMemories(retrievalPool).slice(0, config.core.topK * 2),
             searchQueries.length,
           ),
           queryIntent,
@@ -929,7 +931,9 @@ export function createRecallHook(
         // Touch all core memories that were selected for injection (ID-based, not string match)
         const injectedIds = coreMemories.map((m) => m.id);
         if (injectedIds.length > 0) {
-          coreRepo.touch(scope, { ids: injectedIds, kind: "injected" }).catch(() => {});
+          coreRepo.touch(scope, { ids: injectedIds, kind: "injected" }).catch((err) => {
+            logger.warn(`recall-hook: core touch failed: ${String(err)}`);
+          });
         }
       }
 

@@ -191,7 +191,9 @@ export class CandidateQueue {
     this.logger.info(`candidate-queue: enqueued id=${id} (queue=${this.queue.length})`);
 
     // Async persist
-    this.saveToDisk().catch(() => {});
+    this.saveToDisk().catch((err) => {
+      this.logger.warn(`candidate-queue: persist after enqueue failed: ${String(err)}`);
+    });
   }
 
   // -- Batch processing --
@@ -201,10 +203,9 @@ export class CandidateQueue {
     if (this.queue.length === 0) return;
 
     this.processing = true;
-    // Slice first, only splice after successful processing to prevent data loss
-    // if processor succeeds but saveToDisk fails
     const batchSize = Math.min(this.maxBatchSize, this.queue.length);
     const batch = this.queue.slice(0, batchSize);
+    let spliced = false;
     try {
       this.logger.info(`candidate-queue: processing batch of ${batch.length} items`);
 
@@ -212,26 +213,27 @@ export class CandidateQueue {
 
       // Processing succeeded — now remove from queue
       this.queue.splice(0, batchSize);
+      spliced = true;
       this._processed += batch.length;
       this._consecutiveErrors = 0;
       await this.saveToDisk();
 
       this.logger.info(`candidate-queue: batch complete (processed=${this._processed}, remaining=${this.queue.length})`);
     } catch (err) {
-      // Re-enqueue failed items at the front for retry on next batch cycle
-      // Track consecutive failures to prevent infinite tight-loop retries
-      // Note: if processor threw, items are still in queue (not yet spliced)
-      // If saveToDisk threw, items are already spliced — re-add them
-      const itemsStillInQueue = this.queue.length >= batchSize &&
-        this.queue[0]?.id === batch[0]?.id;
+      // Track consecutive failures to prevent infinite tight-loop retries.
+      // If processor threw, items are still in queue (not yet spliced).
+      // If saveToDisk threw, items are already spliced — re-add them.
       this._consecutiveErrors = (this._consecutiveErrors ?? 0) + 1;
       if (this._consecutiveErrors <= 3) {
-        if (!itemsStillInQueue) {
+        if (spliced) {
+          // saveToDisk failed after successful processing + splice; re-add items
           this.queue.unshift(...batch);
         }
-        this.logger.warn(`candidate-queue: batch error (${batch.length} items re-enqueued, attempt ${this._consecutiveErrors}): ${String(err)}`);
+        // else: processor threw, items are still in queue — no action needed
+        this.logger.warn(`candidate-queue: batch error (${batch.length} items retained, attempt ${this._consecutiveErrors}): ${String(err)}`);
       } else {
-        if (itemsStillInQueue) {
+        if (!spliced) {
+          // Processor keeps failing — drop items to prevent infinite retry loop
           this.queue.splice(0, batchSize);
         }
         this.logger.warn(`candidate-queue: batch error after ${this._consecutiveErrors} consecutive failures, dropping ${batch.length} items: ${String(err)}`);
