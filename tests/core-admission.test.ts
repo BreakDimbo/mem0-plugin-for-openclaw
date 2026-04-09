@@ -5,6 +5,7 @@
 
 import { buildUserPrompt, parseAdmissionResponse, judgeCandidates } from "../core-admission.js";
 import type { AdmissionResult } from "../core-admission.js";
+import { resolveLlmCandidateIndex } from "../index.js";
 import type { LlmGateConfig } from "../types.js";
 
 type TestResult = { name: string; passed: boolean; error?: string };
@@ -124,6 +125,23 @@ await test("parseAdmissionResponse handles missing optional fields", () => {
   assertEqual(results[0].key, undefined, "key undefined");
   assertEqual(results[0].value, undefined, "value undefined");
   assertEqual(results[0].reason, undefined, "reason undefined");
+});
+
+await test("resolveLlmCandidateIndex keeps valid multi-candidate indices unchanged", () => {
+  const resolved = resolveLlmCandidateIndex(2, 3);
+  assertEqual(resolved?.candidateIdx, 1, "maps 1-indexed LLM result to 0-indexed candidate");
+  assertEqual(resolved?.clampedSingle, false, "in-range multi-candidate index should not clamp");
+});
+
+await test("resolveLlmCandidateIndex clamps positive out-of-range index only for single candidate", () => {
+  const resolved = resolveLlmCandidateIndex(4, 1);
+  assertEqual(resolved?.candidateIdx, 0, "single candidate falls back to index 0");
+  assertEqual(resolved?.clampedSingle, true, "single-candidate fallback should be marked as clamped");
+});
+
+await test("resolveLlmCandidateIndex rejects out-of-range indices for multi-candidate batches", () => {
+  assertEqual(resolveLlmCandidateIndex(4, 3), null, "must reject index beyond batch size");
+  assertEqual(resolveLlmCandidateIndex(0, 3), null, "must reject non-positive index");
 });
 
 // ========================================================================

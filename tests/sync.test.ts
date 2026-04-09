@@ -338,6 +338,106 @@ await test("totalWritten reflects core + recall items written", async () => {
   assert(sync.totalWritten >= 2, "totalWritten accounts for core items");
 });
 
+await test("forceSync prunes stale inflight entry for the same agent before reusing promise", async () => {
+  const filePath = join(tmpDir, "stale-inflight-recovery.md");
+  const config = makeConfig({}, filePath);
+  const staleSync = new MarkdownSync(
+    makePrimaryBackend() as any,
+    makeScopeResolver(baseScope),
+    makeCoreRepo() as any,
+    config,
+    noop,
+  );
+  staleSync.registerAgent("agentStale", tmpDir, { schedule: false });
+
+  let staleStarted = 0;
+  (staleSync as any)._doSyncForAgent = async () => {
+    staleStarted++;
+    return new Promise<void>(() => {});
+  };
+
+  void (staleSync as any).syncForAgent("agentStale");
+
+  const recoverySync = new MarkdownSync(
+    makePrimaryBackend() as any,
+    makeScopeResolver(baseScope),
+    makeCoreRepo() as any,
+    config,
+    noop,
+  );
+  recoverySync.registerAgent("agentStale", tmpDir, { schedule: false });
+
+  const realNow = Date.now;
+  const baseNow = realNow();
+  let recovered = false;
+  const originalRecoveryDoSync = (recoverySync as any)._doSyncForAgent.bind(recoverySync);
+  (recoverySync as any)._doSyncForAgent = async (agentId: string) => {
+    recovered = true;
+    await originalRecoveryDoSync(agentId);
+  };
+
+  Date.now = () => baseNow + (11 * 60_000);
+  try {
+    await recoverySync.forceSync("agentStale");
+  } finally {
+    Date.now = realNow;
+  }
+
+  assertEqual(staleStarted, 1, "stale inflight sync should have started once");
+  assert(recovered, "stale inflight entry should be pruned so a new sync can run");
+
+  const content = await readFile(filePath, "utf-8");
+  assert(content.includes("<!-- memory-mem0:start -->"), "sync should proceed after pruning stale inflight entry");
+});
+
+await test("forceSync still reuses fresh inflight entry for the same agent", async () => {
+  const filePath = join(tmpDir, "fresh-inflight.md");
+  const config = makeConfig({}, filePath);
+  const primarySync = new MarkdownSync(
+    makePrimaryBackend() as any,
+    makeScopeResolver(baseScope),
+    makeCoreRepo() as any,
+    config,
+    noop,
+  );
+  primarySync.registerAgent("agentFresh", tmpDir, { schedule: false });
+
+  let releaseFresh!: () => void;
+  const marker = Symbol("fresh-inflight");
+  let primaryStarted = 0;
+  (primarySync as any)._doSyncForAgent = () => {
+    primaryStarted++;
+    return new Promise<typeof marker>((resolve) => {
+      releaseFresh = () => resolve(marker);
+    });
+  };
+
+  const initial = (primarySync as any).syncForAgent("agentFresh");
+
+  const followerSync = new MarkdownSync(
+    makePrimaryBackend() as any,
+    makeScopeResolver(baseScope),
+    makeCoreRepo() as any,
+    config,
+    noop,
+  );
+  followerSync.registerAgent("agentFresh", tmpDir, { schedule: false });
+
+  let followerStarted = 0;
+  (followerSync as any)._doSyncForAgent = async () => {
+    followerStarted++;
+  };
+
+  const returned = (followerSync as any).syncForAgent("agentFresh");
+  releaseFresh();
+  const initialResolved = await initial;
+  const resolved = await returned;
+  assertEqual(initialResolved, marker, "initial inflight promise should resolve to marker");
+  assertEqual(resolved, marker, "fresh inflight promise result should be reused");
+  assertEqual(primaryStarted, 1, "primary sync should start exactly once");
+  assertEqual(followerStarted, 0, "fresh inflight promise should skip starting a new sync");
+});
+
 // ── Path traversal guard ──────────────────────────────────────────────────────
 
 await test("relative memoryFilePath outside workspace is rejected (path traversal guard)", async () => {

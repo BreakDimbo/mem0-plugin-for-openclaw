@@ -398,17 +398,17 @@ export class MarkdownSync {
 
   private async syncForAgent(agentId: string): Promise<void> {
     const inflightKey = agentId;
-    const existing = SYNC_INFLIGHT.get(inflightKey);
-    if (existing) {
-      return existing.promise;
-    }
-
     // Prune stale entries (safety net for orphaned promises)
     const now = Date.now();
     for (const [key, entry] of SYNC_INFLIGHT) {
       if (now - entry.startedAt > SYNC_INFLIGHT_TTL_MS) {
         SYNC_INFLIGHT.delete(key);
       }
+    }
+
+    const existing = SYNC_INFLIGHT.get(inflightKey);
+    if (existing) {
+      return existing.promise;
     }
 
     const promise = this._doSyncForAgent(agentId).finally(() => {
