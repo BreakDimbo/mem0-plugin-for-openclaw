@@ -51,30 +51,43 @@ export function createForgetTool(backend: FreeTextBackend, config: MemuPluginCon
 
       if (!args.query) {
         return {
-          text: "Please provide a memoryId for single-item deletion or a query to delete matching memories. Scope-level clear-all is not supported by the current backend.",
+          text: "Please provide a memoryId for single-item deletion or a query to find matching memories. Scope-level clear-all is not supported by the current backend.",
         };
       }
 
-      const result = await backend.forget(scope, { query: args.query });
-
-      if (!result) {
-        return { text: "Failed to clear memories. The backend may not support this operation." };
+      // Safety gate: semantic search can match far more than intended.
+      // Preview matches and only auto-delete when exactly one high-confidence match is found.
+      const matches = await backend.search(args.query, scope, { maxItems: 10 });
+      if (!matches || matches.length === 0) {
+        return { text: "No matching memories found." };
+      }
+      if (matches.length === 1) {
+        const targetId = matches[0].id;
+        if (!targetId) {
+          return { text: "Found a matching memory but it has no ID. Cannot delete." };
+        }
+        const result = await backend.forget(scope, { memoryId: targetId });
+        audit(
+          "forget",
+          scope.userId,
+          scope.agentId,
+          `auto-deleted single match for query="${args.query}": memoryId="${targetId}", purged=${result?.purged_items ?? 0}`,
+        );
+        return {
+          text: `Deleted 1 matching memory (memoryId=${targetId}). To avoid accidental batch deletion, query-based forget only auto-deletes when exactly 1 match is found.`,
+        };
       }
 
-      // Audit log the deletion
-      audit(
-        "forget",
-        scope.userId,
-        scope.agentId,
-        `purged: categories=${result.purged_categories}, items=${result.purged_items}, resources=${result.purged_resources}${args.query ? `, query="${args.query}"` : ""}`,
-      );
-
+      // Multiple matches — require explicit memoryId to prevent mass deletion
+      const list = matches
+        .map((m) => `- memoryId=${m.id} | score=${m.score?.toFixed(3) ?? "N/A"} | ${m.text?.slice(0, 60) ?? ""}...`)
+        .join("\n");
       return {
         text: [
-          "Memories cleared:",
-          `  Categories purged: ${result.purged_categories}`,
-          `  Items purged: ${result.purged_items}`,
-          `  Resources purged: ${result.purged_resources}`,
+          `Found ${matches.length} matching memories. Query-based semantic search can match more items than intended.`,
+          "To prevent accidental mass deletion, automatic batch delete is disabled.",
+          "Please re-run memory_forget with memoryId=<id> and confirm=true to delete a specific item:",
+          list,
         ].join("\n"),
       };
     },
