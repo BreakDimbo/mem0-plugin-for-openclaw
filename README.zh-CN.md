@@ -1,6 +1,6 @@
 # memory-mem0
 
-> OpenClaw 增强型双轨记忆插件 · v1.1.0 · 2026-03-22
+> OpenClaw 增强型双轨记忆插件 · v1.2.0 · 2026-04-12
 
 为 AI Agent 提供跨会话的长期记忆能力。将非结构化对话内容转化为结构化的持久知识，在每次对话前精准召回，使 Agent 感知用户的历史偏好、目标与约束。
 
@@ -20,8 +20,9 @@
    - 5.5 [LLM 准入门控](#55-llm-准入门控)
    - 5.6 [Outbox 异步写回队列](#56-outbox-异步写回队列)
    - 5.7 [记忆整理系统（Consolidation）](#57-记忆整理系统consolidation)
-   - 5.8 [Markdown 同步](#58-markdown-同步)
-   - 5.9 [安全机制](#59-安全机制)
+   - 5.8 [Dreaming（自动晋升系统）](#58-dreaming自动晋升系统)
+   - 5.9 [Markdown 同步](#59-markdown-同步)
+   - 5.10 [安全机制](#510-安全机制)
 6. [配置参考](#6-配置参考)
 7. [工具 API](#7-工具-api)
 8. [CLI 命令（/memu）](#8-cli-命令memu)
@@ -41,6 +42,7 @@
 | **统一意图分类** | 查询类型（greeting/code/factual…）+ 复杂度层级（SIMPLE→REASONING）+ captureHint |
 | **LLM 准入门控** | 批量判断候选记忆质量（core/free_text/discard），防止噪音写入 |
 | **记忆整理系统** | 每日/每周/每月自动整理，Ebbinghaus 衰减评分 + LLM 边界裁决 + dead-letter 保护 |
+| **Dreaming 自动晋升** | 根据真实召回信号，自动将高价值 free-text 记忆提升为 Core Memory |
 | **Tier 分层注入** | profile/general 永久注入，technical 按需检索 |
 | **中文优先** | CJK bigram 分词、中文数字归一化（第一↔1）、跨语言语义匹配 |
 | **多 Agent 隔离** | 完整 Scope（userId + agentId + sessionKey + tenantId），per-agent userId 映射 |
@@ -62,6 +64,7 @@
 | LLM 门控 | ❌ | ✅ 三分类（core/free_text/discard） |
 | 捕获方式 | 同步阻塞 | **异步流水线，零延迟影响** |
 | 记忆整理 | ❌ | ✅ 多周期调度 + Ebbinghaus 评分 + dead-letter |
+| Dreaming 晋升 | ❌ | ✅ 6 因子评分 + Light/Deep/REM 三阶段 |
 | 人工审核 | ❌ | ✅ Proposal Queue |
 | 工具 API | 3 个 | **9 个** |
 | CLI 看板 | ❌ | ✅ `/memu` 完整命令集 |
@@ -128,6 +131,9 @@
 │              整理调度器（后台，每小时 tick）                        │
 │   daily 03:00 · weekly 周一 04:00 · monthly 每月1日 05:00        │
 │   ImportanceScorer → 裁决 → 可选 LLM 裁决 → dead-letter 保护     │
+├─────────────────────────────────────────────────────────────────┤
+│              Dreaming（自动晋升，每天凌晨调度）                     │
+│   Signal Store → Light（去重）→ Deep（评分+晋升）→ REM（模式）   │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -152,7 +158,13 @@ memory-mem0/
 │   ├── scorer.ts               # ImportanceScorer：五因子 + Ebbinghaus 衰减
 │   ├── runner.ts               # ConsolidationRunner：dry-run + 实际执行 + dead-letter
 │   ├── llm-consolidator.ts     # LLMConsolidator：边界区间调用任意 OpenAI-compat 端点
-│   └── scheduler.ts            # ConsolidationScheduler：hourly tick + 状态持久化
+│   ├── scheduler.ts            # ConsolidationScheduler：hourly tick + 状态持久化
+│   ├── signal-store.ts         # RecallSignalStore：记录 recall 信号（ dreaming 输入）
+│   ├── phase-signal-store.ts   # PhaseSignalStore：跨周期 light/rem 信号累积
+│   ├── dream-scorer.ts         # DreamScorer：6 因子加权评分
+│   ├── dream-light.ts          # Light Phase：去重合并候选
+│   ├── dream-deep.ts           # Deep Phase：评分并晋升到 Core Memory
+│   └── dream-rem.ts            # REM Phase：概念模式检测 + LLM Diary
 │
 ├── backends/free-text/
 │   ├── base.ts                 # FreeTextBackend 接口
@@ -196,6 +208,7 @@ memory-mem0/
     ├── consolidation-runner.test.ts
     ├── consolidation-e2e.test.ts
     ├── e2e-lifecycle.test.ts
+    ├── dreaming-*.test.ts        # 121 条 dreaming 相关测试
     ├── cache.test.ts
     ├── classifier.test.ts
     └── ...
@@ -221,7 +234,7 @@ type CoreMemoryRecord = {
   value: string;        // 简洁事实陈述
   importance?: number;  // 重要性，0–10（scorer 自动归一化为 0–1）
   tier?: "profile" | "technical" | "general";
-  source?: string;      // 来源：capture-queue / capture-llm-gate / manual 等
+  source?: string;      // 来源：capture-queue / capture-llm-gate / manual / dreaming 等
   createdAt?: number;
   updatedAt?: number;
   touchedAt?: number;   // 最近一次被注入/访问的时间（影响整理评分）
@@ -313,6 +326,8 @@ type CoreMemoryRecord = {
 | Session Core Cache | 90s | 同 session Core 列表复用 |
 | Session Relevant Cache | 90s | 相同语义查询 free-text 结果复用 |
 
+**Dreaming 信号采集：** 从 v1.2.0 开始，每次成功注入的记忆都会自动记录到 `RecallSignalStore`，用于后续 Dreaming 自动晋升。
+
 ---
 
 ### 5.3 统一意图分类器
@@ -351,7 +366,7 @@ agent_end
   │     ├── 内容 < minChars(20) 或 > maxChars(600)
   │     ├── 命中低信号模式（"好的"、"测试"、"今天"等）
   │     ├── 命中系统片段前缀（[system]、[tool_result]…）
-  │     └── 与最近捕获相似度 ≥ dedupeThreshold(0.8)
+  │     └── 与最近捕获的内容相似度 ≥ dedupeThreshold(0.8)
   │
   └── 入队 CandidateQueue（enabled=true）
       或直接写 Outbox（enabled=false）
@@ -486,7 +501,68 @@ npx tsx scripts/tune-params.ts
 
 ---
 
-### 5.8 Markdown 同步
+### 5.8 Dreaming（自动晋升系统）
+
+Dreaming 解决了 consolidation 只做“减法”的问题：它根据记忆**被实际召回的方式**（频率、query 多样性、跨天重现）自动将高价值 free-text 记忆提升为 Core Memory。
+
+**数据流：**
+
+```
+Recall Hook 注入记忆
+        │
+        ▼
+RecallSignalStore（ dreaming-signals.json ）
+        │
+        ▼
+ConsolidationScheduler 每天凌晨触发 dreaming 周期
+        │
+        ├── Light Phase：按 trigram 去重合并，记录 lightHit
+        ├── Deep Phase：6 因子评分，超过阈值则 promote 到 Core Memory
+        └── REM Phase：检测跨记忆概念模式，记录 remHit + 可选 LLM Diary
+```
+
+#### 6 因子评分（DreamScorer）
+
+| 因子 | 含义 | 默认权重 |
+|------|------|---------|
+| `frequency` | 被召回次数（log 压缩） | 0.24 |
+| `relevance` | 平均 relevanceScore | 0.30 |
+| `diversity` | 不同 query 数 / 不同 recallDay 数 | 0.15 |
+| `recency` | 距上次召回的天数衰减 | 0.15 |
+| `consolidation` | 跨天分布的广度（spacing + span） | 0.10 |
+| `conceptual` | concept tag 丰富度 | 0.06 |
+
+额外加分（`phaseBoost`）：
+- `lightHits` 累积最多 +0.05
+- `remHits` 累积最多 +0.08
+
+#### 晋升阈值
+
+| 阈值 | 默认值 | 说明 |
+|------|--------|------|
+| `minScore` | 0.75 | 总分必须超过 0.75 |
+| `minRecallCount` | 3 | 至少被召回 3 次 |
+| `minUniqueQueries` | 2 | 至少来自 2 种不同 query |
+
+#### 多实例安全（OpenClaw 注册 1000+ 次的问题）
+
+OpenClaw 网关会在每次消息分发时创建新的插件实例。为防止空实例覆盖信号文件，`flush()` 采用**读-合并-写**策略：
+1. flush 时先读取磁盘上的最新状态
+2. 将磁盘 entry 与内存增量合并（union 累加）
+3. 原子写入磁盘（write-tmp-rename）
+4. 清空内存防止下次重复累加
+
+#### CLI 手动触发
+
+```text
+/memu consolidate run dreaming --dry-run   # 干跑预览
+/memu consolidate run dreaming             # 实际晋升
+/memu consolidate dream-report             # 查看最近一次 dreaming 详细报告
+```
+
+---
+
+### 5.9 Markdown 同步
 
 `MarkdownSync` 将 Core Memory 写入 MEMORY.md，使 Agent 启动读取文件时可直接感知记忆。
 
@@ -519,7 +595,7 @@ npx tsx scripts/tune-params.ts
 
 ---
 
-### 5.9 安全机制
+### 5.10 安全机制
 
 #### 注入攻击防御
 
@@ -711,6 +787,29 @@ npx tsx scripts/tune-params.ts
       "COMPLEX": "gemini-2.5-pro",
       "REASONING": "claude-sonnet-4-6"
     }
+  },
+
+  "dreaming": {
+    "enabled": false,             // true 开启自动晋升
+    "schedule": { "hourOfDay": 4 },
+    "scoring": {
+      "weights": {
+        "frequency": 0.24,
+        "relevance": 0.30,
+        "diversity": 0.15,
+        "recency": 0.15,
+        "consolidation": 0.10,
+        "conceptual": 0.06
+      },
+      "promotion": {
+        "minScore": 0.75,
+        "minRecallCount": 3,
+        "minUniqueQueries": 2
+      }
+    },
+    "maxSignalEntries": 500,
+    "maxPromotionsPerCycle": 5,
+    "llmDiary": false             // true 时 REM 阶段调用 LLM 生成 diary
   }
 }
 ```
@@ -726,6 +825,8 @@ npx tsx scripts/tune-params.ts
 | 整理过于激进 | `consolidation.decay.stabilityDays` | 增大（如 21） |
 | 整理不够及时 | `consolidation.decay.stabilityDays` | 减小（如 7–10） |
 | LLM 裁决太多 | `consolidation.thresholds.llmLow/High` | 收窄区间 |
+| Dreaming 晋升太保守 | `dreaming.scoring.promotion.minScore` | 0.70 |
+| Dreaming 晋升太激进 | `dreaming.scoring.promotion.minScore` | 0.80 |
 
 ---
 
@@ -784,6 +885,14 @@ memory_core_proposals(action="reject",  proposalId="xxx")
 | `/memu consolidate run [cycle] --dry-run` | 干跑预览，不修改数据 |
 | `/memu consolidate report [n]` | 查看最近 n 条整理报告（默认 5） |
 
+### Dreaming 命令
+
+| 命令 | 说明 |
+|------|------|
+| `/memu consolidate run dreaming --dry-run` | 预览 dreaming 晋升结果 |
+| `/memu consolidate run dreaming` | 立即执行 dreaming 周期 |
+| `/memu consolidate dream-report` | 查看最近一次 dreaming 详细报告 |
+
 **干跑示例输出：**
 
 ```
@@ -839,7 +948,10 @@ ctx.agentId（来自运行时） > sessionKey 解析（"agent:xxx:main"）> 配�
 | `candidate-queue.json` | 捕获候选缓冲 | 批处理前的暂存 |
 | `core-proposals.json` | 人工审核队列 | humanReviewRequired=true 时使用 |
 | `consolidation-dead-letter.jsonl` | 整理删除记录 | JSONL，每行一条被删记录，可用于误删恢复 |
-| `consolidation-state.json` | 整理调度状态 | lastDailyRun / lastWeeklyRun / lastMonthlyRun |
+| `consolidation-state.json` | 整理调度状态 | lastDailyRun / lastWeeklyRun / lastMonthlyRun / lastDreamReport |
+| `dreaming-signals.json` | 召回信号存储 | 每次 recall 注入记录的原始信号 |
+| `dreaming-phase-signals.json` | Phase 信号存储 | lightHit / remHit 跨周期累积 |
+| `dream-diary.jsonl` | LLM 生成的 dreaming 日记 | REM 阶段输出（llmDiary=true） |
 | `memory.db` | mem0 SQLite 历史库 | mem0 OSS 内部使用 |
 | `inbound-message-cache.json` | 入站消息缓存 | 辅助捕获去重 |
 | `MEMORY.md`（workspace） | Markdown 同步输出 | Agent 启动时直接读取 |
@@ -872,6 +984,14 @@ ctx.agentId（来自运行时） > sessionKey 解析（"agent:xxx:main"）> 配�
 
 正常现象。新鲜记忆的 recency 评分偏高（Ebbinghaus 衰减需要时间），通常需要 2–3 周才开始出现删除。运行 `npx tsx scripts/tune-params.ts` 可估算首次删除发生时间。
 
+**Q: Dreaming 是什么？它会把所有 free-text 都变成 Core Memory 吗？**
+
+不会。Dreaming 只晋升那些**被反复召回、跨多天、跨多种 query** 的高价值 free-text 记忆。默认阈值较高（minScore=0.75, minRecallCount=3, minUniqueQueries=2），大多数 free-text 记忆不会触发晋升。
+
+**Q: Dreaming 的 `llmDiary` 用哪个 LLM？**
+
+复用的是 `core.consolidation.llm` 的配置端点。例如你配置了 Kimi Coding k2p5，diary 就由它来生成。不需要额外配置。
+
 **Q: 多个 Agent 的记忆会互相影响吗？**
 
 不会。Core Memory 和 free-text 检索均按 `(userId, agentId)` 隔离。如需多 Agent 共享同一用户记忆，将多个 agentId 映射到同一 userId 即可（`scope.userIdByAgent`）。
@@ -886,4 +1006,4 @@ ctx.agentId（来自运行时） > sessionKey 解析（"agent:xxx:main"）> 配�
 
 ---
 
-> 基于 memory-mem0 v1.1.0 源码 · 最后更新 2026-03-22
+> 基于 memory-mem0 v1.2.0 源码 · 最后更新 2026-04-12
