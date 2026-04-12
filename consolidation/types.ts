@@ -47,7 +47,7 @@ export type LLMVerdict = {
 
 // ── Reports ──────────────────────────────────────────────────────────────────
 
-export type ConsolidationCycle = "daily" | "weekly" | "monthly";
+export type ConsolidationCycle = "daily" | "weekly" | "monthly" | "dreaming";
 
 export type ConsolidationReportEntry = {
   id: string;
@@ -80,6 +80,64 @@ export type ConsolidationState = {
   lastDailyRun?: string;    // ISO timestamp
   lastWeeklyRun?: string;
   lastMonthlyRun?: string;
+  lastDreamingRun?: string;
   totalRuns: number;
   lastReport?: ConsolidationReport;
+  lastDreamReport?: DreamReport;
+};
+
+// ── Dreaming Types ───────────────────────────────────────────────────────────
+
+export type ShortTermRecallEntry = {
+  key: string;
+  layer: "core" | "free-text";
+  snippet: string;
+  recallCount: number;
+  totalScore: number;
+  maxScore: number;
+  firstRecalledAt: number;
+  lastRecalledAt: number;
+  queryHashes: string[];
+  recallDays: string[];
+  conceptTags: string[];
+  promotedAt?: number;
+};
+
+export type PhaseSignalEntry = {
+  key: string;
+  lightHits: number;
+  remHits: number;
+  lastLightAt?: number;
+  lastRemAt?: number;
+};
+
+export type DreamScoreFactors = {
+  frequency: number;
+  relevance: number;
+  diversity: number;
+  recency: number;
+  consolidation: number;
+  conceptual: number;
+  phaseBoost: number;
+};
+
+export type DreamPhase = "light" | "deep" | "rem";
+
+export type DreamPromotion = {
+  sourceKey: string;
+  sourceLayer: "free-text";
+  targetKey: string;
+  score: number;
+  factors: DreamScoreFactors;
+  reason: string;
+};
+
+export type DreamReport = {
+  phase: DreamPhase | "all";
+  runAt: string;
+  candidatesEvaluated: number;
+  promotions: DreamPromotion[];
+  patternsDetected: number;
+  signalBoosts: number;
+  diary?: string;
 };

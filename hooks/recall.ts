@@ -17,6 +17,7 @@ import type { FreeTextBackend } from "../backends/free-text/base.js";
 import { genericConceptBoost, rerankMemoryResults, tokenizeSemanticQuery } from "../metadata.js";
 import { resolveWorkspaceDir, searchWorkspaceFacts } from "../workspace-facts.js";
 import type { UnifiedIntentClassifier } from "../classifier.js";
+import type { RecallSignalStore } from "../consolidation/signal-store.js";
 import { DEFAULT_CLASSIFICATION } from "../classifier.js";
 import { extractSenderId, extractTextBlocks, stripInjectedBlocks } from "./utils.js";
 
@@ -691,6 +692,7 @@ export function createRecallHook(
   metrics: Metrics,
   sync: MarkdownSync,
   classifier?: UnifiedIntentClassifier,
+  signalStore?: RecallSignalStore,
 ) {
   return async (event: { prompt?: string; messages?: Array<{ role: string; content?: string | Array<{ type: string; text?: string }> }> }, ctx: PluginHookContext) => {
     if (!config.recall.enabled && !config.core.enabled) return;
@@ -914,6 +916,23 @@ export function createRecallHook(
 
       if (filteredMemories.length > 0) {
         memoryContext = formatMemoriesContext(filteredMemories);
+        if (signalStore) {
+          try {
+            for (const mem of filteredMemories) {
+              if (!mem.id) continue;
+              signalStore.recordRecall({
+                key: mem.id,
+                layer: "free-text",
+                snippet: mem.text.slice(0, 80),
+                queryHash: createHash("sha256").update(query).digest("hex").slice(0, 8),
+                relevanceScore: mem.score ?? 0,
+                conceptTags: [mem.category].filter(Boolean) as string[],
+              });
+            }
+          } catch (err) {
+            logger.warn(`recall-hook: signalStore recordRecall failed: ${String(err)}`);
+          }
+        }
       }
 
       metrics.recordRecallLatency(Date.now() - start);
@@ -934,6 +953,22 @@ export function createRecallHook(
           coreRepo.touch(scope, { ids: injectedIds, kind: "injected" }).catch((err) => {
             logger.warn(`recall-hook: core touch failed: ${String(err)}`);
           });
+        }
+      }
+      if (signalStore && coreMemories.length > 0) {
+        try {
+          for (const mem of coreMemories) {
+            signalStore.recordRecall({
+              key: mem.id,
+              layer: "core",
+              snippet: mem.value.slice(0, 80),
+              queryHash: createHash("sha256").update(query).digest("hex").slice(0, 8),
+              relevanceScore: mem.score ?? 0,
+              conceptTags: [mem.category, mem.tier].filter(Boolean) as string[],
+            });
+          }
+        } catch (err) {
+          logger.warn(`recall-hook: signalStore recordRecall failed: ${String(err)}`);
         }
       }
 

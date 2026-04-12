@@ -291,6 +291,42 @@ export type ConsolidationConfig = {
   statePath: string;
 };
 
+export type DreamScoringWeights = {
+  frequency: number;
+  relevance: number;
+  diversity: number;
+  recency: number;
+  consolidation: number;
+  conceptual: number;
+};
+
+export type DreamPromotionThresholds = {
+  minScore: number;
+  minRecallCount: number;
+  minUniqueQueries: number;
+};
+
+export type DreamingConfig = {
+  enabled: boolean;
+  schedule: { hourOfDay: number };
+  signalStorePath: string;
+  phaseSignalStorePath: string;
+  diaryPath: string;
+  scoring: {
+    weights: DreamScoringWeights;
+    promotion: DreamPromotionThresholds;
+  };
+  maxSignalEntries: number;
+  maxQueryHashes: number;
+  maxRecallDays: number;
+  maxPromotionsPerCycle: number;
+  maxConceptTags: number;
+  dedupeThreshold: number;
+  llmDiary: boolean;
+  timezone: string;
+  normalizeWeights: boolean;
+};
+
 export type MemuPluginConfig = {
   // -- Top-level simplified config (new format) --
   dataDir?: string;           // Base data directory, replaces multiple paths
@@ -379,6 +415,7 @@ export type MemuPluginConfig = {
   };
   classifier: ClassifierConfig;
   smartRouter: SmartRouterConfig;
+  dreaming?: DreamingConfig;
 };
 
 // Backward compatibility aliases (for code that uses old field names)
@@ -398,7 +435,7 @@ export function getSyncIntervalMs(config: MemuPluginConfig): number {
   return config.sync.intervalMs;
 }
 
-export const DEFAULT_CONFIG: MemuPluginConfig = {
+export const DEFAULT_CONFIG: MemuPluginConfig & { dreaming: DreamingConfig } = {
   dataDir: "~/.openclaw/data/memory-mem0",
   geminiApiKey: undefined,
   kimiApiKey: undefined,
@@ -530,6 +567,26 @@ export const DEFAULT_CONFIG: MemuPluginConfig = {
     enabled: false,
     tierModels: undefined,
   },
+  dreaming: {
+    enabled: false,
+    schedule: { hourOfDay: 4 },
+    signalStorePath: "",
+    phaseSignalStorePath: "",
+    diaryPath: "",
+    scoring: {
+      weights: { frequency: 0.24, relevance: 0.30, diversity: 0.15, recency: 0.15, consolidation: 0.10, conceptual: 0.06 },
+      promotion: { minScore: 0.75, minRecallCount: 3, minUniqueQueries: 2 },
+    },
+    maxSignalEntries: 500,
+    maxQueryHashes: 32,
+    maxRecallDays: 16,
+    maxPromotionsPerCycle: 5,
+    maxConceptTags: 20,
+    dedupeThreshold: 0.85,
+    llmDiary: false,
+    timezone: "Asia/Shanghai",
+    normalizeWeights: true,
+  },
 };
 
 export function buildSessionKey(scope: ScopeConfig): string {
@@ -652,7 +709,7 @@ function parseMem0Llm(raw: unknown, fallbackApiKey?: string): { provider: string
   }, fallbackApiKey);
 }
 
-export function loadConfig(raw?: Record<string, unknown>): MemuPluginConfig {
+export function loadConfig(raw?: Record<string, unknown>): MemuPluginConfig & { dreaming: DreamingConfig } {
   if (!raw) return { ...DEFAULT_CONFIG };
 
   // Top-level simplified config
@@ -794,7 +851,7 @@ export function loadConfig(raw?: Record<string, unknown>): MemuPluginConfig {
           llm: {
             enabled:      bool(cnQw.enabled,      def.llm.enabled),
             apiBase:      optStr(cnQw.apiBase) ?? def.llm.apiBase,
-            apiKey:       optStr(cnQw.apiKey),
+            apiKey:       optStr(cnQw.apiKey) ?? kimiApiKey,
             model:        optStr(cnQw.model) ?? def.llm.model,
             timeoutMs:    num(cnQw.timeoutMs,    def.llm.timeoutMs),
             maxBatchSize: num(cnQw.maxBatchSize, def.llm.maxBatchSize),
@@ -872,6 +929,64 @@ export function loadConfig(raw?: Record<string, unknown>): MemuPluginConfig {
           COMPLEX: optStr(tierModels.COMPLEX),
           REASONING: optStr(tierModels.REASONING),
         },
+      };
+    })(),
+    dreaming: (() => {
+      const dr = (raw.dreaming ?? {}) as Record<string, unknown>;
+      const def = DEFAULT_CONFIG.dreaming;
+      const sc = (dr.scoring ?? {}) as Record<string, unknown>;
+      const w = (sc.weights ?? {}) as Record<string, unknown>;
+      const p = (sc.promotion ?? {}) as Record<string, unknown>;
+
+      let weights: DreamScoringWeights = {
+        frequency: numInRange(w.frequency, def.scoring.weights.frequency, 0, 1),
+        relevance: numInRange(w.relevance, def.scoring.weights.relevance, 0, 1),
+        diversity: numInRange(w.diversity, def.scoring.weights.diversity, 0, 1),
+        recency: numInRange(w.recency, def.scoring.weights.recency, 0, 1),
+        consolidation: numInRange(w.consolidation, def.scoring.weights.consolidation, 0, 1),
+        conceptual: numInRange(w.conceptual, def.scoring.weights.conceptual, 0, 1),
+      };
+
+      const normalizeWeights = bool(dr.normalizeWeights, def.normalizeWeights);
+      if (normalizeWeights) {
+        const sum = Object.values(weights).reduce((a, b) => a + b, 0);
+        if (sum > 0) {
+          weights = {
+            frequency: weights.frequency / sum,
+            relevance: weights.relevance / sum,
+            diversity: weights.diversity / sum,
+            recency: weights.recency / sum,
+            consolidation: weights.consolidation / sum,
+            conceptual: weights.conceptual / sum,
+          };
+        }
+      }
+
+      return {
+        enabled: bool(dr.enabled, def.enabled),
+        schedule: {
+          hourOfDay: numInRange((dr.schedule as Record<string, unknown> ?? {}).hourOfDay, def.schedule.hourOfDay, 0, 23),
+        },
+        signalStorePath: typeof dr.signalStorePath === "string" && dr.signalStorePath.length > 0 ? dr.signalStorePath : `${dataDir}/dreaming-signals.json`,
+        phaseSignalStorePath: typeof dr.phaseSignalStorePath === "string" && dr.phaseSignalStorePath.length > 0 ? dr.phaseSignalStorePath : `${dataDir}/dreaming-phase-signals.json`,
+        diaryPath: typeof dr.diaryPath === "string" && dr.diaryPath.length > 0 ? dr.diaryPath : `${dataDir}/dream-diary.jsonl`,
+        scoring: {
+          weights,
+          promotion: {
+            minScore: numInRange(p.minScore, def.scoring.promotion.minScore, 0, 1),
+            minRecallCount: numInRange(p.minRecallCount, def.scoring.promotion.minRecallCount, 0, 100),
+            minUniqueQueries: numInRange(p.minUniqueQueries, def.scoring.promotion.minUniqueQueries, 0, 100),
+          },
+        },
+        maxSignalEntries: numInRange(dr.maxSignalEntries, def.maxSignalEntries, 50, 5000),
+        maxQueryHashes: numInRange(dr.maxQueryHashes, def.maxQueryHashes, 1, 200),
+        maxRecallDays: numInRange(dr.maxRecallDays, def.maxRecallDays, 1, 90),
+        maxPromotionsPerCycle: numInRange(dr.maxPromotionsPerCycle, def.maxPromotionsPerCycle, 1, 100),
+        maxConceptTags: numInRange(dr.maxConceptTags, def.maxConceptTags, 1, 200),
+        dedupeThreshold: numInRange(dr.dedupeThreshold, def.dedupeThreshold, 0, 1),
+        llmDiary: bool(dr.llmDiary, def.llmDiary),
+        timezone: str(dr.timezone, def.timezone),
+        normalizeWeights,
       };
     })(),
   };

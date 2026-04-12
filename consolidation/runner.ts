@@ -10,7 +10,7 @@ import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname } from "node:path";
 
-import type { CoreMemoryRecord, MemuMemoryRecord, ConsolidationConfig, MemoryScope } from "../types.js";
+import type { CoreMemoryRecord, MemuMemoryRecord, ConsolidationConfig, MemoryScope, DreamingConfig } from "../types.js";
 import type { CoreMemoryRepository } from "../core-repository.js";
 import type { FreeTextBackend } from "../backends/free-text/base.js";
 import type {
@@ -20,9 +20,16 @@ import type {
   LLMVerdict,
   MemoryVerdict,
   ScoredMemory,
+  DreamReport,
 } from "./types.js";
 import { ImportanceScorer } from "./scorer.js";
 import { LLMConsolidator } from "./llm-consolidator.js";
+import { RecallSignalStore } from "./signal-store.js";
+import { PhaseSignalStore } from "./phase-signal-store.js";
+import { DreamScorer } from "./dream-scorer.js";
+import { runLightPhase } from "./dream-light.js";
+import { runDeepPhase } from "./dream-deep.js";
+import { runRemPhase } from "./dream-rem.js";
 
 type Logger = { info(msg: string): void; warn(msg: string): void };
 
@@ -82,11 +89,25 @@ export class ConsolidationRunner {
   private readonly llm: LLMConsolidator;
   private readonly logger: Logger;
 
+  signalStore?: RecallSignalStore;
+  phaseSignalStore?: PhaseSignalStore;
+  dreamingConfig?: DreamingConfig;
+  dreamScorer?: DreamScorer;
+  llmConsolidator?: LLMConsolidator;
+  private _dreamingInflight = false;
+  private pausePeriodicFlush?: () => void;
+  private resumePeriodicFlush?: () => void;
+
   constructor(
     repo: CoreMemoryRepository,
     config: ConsolidationConfig,
     logger: Logger,
     freeTextBackend?: FreeTextBackend,
+    dreamingDeps?: {
+      signalStore?: RecallSignalStore;
+      phaseSignalStore?: PhaseSignalStore;
+      dreamingConfig?: DreamingConfig;
+    },
   ) {
     this.repo = repo;
     this.freeTextBackend = freeTextBackend;
@@ -94,6 +115,106 @@ export class ConsolidationRunner {
     this.scorer = new ImportanceScorer(config);
     this.llm = new LLMConsolidator(config.llm, logger);
     this.logger = logger;
+    if (dreamingDeps) {
+      this.signalStore = dreamingDeps.signalStore;
+      this.phaseSignalStore = dreamingDeps.phaseSignalStore;
+      this.dreamingConfig = dreamingDeps.dreamingConfig;
+      if (this.dreamingConfig) {
+        this.dreamScorer = new DreamScorer(this.dreamingConfig);
+      }
+      this.llmConsolidator = this.llm;
+    }
+  }
+
+  setPauseResumeFlush(pause: () => void, resume: () => void): void {
+    this.pausePeriodicFlush = pause;
+    this.resumePeriodicFlush = resume;
+  }
+
+  async runDreaming(scope: MemoryScope, dryRun: boolean): Promise<DreamReport> {
+    const now = new Date().toISOString();
+
+    if (this._dreamingInflight) {
+      this.logger.warn("dreaming cycle already in progress, skipping");
+      return this.emptyDreamReport(now);
+    }
+
+    if (!this.signalStore || !this.phaseSignalStore || !this.dreamingConfig || !this.dreamScorer) {
+      this.logger.warn("dreaming: dependencies not configured, skipping");
+      return this.emptyDreamReport(now);
+    }
+
+    if (!this.freeTextBackend) {
+      this.logger.warn("dreaming: no free-text backend configured, skipping");
+      return this.emptyDreamReport(now);
+    }
+
+    this._dreamingInflight = true;
+    try {
+      this.pausePeriodicFlush?.();
+      await this.signalStore.load();
+      await this.phaseSignalStore.load();
+
+      const light = await runLightPhase({
+        signals: this.signalStore,
+        phaseSignals: this.phaseSignalStore,
+        config: this.dreamingConfig,
+        logger: this.logger as { info: (...args: unknown[]) => void; warn: (...args: unknown[]) => void },
+      });
+
+      const deep = await runDeepPhase({
+        candidates: light.candidates,
+        phaseSignals: this.phaseSignalStore,
+        signals: this.signalStore,
+        scorer: this.dreamScorer,
+        coreRepo: this.repo,
+        freeTextBackend: this.freeTextBackend,
+        scope,
+        config: this.dreamingConfig,
+        logger: this.logger as { info: (...args: unknown[]) => void; warn: (...args: unknown[]) => void },
+        dryRun,
+      });
+
+      const rem = await runRemPhase({
+        signals: this.signalStore,
+        phaseSignals: this.phaseSignalStore,
+        config: this.dreamingConfig,
+        llm: this.llmConsolidator,
+        logger: this.logger as { info: (...args: unknown[]) => void; warn: (...args: unknown[]) => void },
+      });
+
+      this.signalStore.prune();
+      const activeKeys = new Set(this.signalStore.getAll().map((e) => e.key));
+      this.phaseSignalStore.prune(activeKeys);
+      await this.signalStore.flush();
+      await this.phaseSignalStore.flush();
+      await this.signalStore.load();
+      await this.phaseSignalStore.load();
+
+      return {
+        phase: "all",
+        runAt: now,
+        candidatesEvaluated: deep.totalScored,
+        promotions: deep.promotions,
+        patternsDetected: rem.patternsDetected,
+        signalBoosts: rem.signalBoosts,
+        diary: rem.diary,
+      };
+    } finally {
+      this._dreamingInflight = false;
+      this.resumePeriodicFlush?.();
+    }
+  }
+
+  private emptyDreamReport(runAt: string): DreamReport {
+    return {
+      phase: "all",
+      runAt,
+      candidatesEvaluated: 0,
+      promotions: [],
+      patternsDetected: 0,
+      signalBoosts: 0,
+    };
   }
 
   /**

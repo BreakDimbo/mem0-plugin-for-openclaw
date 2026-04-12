@@ -92,6 +92,57 @@ export class LLMConsolidator {
    * Ask the LLM to judge a batch of boundary-zone records.
    * Returns partial results (only IDs the LLM returned verdicts for).
    */
+  async generateDiary(prompt: string): Promise<string> {
+    if (!this.config.enabled) {
+      return "";
+    }
+
+    const apiBase = this.config.apiBase.replace(/\/+$/, "");
+    const url = `${apiBase}/chat/completions`;
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (this.config.apiKey) headers["Authorization"] = `Bearer ${this.config.apiKey}`;
+
+    this.logger.info(`llm-consolidator: generating diary with ${this.config.model}`);
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.config.timeoutMs);
+
+    try {
+      const resp = await fetch(url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          model: this.config.model,
+          messages: [{ role: "user", content: prompt }],
+          max_tokens: 300,
+          temperature: 0.7,
+        }),
+        signal: controller.signal,
+      });
+
+      if (!resp.ok) {
+        const errText = await resp.text().catch(() => "");
+        this.logger.warn(`llm-consolidator: HTTP ${resp.status} — ${errText.slice(0, 200)}`);
+        throw new Error(`llm-consolidator: HTTP ${resp.status}`);
+      }
+
+      const json = (await resp.json()) as Record<string, unknown>;
+      const content = (json.choices as Array<{ message?: { content?: string } }> | undefined)
+        ?.[0]?.message?.content ?? "";
+
+      return content.trim();
+    } catch (err) {
+      if ((err as Error).name === "AbortError") {
+        this.logger.warn("llm-consolidator: timeout");
+        throw new Error("llm-consolidator: timeout");
+      }
+      this.logger.warn(`llm-consolidator: error — ${String(err)}`);
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   async judgeRecords(
     records: ScoredMemory<CoreMemoryRecord>[],
   ): Promise<LLMVerdict[]> {

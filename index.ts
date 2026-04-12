@@ -41,8 +41,16 @@ import { createCoreProposalTool } from "./tools/core-proposals.js";
 import { createMemuCommand } from "./cli.js";
 import { ConsolidationRunner } from "./consolidation/runner.js";
 import { ConsolidationScheduler } from "./consolidation/scheduler.js";
+import { RecallSignalStore } from "./consolidation/signal-store.js";
+import { PhaseSignalStore } from "./consolidation/phase-signal-store.js";
+import { homedir } from "node:os";
 
 type PluginLogger = { info(msg: string): void; warn(msg: string): void };
+
+// Module-level singleton caches to prevent multiple plugin registrations from
+// overwriting each other's stateful stores (all point to same files).
+const _signalStoreCache = new Map<string, RecallSignalStore>();
+const _phaseSignalStoreCache = new Map<string, PhaseSignalStore>();
 
 type OpenClawPluginApi = {
   pluginConfig?: unknown;
@@ -136,13 +144,45 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
     const captureDedupStore = new CaptureDedupStore(config.outbox.persistPath);
     const sync = new MarkdownSync(primaryFreeTextBackend, scopeResolver, coreRepo, config, api.logger);
 
-    const consolidationRunner = new ConsolidationRunner(coreRepo, config.core.consolidation, api.logger, primaryFreeTextBackend);
+    let signalStore: RecallSignalStore | undefined;
+    if (config.dreaming.enabled) {
+      const signalKey = config.dreaming.signalStorePath;
+      signalStore = _signalStoreCache.get(signalKey);
+      if (!signalStore) {
+        signalStore = new RecallSignalStore(signalKey, config.dreaming, api.logger);
+        _signalStoreCache.set(signalKey, signalStore);
+      }
+    }
+
+    let phaseSignalStore: PhaseSignalStore | undefined;
+    if (config.dreaming.enabled) {
+      const phaseKey = config.dreaming.phaseSignalStorePath.replace(/^~/, homedir());
+      phaseSignalStore = _phaseSignalStoreCache.get(phaseKey);
+      if (!phaseSignalStore) {
+        phaseSignalStore = new PhaseSignalStore(phaseKey);
+        _phaseSignalStoreCache.set(phaseKey, phaseSignalStore);
+      }
+    }
+    let signalFlushInterval: ReturnType<typeof setInterval> | undefined;
+    let signalFlushPaused = false;
+
+    const consolidationRunner = new ConsolidationRunner(coreRepo, config.core.consolidation, api.logger, primaryFreeTextBackend, {
+      signalStore,
+      phaseSignalStore,
+      dreamingConfig: config.dreaming,
+    });
     const consolidationScheduler = new ConsolidationScheduler(
       consolidationRunner,
       config.core.consolidation,
       { userId: config.scope.userId, agentId: config.scope.agentId, sessionKey: "consolidation" },
       api.logger,
+      config.dreaming,
     );
+
+    // Pause/resume for dream cycle exclusion
+    const pausePeriodicFlush = () => { signalFlushPaused = true; };
+    const resumePeriodicFlush = () => { signalFlushPaused = false; };
+    consolidationRunner.setPauseResumeFlush(pausePeriodicFlush, resumePeriodicFlush);
 
     // -- CandidateQueue: per-message capture with configurable batch timer --
     let lastConsolidateAt = 0;
@@ -361,7 +401,7 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
     }
 
     if (config.recall.enabled || config.core.enabled) {
-      api.on("before_prompt_build", createRecallHook(primaryFreeTextBackend, scopeResolver, coreRepo, cache, inbound, config, api.logger, metrics, sync, classifier), {
+      api.on("before_prompt_build", createRecallHook(primaryFreeTextBackend, scopeResolver, coreRepo, cache, inbound, config, api.logger, metrics, sync, classifier, signalStore), {
         priority: HOOK_PRIORITY.recall,
       });
     }
@@ -437,6 +477,25 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
           consolidationScheduler.start();
         }
 
+        if (signalStore) {
+          await signalStore.load();
+        }
+        if (phaseSignalStore) {
+          await phaseSignalStore.load();
+        }
+        if (signalStore || phaseSignalStore) {
+          signalFlushInterval = setInterval(() => {
+            if (!signalFlushPaused) {
+              signalStore?.flush().catch((err) => {
+                api.logger.warn(`memory-mem0: signalStore periodic flush failed: ${String(err)}`);
+              });
+              phaseSignalStore?.flush().catch((err) => {
+                api.logger.warn(`memory-mem0: phaseSignalStore periodic flush failed: ${String(err)}`);
+              });
+            }
+          }, 60_000);
+        }
+
         api.logger.info("memory-mem0: service started");
       },
       stop: async (_ctx: unknown) => {
@@ -450,6 +509,17 @@ const memoryMemuPlugin: OpenClawPluginDefinition = {
           outbox.stop();
         }
         await proposalQueue.stop();
+
+        if (signalFlushInterval) {
+          clearInterval(signalFlushInterval);
+          signalFlushInterval = undefined;
+        }
+        if (signalStore) {
+          await signalStore.flush();
+        }
+        if (phaseSignalStore) {
+          await phaseSignalStore.flush();
+        }
 
         sync.stop();
         await consolidationScheduler.stop();

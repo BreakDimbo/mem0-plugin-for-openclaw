@@ -12,9 +12,9 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname } from "node:path";
 
-import type { ConsolidationConfig, MemoryScope } from "../types.js";
+import type { ConsolidationConfig, DreamingConfig, MemoryScope } from "../types.js";
 import type { ConsolidationRunner } from "./runner.js";
-import type { ConsolidationCycle, ConsolidationState } from "./types.js";
+import type { ConsolidationCycle, ConsolidationState, DreamReport } from "./types.js";
 
 type Logger = { info(msg: string): void; warn(msg: string): void };
 
@@ -79,12 +79,13 @@ function isSameMonth(lastRun: string | undefined, targetHour: number): boolean {
 export class ConsolidationScheduler {
   private readonly runner: ConsolidationRunner;
   private readonly config: ConsolidationConfig;
+  private readonly dreamingConfig: DreamingConfig | undefined;
   private readonly scope: MemoryScope;
   private readonly logger: Logger;
 
   private timer: ReturnType<typeof setInterval> | undefined;
   private stopped = false;
-  private inflight = new Map<ConsolidationCycle, Promise<void>>();
+  private inflight = new Map<ConsolidationCycle, Promise<unknown>>();
   /** Serializes state file read-modify-write to prevent concurrent cycles from overwriting each other */
   private stateWriteQueue: Promise<void> = Promise.resolve();
 
@@ -93,9 +94,11 @@ export class ConsolidationScheduler {
     config: ConsolidationConfig,
     scope: MemoryScope,
     logger: Logger,
+    dreamingConfig?: DreamingConfig,
   ) {
     this.runner = runner;
     this.config = config;
+    this.dreamingConfig = dreamingConfig;
     this.scope = scope;
     this.logger = logger;
   }
@@ -124,7 +127,7 @@ export class ConsolidationScheduler {
   }
 
   /** Force a manual run (used by CLI /memu consolidate run <cycle>) */
-  async forceRun(cycle: ConsolidationCycle, dryRun: boolean): Promise<void> {
+  async forceRun(cycle: ConsolidationCycle, dryRun: boolean): Promise<unknown> {
     return this.runCycle(cycle, dryRun, true);
   }
 
@@ -148,10 +151,12 @@ export class ConsolidationScheduler {
     // dayOfMonth: if configured, must match today's date
     const monthlyDayMatch = monthly.dayOfMonth == null || monthly.dayOfMonth === dayOfMonth;
 
+    const dreamingCfg = this.dreamingConfig ?? { enabled: false, schedule: { hourOfDay: 4 } };
     const checks: Array<[ConsolidationCycle, boolean, boolean]> = [
       ["daily",   daily.enabled,   hour === daily.hourOfDay   && !isSameDayHour(state.lastDailyRun,   daily.hourOfDay)],
       ["weekly",  weekly.enabled,  weeklyDayMatch  && hour === weekly.hourOfDay  && !isSameWeekDay(state.lastWeeklyRun,  weekly.hourOfDay)],
       ["monthly", monthly.enabled, monthlyDayMatch && hour === monthly.hourOfDay && !isSameMonth(state.lastMonthlyRun,  monthly.hourOfDay)],
+      ["dreaming", dreamingCfg.enabled, hour === dreamingCfg.schedule.hourOfDay && !isSameDayHour(state.lastDreamingRun, dreamingCfg.schedule.hourOfDay)],
     ];
 
     for (const [cycle, enabled, shouldRun] of checks) {
@@ -163,7 +168,7 @@ export class ConsolidationScheduler {
     }
   }
 
-  private async runCycle(cycle: ConsolidationCycle, dryRun: boolean, force: boolean): Promise<void> {
+  private async runCycle(cycle: ConsolidationCycle, dryRun: boolean, force: boolean): Promise<unknown> {
     if (this.inflight.has(cycle)) {
       this.logger.info(`consolidation-scheduler: ${cycle} already in-flight, skipping`);
       return this.inflight.get(cycle);
@@ -171,6 +176,49 @@ export class ConsolidationScheduler {
 
     const promise = (async () => {
       try {
+        if (cycle === "dreaming") {
+          if (!dryRun) {
+            // Serialize state file updates to prevent concurrent cycles from
+            // overwriting each other's timestamps (read-modify-write race).
+            const reportPromise = (async () => {
+              let report: DreamReport | undefined;
+              this.stateWriteQueue = this.stateWriteQueue.then(async () => {
+                const state = await loadState(this.config.statePath).catch(() => ({ totalRuns: 0 } as ConsolidationState));
+                state.lastDreamingRun = new Date().toISOString();
+                state.totalRuns = (state.totalRuns ?? 0) + 1;
+                await saveState(this.config.statePath, state).catch((err) => {
+                  this.logger.warn(`consolidation-scheduler: state persist failed: ${String(err)}`);
+                });
+                report = await this.runner.runDreaming(this.scope, dryRun);
+                const state2 = await loadState(this.config.statePath).catch(() => ({ totalRuns: 0 } as ConsolidationState));
+                state2.lastDreamReport = report;
+                await saveState(this.config.statePath, state2).catch((err) => {
+                  this.logger.warn(`consolidation-scheduler: state persist failed: ${String(err)}`);
+                });
+              });
+              try {
+                await this.stateWriteQueue;
+              } catch (err) {
+                this.stateWriteQueue = Promise.resolve();
+                throw err;
+              }
+              return report;
+            })();
+            return reportPromise;
+          } else {
+            const report = await this.runner.runDreaming(this.scope, dryRun);
+            // Persist lastDreamReport even in dry-run so /memu consolidate dream-report works.
+            this.stateWriteQueue = this.stateWriteQueue.then(async () => {
+              const state = await loadState(this.config.statePath).catch(() => ({ totalRuns: 0 } as ConsolidationState));
+              state.lastDreamReport = report;
+              await saveState(this.config.statePath, state).catch((err) => {
+                this.logger.warn(`consolidation-scheduler: state persist failed: ${String(err)}`);
+              });
+            });
+            return report;
+          }
+        }
+
         const report = await this.runner.run(this.scope, cycle, dryRun);
 
         if (!dryRun) {
@@ -190,6 +238,7 @@ export class ConsolidationScheduler {
           });
           await this.stateWriteQueue;
         }
+        return report;
       } finally {
         this.inflight.delete(cycle);
       }
@@ -203,4 +252,4 @@ export class ConsolidationScheduler {
 // ── Re-export state helpers for CLI ─────────────────────────────────────────
 
 export { loadState, saveState };
-export type { ConsolidationState };
+export type { ConsolidationState } from "./types.js";

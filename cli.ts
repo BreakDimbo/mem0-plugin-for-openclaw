@@ -16,7 +16,7 @@ import type { FreeTextBackend } from "./backends/free-text/base.js";
 import { rerankMemoryResults } from "./metadata.js";
 import type { ConsolidationScheduler } from "./consolidation/scheduler.js";
 import { loadState } from "./consolidation/scheduler.js";
-import type { ConsolidationCycle } from "./consolidation/types.js";
+import type { ConsolidationCycle, DreamReport } from "./consolidation/types.js";
 
 export function inferPeerKindFromId(id: string): "direct" | "group" | "channel" {
   const raw = id.trim().toLowerCase();
@@ -90,7 +90,7 @@ export function createMemuCommand(
 ) {
   return {
     name: "memu",
-    description: "memU memory management. Usage: /memu [status|search|compare|benchmark|flush|audit|dashboard|consolidate|core ...]",
+    description: "memU memory management. Usage: /memu [status|search|compare|benchmark|flush|audit|dashboard|consolidate|core|dream ...]",
     acceptsArgs: true,
     handler: async (ctx: any) => {
       const args = (typeof ctx?.args === "string" ? ctx.args : "").trim();
@@ -368,6 +368,7 @@ export function createMemuCommand(
             `Last daily:      ${state.lastDailyRun ?? "never"}`,
             `Last weekly:     ${state.lastWeeklyRun ?? "never"}`,
             `Last monthly:    ${state.lastMonthlyRun ?? "never"}`,
+            `Last dreaming:   ${state.lastDreamingRun ?? "never"}`,
           ];
           if (r) {
             lines.push(
@@ -385,20 +386,34 @@ export function createMemuCommand(
           return { text: lines.join("\n") };
         }
 
-        // /memu consolidate run [daily|weekly|monthly] [--dry-run]
+        // /memu consolidate run [daily|weekly|monthly|dreaming] [--dry-run]
         if (sub === "run") {
           if (!consolidationScheduler) {
             return { text: "Consolidation scheduler not available (consolidation disabled?)." };
           }
           const cycleArg = tokens[2]?.toLowerCase() as ConsolidationCycle | undefined;
-          const cycle: ConsolidationCycle = ["daily", "weekly", "monthly"].includes(cycleArg ?? "")
+          const cycle: ConsolidationCycle = ["daily", "weekly", "monthly", "dreaming"].includes(cycleArg ?? "")
             ? cycleArg!
             : "daily";
           try {
-            await consolidationScheduler.forceRun(cycle, dryRun);
-            const state = await loadState(config.core.consolidation.statePath).catch(() => null);
-            const r = state?.lastReport;
+            const result = await consolidationScheduler.forceRun(cycle, dryRun);
             const label = dryRun ? " (dry-run)" : "";
+            if (cycle === "dreaming") {
+              const dr = result as DreamReport | undefined;
+              if (!dr) return { text: `Dreaming${label} complete — no report generated.` };
+              const lines = [
+                `Dreaming${label} complete`,
+                `  Candidates:  ${dr.candidatesEvaluated}`,
+                `  Promotions:  ${dr.promotions.length}`,
+                `  Patterns:    ${dr.patternsDetected}`,
+                `  SignalBoosts:${dr.signalBoosts}`,
+              ];
+              if (dr.diary) {
+                lines.push(`  Diary:       ${dr.diary.slice(0, 80).replace(/\n/g, " ")}${dr.diary.length > 80 ? "..." : ""}`);
+              }
+              return { text: lines.join("\n") };
+            }
+            const r = result as { totalScored: number; kept: number; downgraded: number; archived: number; deleted: number } | undefined;
             if (!r) return { text: `Consolidation ${cycle}${label} complete — no records found.` };
             return {
               text: [
@@ -437,12 +452,37 @@ export function createMemuCommand(
           return { text: lines.join("\n") };
         }
 
+        // /memu consolidate dream-report — show last dreaming report
+        if (sub === "dream-report") {
+          const state = await loadState(config.core.consolidation.statePath).catch(() => null);
+          const dr = state?.lastDreamReport;
+          if (!dr) return { text: "No dreaming report available yet." };
+          const lines = [
+            `Dreaming Report (${dr.runAt}, phase=${dr.phase})`,
+            `Candidates evaluated: ${dr.candidatesEvaluated}`,
+            `Promotions:           ${dr.promotions.length}`,
+            `Patterns detected:    ${dr.patternsDetected}`,
+            `Signal boosts:        ${dr.signalBoosts}`,
+          ];
+          if (dr.promotions.length > 0) {
+            lines.push("Promotions:");
+            for (const p of dr.promotions) {
+              lines.push(`  - ${p.sourceKey} → ${p.targetKey} (score=${p.score.toFixed(3)})`);
+            }
+          }
+          if (dr.diary) {
+            lines.push("Diary:", dr.diary);
+          }
+          return { text: lines.join("\n") };
+        }
+
         return {
           text: [
             "Usage:",
             "  /memu consolidate status              — show scheduler state",
-            "  /memu consolidate run [daily|weekly|monthly] [--dry-run]",
+            "  /memu consolidate run [daily|weekly|monthly|dreaming] [--dry-run]",
             "  /memu consolidate report [limit]      — view last report entries",
+            "  /memu consolidate dream-report        — view last dreaming report",
           ].join("\n"),
         };
       }

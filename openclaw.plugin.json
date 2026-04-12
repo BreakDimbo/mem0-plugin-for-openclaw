@@ -257,6 +257,54 @@
             }
           }
         }
+      },
+      "dreaming": {
+        "type": "object",
+        "description": "Dreaming configuration for automatic free-text to core memory promotion",
+        "properties": {
+          "enabled": { "type": "boolean", "default": false, "description": "Enable dreaming cycle" },
+          "schedule": {
+            "type": "object",
+            "properties": {
+              "hourOfDay": { "type": "number", "default": 4, "minimum": 0, "maximum": 23 }
+            }
+          },
+          "signalStorePath": { "type": "string", "default": "", "description": "Path to recall signal store (empty = ${dataDir}/dreaming-signals.json)" },
+          "phaseSignalStorePath": { "type": "string", "default": "", "description": "Path to phase signal store (empty = ${dataDir}/dreaming-phase-signals.json)" },
+          "diaryPath": { "type": "string", "default": "", "description": "Path to dream diary (empty = ${dataDir}/dream-diary.jsonl)" },
+          "scoring": {
+            "type": "object",
+            "properties": {
+              "weights": {
+                "type": "object",
+                "properties": {
+                  "frequency": { "type": "number", "default": 0.24 },
+                  "relevance": { "type": "number", "default": 0.30 },
+                  "diversity": { "type": "number", "default": 0.15 },
+                  "recency": { "type": "number", "default": 0.15 },
+                  "consolidation": { "type": "number", "default": 0.10 },
+                  "conceptual": { "type": "number", "default": 0.06 }
+                }
+              },
+              "promotion": {
+                "type": "object",
+                "properties": {
+                  "minScore": { "type": "number", "default": 0.75, "minimum": 0, "maximum": 1 },
+                  "minRecallCount": { "type": "number", "default": 3, "minimum": 0, "maximum": 100 },
+                  "minUniqueQueries": { "type": "number", "default": 2, "minimum": 0, "maximum": 100 }
+                }
+              }
+            }
+          },
+          "maxSignalEntries": { "type": "number", "default": 500, "minimum": 50, "maximum": 5000 },
+          "maxQueryHashes": { "type": "number", "default": 32, "minimum": 1, "maximum": 200 },
+          "maxRecallDays": { "type": "number", "default": 16, "minimum": 1, "maximum": 90 },
+          "maxPromotionsPerCycle": { "type": "number", "default": 5, "minimum": 1, "maximum": 100 },
+          "dedupeThreshold": { "type": "number", "default": 0.85, "minimum": 0, "maximum": 1 },
+          "llmDiary": { "type": "boolean", "default": false },
+          "timezone": { "type": "string", "default": "Asia/Shanghai" },
+          "normalizeWeights": { "type": "boolean", "default": true }
+        }
       }
     },
     "required": []
