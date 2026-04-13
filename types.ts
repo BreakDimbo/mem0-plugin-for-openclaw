@@ -525,7 +525,7 @@ export const DEFAULT_CONFIG: MemuPluginConfig & { dreaming: DreamingConfig } = {
       apiBase: getKimiCodingBaseUrl(),
       apiKey: undefined,
       model: getKimiCodingDefaultModel(),
-      maxTokensPerBatch: 1000,
+      maxTokensPerBatch: 4000,
       timeoutMs: 60_000,
     },
   },
