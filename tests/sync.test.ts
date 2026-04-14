@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { MarkdownSync } from "../sync.js";
 import type { MemuPluginConfig, MemoryScope } from "../types.js";
 import type { CoreMemoryRecord } from "../types.js";
+import { loadConfig } from "../types.js";
 
 type TestResult = { name: string; passed: boolean; error?: string };
 const results: TestResult[] = [];
@@ -456,6 +457,11 @@ await test("relative memoryFilePath outside workspace is rejected (path traversa
   await sync.forceSync("agentEvil");
   // resolveFilePath should return null → sync logs a skip warning
   assert(logs.some((l) => l.includes("workspace is unknown") || l.includes("skipped")), "traversal attempt logs a skip");
+});
+
+await test("loadConfig default sync.memoryFilePath is workspace-relative", async () => {
+  const cfg = loadConfig({});
+  assertEqual(cfg.sync.memoryFilePath, "MEMORY.md", "default sync path should be workspace-relative");
 });
 
 // Cleanup

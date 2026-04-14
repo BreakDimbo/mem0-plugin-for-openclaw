@@ -71,6 +71,11 @@ const KNOWLEDGE_DUMP_PATTERNS: RegExp[] = [
   /心跳检查|无紧急事项/,                      // Chinese heartbeat / status-ok phrases
   /\bThe current time is (Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\b/i, // Timestamp-only messages
   /\bThe user requested the system to read\b/i, // Agent self-narration with no user content
+  /\bA new session was started via \/new or \/reset\b/i,
+  /\bSession Startup\b/i,
+  /Conversation info \(untrusted metadata\):/i,
+  /Sender \(untrusted metadata\):/i,
+  /\breply with NO_REPLY\b/i,
 ];
 
 export function isKnowledgeDump(value: string): boolean {

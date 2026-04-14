@@ -181,6 +181,15 @@ test("normalizeChatApiConfig: non-kimi apiBase preserved", () => {
   assertEqual(result.model, "qwen2.5:14b", "model unchanged");
 });
 
+test("normalizeChatApiConfig: MLX model repo id is preserved for non-kimi endpoints", () => {
+  const result = normalizeChatApiConfig({
+    apiBase: "http://127.0.0.1:11435/v1",
+    model: "mlx-community/gemma-4-26b-a4b-it-4bit",
+  });
+  assertEqual(result.apiBase, "http://127.0.0.1:11435/v1", "mlx gateway base preserved");
+  assertEqual(result.model, "mlx-community/gemma-4-26b-a4b-it-4bit", "repo-style model id preserved");
+});
+
 test("normalizeChatApiConfig: empty config falls back to kimi defaults", () => {
   const result = normalizeChatApiConfig({});
   assert(isKimiCodingBaseUrl(result.apiBase), "falls back to kimi base");

@@ -127,6 +127,26 @@ await test("parseAdmissionResponse handles missing optional fields", () => {
   assertEqual(results[0].reason, undefined, "reason undefined");
 });
 
+await test("parseAdmissionResponse drops duplicate indices after first occurrence", () => {
+  const input = JSON.stringify([
+    { index: 1, verdict: "discard" },
+    { index: 1, verdict: "core", key: "identity.name", value: "Alice" },
+  ]);
+  const results = parseAdmissionResponse(input);
+  assertEqual(results.length, 1, "duplicate index should be ignored");
+  assertEqual(results[0].verdict, "discard", "first occurrence wins");
+});
+
+await test("parseAdmissionResponse drops results beyond candidate count when provided", () => {
+  const input = JSON.stringify([
+    { index: 1, verdict: "discard" },
+    { index: 2, verdict: "discard" },
+  ]);
+  const results = parseAdmissionResponse(input, 1);
+  assertEqual(results.length, 1, "out-of-range result should be dropped");
+  assertEqual(results[0].index, 1, "keeps only in-range result");
+});
+
 await test("resolveLlmCandidateIndex keeps valid multi-candidate indices unchanged", () => {
   const resolved = resolveLlmCandidateIndex(2, 3);
   assertEqual(resolved?.candidateIdx, 1, "maps 1-indexed LLM result to 0-indexed candidate");

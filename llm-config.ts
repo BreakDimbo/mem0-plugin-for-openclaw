@@ -70,14 +70,20 @@ export function stripProviderPrefix(model: string | undefined): string | undefin
 }
 
 export function normalizeChatApiConfig(config: ChatApiConfig): Required<ChatApiConfig> {
-  const strippedModel = stripProviderPrefix(config.model);
+  const shouldStripProviderPrefixedModel = typeof config.model === "string" && (
+    isKimiCodingBaseUrl(config.apiBase) ||
+    normalizeProviderName(config.model.split("/", 1)[0]) === KIMI_CODING_PROVIDER
+  );
+  const normalizedModel = shouldStripProviderPrefixedModel
+    ? stripProviderPrefix(config.model)
+    : (typeof config.model === "string" && config.model.trim()) ? config.model.trim() : undefined;
   const isKimiModel = typeof config.model === "string" && config.model.trim().startsWith(`${KIMI_CODING_PROVIDER}/`);
   const apiBase = isKimiModel || isKimiCodingBaseUrl(config.apiBase)
     ? KIMI_CODING_BASE_URL
     : (typeof config.apiBase === "string" && config.apiBase.trim()) ? config.apiBase : KIMI_CODING_BASE_URL;
   return {
     apiBase,
-    model: strippedModel || KIMI_CODING_DEFAULT_MODEL,
+    model: normalizedModel || KIMI_CODING_DEFAULT_MODEL,
   };
 }
 

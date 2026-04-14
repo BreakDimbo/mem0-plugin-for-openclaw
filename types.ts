@@ -553,7 +553,7 @@ export const DEFAULT_CONFIG: MemuPluginConfig & { dreaming: DreamingConfig } = {
   sync: {
     enabled: true,
     intervalMs: 300_000,
-    memoryFilePath: "~/.openclaw/workspace/MEMORY.md",
+    memoryFilePath: "MEMORY.md",
   },
   classifier: {
     enabled: true,

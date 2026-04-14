@@ -25,6 +25,13 @@ type Logger = { info(msg: string): void; warn(msg: string): void };
 
 // Patterns indicating system/internal messages to skip
 const SKIP_PREFIXES = ["[system]", "[tool_result]", "<system", "```tool", "<relevant-memories>"];
+const CHANNEL_ENVELOPE_PATTERN = /^(feishu|slack|telegram|discord|whatsapp|imessage|signal)\[[^\]]+\]\s*(dm|group|channel)\b/i;
+const CHANNEL_ENVELOPE_LINE_PATTERN = /^(feishu|slack|telegram|discord|whatsapp|imessage|signal)\[[^\]]+\]\s*(dm|group|channel)\b[^\n]*\n?/i;
+const SYSTEM_ENVELOPE_PATTERN = /^system:\s*\[[^\n]{8,200}\][^\n]*\n?/i;
+const UNTRUSTED_METADATA_BLOCK_PATTERN = /(?:^|\n)(Conversation info \(untrusted metadata\):|Sender \(untrusted metadata\):)\s*```json[\s\S]*?```/gi;
+const UNTRUSTED_METADATA_LABEL_PATTERN = /^(Conversation info \(untrusted metadata\):|Sender \(untrusted metadata\):)$/i;
+const CURRENT_TIME_PATTERN = /(?:^|\n)Current time:[^\n]*/gi;
+const SESSION_STARTUP_PATTERN = /\bA new session was started via \/new or \/reset\b/i;
 const LOW_SIGNAL_PATTERNS = [
   /^\s*(ok|okay|好的|嗯|行|收到|知道了|谢谢|thanks?)\s*[.!。!]*\s*$/i,
   /\b(today|tomorrow|tonight|this morning|this afternoon|this evening)\b/i,
@@ -39,14 +46,40 @@ const LOW_SIGNAL_PATTERNS = [
   /\bThe user requested the system to read\b/i,
 ];
 
-function isSystemFragment(text: string): boolean {
-  const lower = text.trimStart().toLowerCase();
-  return SKIP_PREFIXES.some((p) => lower.startsWith(p));
+function stripLeadingEnvelopeLine(text: string): string {
+  return text
+    .trim()
+    .replace(SYSTEM_ENVELOPE_PATTERN, "")
+    .replace(CHANNEL_ENVELOPE_LINE_PATTERN, "")
+    .trim();
 }
 
-function isInjectedMemory(text: string): boolean {
-  return text.includes("<relevant-memories>") || text.includes("</relevant-memories>") ||
-         text.includes("<core-memory>") || text.includes("</core-memory>");
+function stripMetadataScaffolding(text: string): string {
+  return text
+    .replace(UNTRUSTED_METADATA_BLOCK_PATTERN, "\n")
+    .replace(CURRENT_TIME_PATTERN, "\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line && !UNTRUSTED_METADATA_LABEL_PATTERN.test(line))
+    .join("\n")
+    .trim();
+}
+
+export function normalizeCaptureMessageText(text: string): string {
+  const strippedInjected = stripInjectedBlocks(text).trim();
+  if (!strippedInjected) return "";
+
+  const lower = strippedInjected.toLowerCase();
+  if (SKIP_PREFIXES.some((p) => lower.startsWith(p))) return "";
+  if (SESSION_STARTUP_PATTERN.test(strippedInjected)) return "";
+
+  let normalized = stripLeadingEnvelopeLine(strippedInjected);
+  normalized = stripMetadataScaffolding(normalized);
+  normalized = stripLeadingEnvelopeLine(normalized);
+
+  if (!normalized) return "";
+  if (CHANNEL_ENVELOPE_PATTERN.test(normalized)) return "";
+  return normalized.trim();
 }
 
 function isLowSignalUserText(text: string): boolean {
@@ -115,10 +148,8 @@ function extractConversationMessages(
     const rawContent = extractMessageText(rec.content).trim();
     if (!rawContent) continue;
 
-    const cleaned = stripInjectedBlocks(rawContent);
+    const cleaned = normalizeCaptureMessageText(rawContent);
     if (!cleaned) continue;
-    if (isInjectedMemory(cleaned)) continue;
-    if (isSystemFragment(cleaned)) continue;
 
     entries.push({
       role: role as "user" | "assistant",

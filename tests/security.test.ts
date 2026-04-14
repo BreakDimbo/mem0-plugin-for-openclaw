@@ -7,6 +7,7 @@ import {
   escapeForInjection,
   isSensitiveContent,
   shouldCapture,
+  shouldStoreCoreMemory,
   formatCoreMemoriesContext,
   formatMemoriesContext,
   audit,
@@ -92,6 +93,15 @@ test("rejects API-key-like text as sensitive", () => {
 test("accepts normal text", () => {
   const result = shouldCapture("I prefer concise changelogs for my projects", 10, 500);
   assert(result.allowed, "normal text");
+});
+
+test("rejects session-startup operational text as core memory", () => {
+  const ok = shouldStoreCoreMemory(
+    "workflow.memory_management",
+    "Pre-compaction memory flush. Store durable memories only in memory/2026-03-18.md. If nothing to store, reply with NO_REPLY.",
+    500,
+  );
+  assert(!ok, "session-startup/compaction text should not become core memory");
 });
 
 // -- formatMemoriesContext --

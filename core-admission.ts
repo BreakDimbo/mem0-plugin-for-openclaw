@@ -37,6 +37,7 @@ const SYSTEM_PROMPT = `你是记忆管理系统的评审员。判断用户消息
 
 规则：
 1. 每条消息只输出一个判断
+1.1 输出数组中的对象数量不能超过输入消息数量；每个 index 只能出现一次
 2. core 类型必须提供 key（格式: category.topic，如 identity.name, work.company, preferences.editor）和 value
 3. free_text 类型可选提供 value（简洁摘要）
 4. discard 类型可以省略不输出
@@ -108,7 +109,7 @@ export function resolveCaptureRouting(classification: ClassificationResult | und
   return { skipCapture, skipLlmGate };
 }
 
-export function parseAdmissionResponse(raw: unknown): AdmissionResult[] {
+export function parseAdmissionResponse(raw: unknown, maxCandidates?: number): AdmissionResult[] {
   const sanitized = sanitizeJsonLikeResponse(raw);
   let parsed: unknown;
   try {
@@ -120,6 +121,7 @@ export function parseAdmissionResponse(raw: unknown): AdmissionResult[] {
   if (!Array.isArray(parsed)) return [];
 
   const results: AdmissionResult[] = [];
+  const seenIndices = new Set<number>();
   for (const item of parsed) {
     if (!item || typeof item !== "object") continue;
     const obj = item as Record<string, unknown>;
@@ -127,7 +129,11 @@ export function parseAdmissionResponse(raw: unknown): AdmissionResult[] {
     const index = typeof obj.index === "number" ? obj.index : NaN;
     const verdict = obj.verdict;
     if (!Number.isFinite(index) || index < 1) continue;
+    if (typeof maxCandidates === "number" && index > maxCandidates) continue;
+    if (seenIndices.has(index)) continue;
     if (verdict !== "core" && verdict !== "free_text" && verdict !== "discard") continue;
+
+    seenIndices.add(index);
 
     results.push({
       index,
@@ -224,7 +230,7 @@ export async function judgeCandidates(
     logger.info(`llm-gate: raw response length=${content.length}`);
     logger.info(`llm-gate: raw response preview="${content.slice(0, 200)}${content.length > 200 ? '...' : ''}"`);
 
-    const results = parseAdmissionResponse(content);
+    const results = parseAdmissionResponse(content, texts.length);
     logger.info(`llm-gate: parsed ${results.length} results`);
 
     for (const r of results) {
