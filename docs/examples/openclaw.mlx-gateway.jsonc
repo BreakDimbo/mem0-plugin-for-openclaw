@@ -1,0 +1,57 @@
+{
+  "plugins": {
+    "entries": {
+      "memory-mem0": {
+        "enabled": true,
+        "config": {
+          // Recommended: route plugin-owned LLM paths to the local MLX gateway.
+          // The current plugin implementation requires a non-empty apiKey for
+          // classifier and llmGate unless the backend is localhost:11434 Ollama,
+          // so keep the harmless placeholder below.
+          "classifier": {
+            "enabled": true,
+            "apiBase": "http://127.0.0.1:11435/v1",
+            "apiKey": "local-mlx",
+            "model": "mlx-community/gemma-4-26b-a4b-it-4bit"
+          },
+          "core": {
+            "llmGate": {
+              "enabled": true,
+              "apiBase": "http://127.0.0.1:11435/v1",
+              "apiKey": "local-mlx",
+              "model": "mlx-community/gemma-4-26b-a4b-it-4bit",
+              "maxTokensPerBatch": 4000,
+              "timeoutMs": 60000
+            },
+            "consolidation": {
+              "llm": {
+                "enabled": true,
+                "apiBase": "http://127.0.0.1:11435/v1",
+                "apiKey": "local-mlx",
+                "model": "mlx-community/gemma-4-26b-a4b-it-4bit",
+                "timeoutMs": 30000,
+                "maxBatchSize": 20
+              }
+            }
+          }
+
+          // Experimental: mem0.oss.llm through the same local gateway.
+          // Prefer keeping enableGraph=false when enabling this path.
+          // ,"mem0": {
+          //   "enableGraph": false,
+          //   "oss": {
+          //     "llm": {
+          //       "provider": "openai",
+          //       "config": {
+          //         "baseURL": "http://127.0.0.1:11435/v1",
+          //         "apiKey": "local-mlx",
+          //         "model": "mlx-community/gemma-4-26b-a4b-it-4bit"
+          //       }
+          //     }
+          //   }
+          // }
+        }
+      }
+    }
+  }
+}
